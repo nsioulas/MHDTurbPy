@@ -163,10 +163,6 @@ def LoadTimeSeriesFromSPEDAS_PSP(
     else:
         os.chdir(rootdir)
 
-    # for k in default_settings.keys():
-    #     if k not in default_settings.keys():
-    #         settings[k] = default_settings[k]
-
     if settings['verbose']:
         print("Current Settings...")
         for k, v in settings.items():
@@ -228,8 +224,6 @@ def LoadTimeSeriesFromSPEDAS_PSP(
         except:
             print("No QTN Data!")
             dfqtn = None
-            # if settings['must_have_qtn']:
-            #     raise ValueError("Must have QTN! No QTN!")
 
         # Magnetic field
         try:
@@ -243,7 +237,7 @@ def LoadTimeSeriesFromSPEDAS_PSP(
                     if in_RTN:
                         names = pyspedas.psp.fields(trange=[t0,t1], 
                             datatype='mag_rtn', level='l2', time_clip=True,
-                            # username=username, password=password
+
                         )
                         data = get_data(names[0])
                         dfmag = pd.DataFrame(
@@ -701,11 +695,11 @@ def LoadTimeSeriesFromSPEDAS_SOLO(dist_df, sc, in_RTN, SCAM, start_time, end_tim
             dfpar['ne_qtn']  = dfpar['np']
 
 
-            # if settings['use_hampel'] == True:
-            #     list_quants = ['np', 'T', 'Vth', 'Vr', 'Vt']
-            #     for k in list_quants:
-            #         ns, _ = turb.hampel_filter(dfpar[k].values, 100)
-            #         dfpar[k] = ns
+            if settings['use_hampel'] == True:
+                list_quants = ['np', 'T', 'Vth', 'Vr', 'Vt']
+                for k in list_quants:
+                    ns, _ = turb.hampel_filter(dfpar[k].values, 100)
+                    dfpar[k] = ns
 
         except:
             traceback.print_exc()
@@ -1344,8 +1338,6 @@ def set_up_main_loop(final_path, settings, only_one_interval, t0, t1, step, dura
             tstarts.append(tstart)
             tends.append(tend)
             i1 += 1
-
-
 
     if sc==0:
         path0 = Path(final_path)
