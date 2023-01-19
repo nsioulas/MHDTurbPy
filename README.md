@@ -19,7 +19,7 @@ git clone https://github.com/nsioulas/MHDTurbPy/
 
 # Usage
 
-Some examples of how to use HUXt can be found in ```download_data_example.ipynb```
+Some examples of how to download, visualize data can be found in ```download_data_example.ipynb```
 
 # Contact
 If you have any questions, please don't hesitate to reach out to nsioulas@g.ucla.edu.
