@@ -1,0 +1,6 @@
+[run]
+omit =
+  /home/travis/virtualenv/*
+  */site-packages/*
+  */bin/*
+  */docs/*
