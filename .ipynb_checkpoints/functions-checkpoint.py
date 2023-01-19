@@ -1669,3 +1669,276 @@ def createFilePath(names):
         Turn an ordered list of names and concatinate them into a filepath.
     '''
     return ('/'.join([x for x in names if x != '']))
+
+
+def format_timestamp(timestamp,format_2_return):
+    return timestamp.strftime(format_2_return)
+
+def prepare_particle_data_for_visualization( df_part, mag_resampled, subtract_rol_mean=True, smoothed = True, in_rtn=True):
+    from scipy import constants
+    mu_0            = constants.mu_0  # Vacuum magnetic permeability [N A^-2]
+    mu0             = constants.mu_0   #
+    m_p             = constants.m_p    # Proton mass [kg]
+    kb              = constants.k      # Boltzman's constant     [j/K]
+    au_to_km        = 1.496e8
+    T_to_Gauss      = 1e4
+    
+    # Particle data remove nan values
+    df_part = df_part.dropna()
+    
+    # Reindex magnetic field data to particle data index
+    dtv                 = (df_part.dropna().index.to_series().diff()/np.timedelta64(1, 's'))[1]
+    dtb                 = (mag_resampled.dropna().index.to_series().diff()/np.timedelta64(1, 's'))[1]
+
+    freq_final          = str(int(dtv*1e3))+'ms'
+    print('final resol', freq_final)
+
+    f_df = mag_resampled.resample(freq_final).mean().join(
+         df_part.resample(freq_final).mean()
+    )
+
+    """Define magentic field components"""
+    Bx     = f_df.values.T[0];  By     = f_df.values.T[1];  Bz     = f_df.values.T[2]; Bmag = np.sqrt(Bx**2 + By**2 + Bz**2)
+
+    #f_df      = mag_resampled.reindex(mag_resampled.index.union(nindex)).interpolate(method='linear').reindex(nindex)
+    #print(f_df)
+    if subtract_rol_mean:
+        f_df[['Br_mean','Bt_mean','Bn_mean']]                   = f_df[['Br','Bt','Bn']].rolling('2H', center=True).mean().interpolate()
+        f_df[['Vr_mean', 'Vt_mean','Vn_mean', 'np_mean']]  = f_df[['Vr','Vt','Vn', 'np']].rolling('2H', center=True).mean().interpolate()
+       
+
+    #Estimate median solar wind speed   
+    Vth       = f_df.Vth.values;   Vth[Vth < 0] = np.nan; Vth_mean =np.nanmedian(Vth); Vth_std =np.nanstd(Vth);
+    
+    #Estimate median solar wind speed  
+    if in_rtn:
+        try:
+            Vsw       = np.sqrt(f_df.Vr.values**2 + f_df.Vt.values**2 + f_df.Vn.values**2); Vsw_mean =np.nanmedian(Vsw); Vsw_std =np.nanstd(Vsw);
+        except:
+            Vsw       = np.sqrt(f_df.Vx.values**2 + f_df.Vy.values**2 + f_df.Vz.values**2); Vsw_mean =np.nanmedian(Vsw); Vsw_std =np.nanstd(Vsw);
+
+    else:
+        Vsw       = np.sqrt(f_df.Vx.values**2 + f_df.Vy.values**2 + f_df.Vz.values**2); Vsw_mean =np.nanmedian(Vsw); Vsw_std =np.nanstd(Vsw);
+    Vsw[Vsw < 0] = np.nan
+    Vsw[np.abs(Vsw) > 1e5] = np.nan
+
+    # estimate mean number density
+    Np        = np.nanmean([f_df['np_qtn'].values,f_df['np'].values], axis=0)  
+    Np_mean =np.nanmedian(Np); Np_std =np.nanstd(Np);
+        
+    # Estimate Ion inertial length di in [Km]
+    di        = 228/np.sqrt(Np); di[np.log10(di) < -3] = np.nan;  di_mean =np.nanmedian(di); di_std =np.nanstd(di);
+    
+    # Estimate plasma Beta
+    km2m        = 1e3
+    nT2T        = 1e-9
+    cm2m        = 1e-2
+    B_mag       = Bmag * nT2T                              # |B| units:      [T]
+    temp        = 1./2 * m_p * (Vth*km2m)**2              # in [J] = [kg] * [m]^2 * [s]^-2
+    dens        = Np/(cm2m**3)                            # number density: [m^-3] 
+    beta        = (dens*temp)/((B_mag**2)/(2*mu_0))       # plasma beta 
+    beta[beta < 0] = np.nan
+    beta[np.abs(np.log10(beta))>4] = np.nan # delete some weird data
+    beta_mean   = np.nanmedian(beta); beta_std   = np.nanstd(beta);
+    
+    
+    # ion gyro radius
+    rho_ci = 10.43968491 * Vth/B_mag #in [km]
+    rho_ci[rho_ci < 0] = np.nan
+    rho_ci[np.log10(rho_ci) < -3] = np.nan
+    rho_ci_mean =np.nanmedian(rho_ci); rho_ci_std =np.nanstd(rho_ci);
+ 
+    ### Define b and v ###
+    if in_rtn:
+        try:
+            vr, vt, vn   = f_df.Vr.values, f_df.Vt.values, f_df.Vn.values
+            br, bt, bn   = f_df.Br.values, f_df.Bt.values, f_df.Bn.values
+        except:
+            vr, vt, vn   = f_df.Vx.values, f_df.Vy.values, f_df.Vz.values
+            br, bt, bn   = f_df.Bx.values, f_df.By.values, f_df.Bz.values
+    else:
+        vr, vt, vn       = f_df.Vx.values, f_df.Vy.values, f_df.Vz.values
+        br, bt, bn       = f_df.Bx.values, f_df.By.values, f_df.Bz.values
+      
+    #VBangle_mean, dVB, VBangle_std = BVangle(br, bt, bn, vr, vt, vn , smoothed)  
+
+    Va_r = 1e-15* br/np.sqrt(mu0*f_df['np'].values*m_p)   
+    Va_t = 1e-15* bt/np.sqrt(mu0*f_df['np'].values*m_p)   ### Multuply by 1e-15 to get units of [Km/s]
+    Va_n = 1e-15* bn/np.sqrt(mu0*f_df['np'].values*m_p)   
+    
+    # Estimate VB angle
+    vbang = np.arccos((Va_r * vr + Va_t * vt + Va_n * vn)/np.sqrt((Va_r**2+Va_t**2+Va_n**2)*(vr**2+vt**2+vn**2)))
+    vbang = vbang/np.pi*180#
+    VBangle_mean, VBangle_std = np.nanmean(vbang), np.nanstd(vbang)
+    
+    # Also save the components of Vsw an Valfven
+    alfv_speed = [np.nanmean(Va_r), np.nanmean(Va_t), np.nanmean(Va_n)]
+    sw_speed   = [np.nanmean(vr), np.nanmean(vt), np.nanmean(vn)]
+
+    # sign of Br within the window
+    signB = - np.sign(np.nanmean(Va_r))
+    
+    # # Estimate fluctuations of fields #
+    if subtract_rol_mean:
+        va_r = Va_r - 1e-15*f_df['Br_mean'].values/np.sqrt(mu0*f_df['np_mean'].values*m_p);    v_r = vr - f_df['Vr_mean'].values
+        va_t = Va_t - 1e-15*f_df['Bt_mean'].values/np.sqrt(mu0*f_df['np_mean'].values*m_p);    v_t = vt - f_df['Vt_mean'].values
+        va_n = Va_n - 1e-15*f_df['Bn_mean'].values/np.sqrt(mu0*f_df['np_mean'].values*m_p);    v_n = vn - f_df['Vn_mean'].values
+
+    else:
+        va_r = Va_r - np.nanmean(Va_r);   v_r = vr - np.nanmean(vr)
+        va_t = Va_t - np.nanmean(Va_t);   v_t = vt - np.nanmean(vt)
+        va_n = Va_n - np.nanmean(Va_n);   v_n = vn - np.nanmean(vn)
+    
+
+
+    # Estimate Zp, Zm components
+    Zpr = v_r +  signB *va_r; Zmr = v_r - signB *va_r
+    Zpt = v_t +  signB *va_t; Zmt = v_t - signB *va_t
+    Zpn = v_n +  signB *va_n; Zmn = v_n - signB *va_n
+
+
+    # Estimate energy in Zp, Zm
+    Z_plus_squared  = Zpr**2 +  Zpt**2 + Zpn**2
+    Z_minus_squared = Zmr**2 +  Zmt**2 + Zmn**2
+    
+    # Estimate amplitude of fluctuations
+    Z_amplitude                = np.sqrt( (Z_plus_squared + Z_minus_squared)/2 ) ; Z_amplitude_mean    = np.nanmedian(Z_amplitude); Z_amplitude_std = np.nanstd(Z_amplitude);
+
+    # Kin, mag energy
+    Ek = v_r**2 + v_t**2 + v_n**2
+    Eb = va_r**2 + va_t**2 + va_n**2
+    
+    #Estimate normalized residual energy
+    sigma_r      = (Ek-Eb)/(Ek+Eb);                                                         sigma_r[np.abs(sigma_r) > 1e5] = np.nan;
+    sigma_c      = (Z_plus_squared - Z_minus_squared)/( Z_plus_squared + Z_minus_squared);  sigma_c[np.abs(sigma_c) > 1e5] = np.nan
+    
+    #Save in DF format to estimate spectraly
+    nn_df       = pd.DataFrame({'DateTime': f_df.index.values,
+                                'Zpr'     : Zpr,    'Zpt': Zpt, 'Zpn' : Zpn,
+                                'Zmr'     : Zmr,    'Zmt': Zmt, 'Zmn' : Zmn, 
+                                'va_r'    : va_r,  'va_t': va_t,'va_n': va_n,
+                                'v_r'     : v_r,   'v_t' : v_t, 'v_n' : v_n,
+                                'beta'    : beta,  'np'  : Np,  'Tp'  : temp, 'VB': vbang,
+                                'sigma_c' : sigma_c,         'sigma_r': sigma_r}).set_index('DateTime')
+    nn_df       = nn_df.mask(np.isinf(nn_df)).dropna().interpolate(method='linear')
+
+    
+    return   nn_df
+
+def visualize_downloaded_intervals(
+                                  sc,
+                                  final_Par,
+                                  final_Mag,
+                                  res_rate,
+                                  my_dir,
+                                  format_2_return ="%Y_%m_%d",
+                                  size             = 21,
+                                  inset_f_size     = 20,
+                                  numb_subplots    = 7
+
+                                 ):
+
+    if sc ==0:
+        spacecraft = 'PSP'
+    else:
+        spacecraft = 'SolO'
+
+        
+    # Creat figure name using start, end date and sc.
+    f1          = format_timestamp(final_Mag.index[0], format_2_return)
+    f2          = format_timestamp(final_Mag.index[-1], format_2_return)
+    figure_name = f1+"_"+f2+"_"+str(sc)+str('.png')
+     
+    # Resample to desired rate
+    final_Mag        =  final_Mag.resample(str(res_rate)+'s').mean()
+    final_Par        = final_Par.resample(str(res_rate)+'s').mean()
+    
+    # Estimate relevant quantitities
+    nn_df = prepare_particle_data_for_visualization( final_Par, final_Mag)
+    nn_df = nn_df.resample(str(res_rate)+'s').mean()
+    
+    # Choose limiting dates
+    start_date_lim  = final_Par.index[0]
+    end_date_lim    = final_Par.index[-1]
+
+    # Init figure
+    fig, axs        = plt.subplots(numb_subplots, sharex=True,figsize=(30,15), gridspec_kw = {'wspace':0.05, 'hspace':0.05})
+    minor_tick_params, major_tick_params = inset_axis_params(size = inset_f_size)
+
+    #Now plot
+    """1st plot"""
+    final_Mag['B_RTN'] = np.sqrt(final_Mag.Br**2 + final_Mag.Bt**2 + final_Mag.Bn**2)
+
+    axs[0].plot(final_Mag['Br'],linewidth=0.4,ls='-', ms=0,color ='darkblue')
+    axs[0].plot(final_Mag['Bt'],linewidth=0.4,ls='-', ms=0,color ='darkred')
+    axs[0].plot(final_Mag['Bn'],linewidth=0.4,ls='-', ms=0,color ='darkgreen')
+    axs[0].plot(final_Mag['B_RTN'],linewidth=0.4,ls='-', ms=0,color ='k')
+
+
+    """2nd plot"""
+    axs[1].plot(np.sqrt(final_Par.Vr**2 + final_Par.Vt**2 + final_Par.Vn**2),linewidth=0.8,ls='-', ms=0,color ='C0')#,label='$|B|$')
+    ax2 = axs[1].twinx()
+
+    ax2.plot(final_Par['Vth'],linewidth=0.8,ls='-', ms=0,color ='k')#,label='$|B|$')
+    #dfts[['Vth']].plot(ax = ax, legend=False, style=['C1'], lw = 0.6, alpha = 0.6)
+    ax2.legend(['$V_{th}~ [km/s]$'], fontsize='large', frameon=False, bbox_to_anchor=(1.01, 0.6), loc = 2)
+
+
+    """3rd plot"""
+    axs[2].plot(final_Par.np,linewidth=0.8,ls='-', ms=0,color ='darkred')#,label='$|B|$')
+
+    """3rd plot"""
+    axs[3].plot(nn_df.sigma_c, linewidth=0.8,ls='-', ms=0,color ='darkblue')#,label='$|B|$')
+
+    """3rd plot"""
+    axs[3].plot(nn_df.sigma_r, linewidth=0.8,ls='-', ms=0,color ='darkred')#,label='$|B|$')
+
+    """3rd plot"""
+    axs[4].plot(nn_df.beta, linewidth=0.8,ls='-', ms=0,color ='black')#,label='$|B|$')
+
+    """3rd plot"""
+    axs[5].plot(nn_df.VB, linewidth=0.8,ls='-', ms=0,color ='black')#,label='$|B|$')
+
+    """4th plot"""
+    axs[6].plot(final_Par.Dist_au, linewidth=0.8,ls='-', ms=0,color ='black')#,label='$|B|$')
+
+    ## y Axis labels ##
+    axs[0].legend([r'$B_{r} ~ [nT]$',r'$B_{t} ~ [nT]$',r'$B_{n} ~ [nT]$',r'$|B| ~ [nT]$'], fontsize='large', frameon=False, bbox_to_anchor=(1.01, 1), loc = 2)
+    axs[1].legend(['$V_{sw} ~[km ~s^{-1}$]'], fontsize='large', frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
+    axs[2].legend(['$N_{p}~[(cm^{-3}$]'], fontsize='large', frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
+    axs[3].legend(['$\sigma_{c}$','$\sigma_{r}$'], fontsize='large', frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
+    #axs[4].legend([], fontsize='large', frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
+    axs[4].legend([r'$\beta$'], fontsize='large', frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
+    axs[5].legend([r'$\Theta_{VB} ~[^{\circ}]$'], fontsize='large', frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
+    axs[6].legend([r'$R ~[au]$'], fontsize='large', frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
+
+
+    #axs[3].legend([r'$\sigma_c$'], fontsize='large', frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
+    for i in range(numb_subplots ):
+
+        axs[i].xaxis.grid(True, "minor", linewidth=.1, ls='-');  
+        axs[i].yaxis.grid(True, "major", linewidth=.1, ls='-');
+        axs[i].yaxis.grid(True, "minor", linewidth=.1, ls='-');  
+        axs[i].xaxis.grid(True, "major", linewidth=.1, ls='-');    
+
+        axs[i].xaxis.grid(True, "minor", linewidth=.1, ls='-');  
+        axs[i].yaxis.grid(True, "major", linewidth=.1, ls='-');
+        axs[i].yaxis.grid(True, "minor", linewidth=.1, ls='-');  
+        axs[i].xaxis.grid(True, "major", linewidth=.1, ls='-'); 
+        axs[i].tick_params(**minor_tick_params)
+        axs[i].tick_params(**major_tick_params)
+
+
+
+        if i==0:
+
+            axs[i].legend(loc=0, frameon=0, fontsize=20)
+
+
+        # Set axis limits
+        axs[i].set_xlim([start_date_lim, end_date_lim])
+
+    final_save_path = Path(my_dir).joinpath('figures')
+    os.makedirs(str(final_save_path), exist_ok=True)
+    fig.savefig(str(final_save_path.joinpath(figure_name)), format='png',dpi=300,bbox_inches='tight')
+    fig.show()
