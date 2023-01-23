@@ -2,7 +2,7 @@
 A collection of functions for downloading, cleaning, and analyzing data from the Parker Solar Probe, Solar Orbiter, Helios, and Ulysses missions. Additional functions and documentation will be added soon.
 
 
- We welcome contributions to this repository, so feel free to add your own functions.
+ I welcome contributions to this repository!
 
 
 
