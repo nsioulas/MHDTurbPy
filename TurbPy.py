@@ -12,7 +12,6 @@ from scipy import signal
 from distutils.log import warn
 import time
 from numba import jit,njit,prange,objmode 
-import datetime
 import traceback
 
 # SPEDAS API
@@ -27,10 +26,58 @@ from pytplot import get_data
 sys.path.insert(0,'/Users/nokni/work/MHDTurbPy/')
 import functions as func
 
+def trace_PSD_wavelet(x, y, z, dt, dj,  mother_wave='morlet'):
+    """
+    Method to calculate the  power spectral density using wavelet method.
+    Parameters
+    ----------
+    x,y,z: array-like
+        the components of the field to apply wavelet tranform
+    dt: float
+        the sampling time of the timeseries
+    dj: determines how many scales are used to estimate wavelet coeff
+    
+        (e.g., for dj=1 -> 2**numb_scales 
+    mother_wave: str
+        The main waveform to transform data.
+        Available waves are:
+        'gaussian':
+        'paul': apply lomb method to compute PSD
+        'mexican_hat':
+    Returns
+    -------
+    db_x,db_y,db_zz: array-like
+        component coeficients of th wavelet tranform
+    freq : list
+        Frequency of the corresponding psd points.
+    psd : list
+        Power Spectral Density of the signal.
+    scales : list
+        The scales at which wavelet was estimated
+    """
+    
+
+    if mother_wave in mother_wave_dict.keys():
+        mother_morlet = mother_wave_dict[mother_wave]
+    else:
+        mother_morlet = wavelet.Morlet()
+        
+    N                                       = len(x)
+
+    db_x, _, freqs, _, _, _ = wavelet.cwt(x, dt, dj, wavelet=mother_morlet)
+    db_y, _, freqs, _, _, _ = wavelet.cwt(y, dt, dj, wavelet=mother_morlet)
+    db_z, _, freqs, _, _, _ = wavelet.cwt(z, dt, dj, wavelet=mother_morlet)
+     
+    # Estimate trace powerspectral density
+    PSD = (np.nanmean(np.abs(db_x)**2, axis=1) + np.nanmean(np.abs(db_y)**2, axis=1) + np.nanmean(np.abs(db_z)**2, axis=1)   )*( 2*dt)
+    
+    # Also estimate the scales to use later
+    scales = ((1/freqs)/dt)#.astype(int)
+    
+    return db_x, db_y, db_z, freqs, PSD, scales
 
 
-
-def TracePSD(x, y, z , remove_mean,dt):
+def TracePSD(x, y, z , dt, remove_mean=False):
     """ 
     Estimate Power spectral density:
     Inputs:
@@ -51,7 +98,7 @@ def TracePSD(x, y, z , remove_mean,dt):
     xf = np.fft.rfft(x);  yf = np.fft.rfft(y); zf = np.fft.rfft(z);
 
     
-    B_pow = (np.abs(xf) ** 2 + np.abs(yf) ** 2 + np.abs(zf) ** 2    ) / N * dt
+    B_pow = 2 * (np.abs(xf) ** 2 + np.abs(yf) ** 2 + np.abs(zf) ** 2    ) / N * dt
 
     freqs = np.fft.fftfreq(len(x), dt)
     freqs = freqs[freqs>0]
@@ -66,56 +113,7 @@ mother_wave_dict = {
     'mexican_hat': wavelet.MexicanHat()
 }
 
-def trace_PSD_wavelet(x, y, z, dt, dj,  mother_wave='morlet'):
-    """
-    Method to calculate the  power spectral density using wavelet method.
-    Parameters
-    ----------
-    x,y,z: array-like
-        the components of the field to apply wavelet tranform
-    dt: int
-        the sampling time of the timeseries
-    dj: determines how many scales are used to estimate wavelet coeff
-    
-        (e.g., for dj=1 -> 2**numb_scales 
-    mother_wave: str
-        The main waveform to transform data.
-        Available waves are:
-        'gaussian':
-        'paul': apply lomb method to compute PSD
-        'mexican_hat':
-    Returns
-    -------
-    db_x,db_y,db_zz: array-like
-        component coeficients of th wavelet tranform
-    freq : list
-        Frequency of the corresponding psd points.
-    psd : list
-        Power Spectral Density of the signal.
-    psd : list
-        The scales at which wavelet was estimated
-    """
 
-    
-
-    if mother_wave in mother_wave_dict.keys():
-        mother_morlet = mother_wave_dict[mother_wave]
-    else:
-        mother_morlet = wavelet.Morlet()
-        
-    N                                       = len(x)
-
-    db_x, _, freqs, _, _, _ = wavelet.cwt(x, dt,  dj, wavelet=mother_morlet)
-    db_y, _, freqs, _, _, _ = wavelet.cwt(y, dt,  dj, wavelet=mother_morlet)
-    db_z, _, freqs, _, _, _  = wavelet.cwt(z, dt, dj, wavelet=mother_morlet)
-     
-    # Estimate trace powerspectral density
-    PSD = (np.nanmean(np.abs(db_x)**2, axis=1) + np.nanmean(np.abs(db_y)**2, axis=1) + np.nanmean(np.abs(db_z)**2, axis=1)   )*( 2*dt)
-    
-    # Also estimate the scales to use later
-    scales = ((1/freqs)/dt)#.astype(int)
-    
-    return db_x, db_y, db_z, freqs, PSD, scales
 
 
 
@@ -310,7 +308,7 @@ def hampel_filter(input_series, window_size, n_sigmas=3):
     
     return new_series, indices
 
-@numba.njit(nogil=True)
+@njit(nogil=True)
 def norm_factor_Gauss_window(scales, dt, lambdaa):
     
     s             = scales*dt
@@ -322,14 +320,14 @@ def norm_factor_Gauss_window(scales, dt, lambdaa):
     return window,  multiplic_fac, norm_factor
 
 
-def estimate_wavelet_coeff(df_b, V_df,  dj , lambdaa=3):
+def estimate_wavelet_coeff(B_df, V_df,  dj , lambdaa=3):
     
     """
     Method to calculate the  1) wavelet coefficients in RTN 2) The scale dependent angle between Vsw and Β
     
     Parameters
     ----------
-    df_b: dataframe
+    B_df: dataframe
         Magnetic field timeseries dataframe
 
     mother_wave: str
@@ -345,18 +343,26 @@ def estimate_wavelet_coeff(df_b, V_df,  dj , lambdaa=3):
     psd : list
         Power Spectral Density of the signal.
     """
+    #Estimate sampling time of timeseries
+    dt_B                                 =  func.find_cadence(B_df)
+    dt_V                                 =  func.find_cadence(V_df)
+    
+    if dt_V !=dt_B:
+        V_df = func.newindex(V_df, B_df.index, interp_method='linear')
+    
+    # Common dt
+    dt        =  dt_B
     
     # Turn columns of df into arrays   
-    Br, Bt, Bn                           =  df_b.Br.values, df_b.Bt.values, df_b.Bn.values
+    Br, Bt, Bn                           =  B_df.Br.values, B_df.Bt.values, B_df.Bn.values
+    Vr, Vt, Vn                           =  V_df.Vr.values, V_df.Vt.values, V_df.Vn.values    
 
     # Estimate magnitude of magnetic field
     mag_orig                             =  np.sqrt(Br**2 + Bt**2 +  Bn**2 )
     
     # Estimate the magnitude of V vector
-    mag_v = np.sqrt(V_df['Vr']**2 + V_df['Vt']**2 + V_df['Vn']**2).values
+    mag_v                                = np.sqrt(Vr**2 + Vt**2 + Vn**2)
 
-    #Estimate sampling time of timeseries
-    dt                                   =  (df_b.dropna().index.to_series().diff()/np.timedelta64(1, 's')).median()
 
     angles   = pd.DataFrame()
     VBangles = pd.DataFrame()
@@ -366,8 +372,6 @@ def estimate_wavelet_coeff(df_b, V_df,  dj , lambdaa=3):
 
 
     for ii in range(len(scales)):
-        #if np.mod(ii, 2)==0:
-           # print('Progress', 100*(ii/len(scales)))
         try:
             window, multiplic_fac, norm_factor= norm_factor_Gauss_window(scales[ii], dt, lambdaa)
 
@@ -386,7 +390,7 @@ def estimate_wavelet_coeff(df_b, V_df,  dj , lambdaa=3):
             angles[str(ii+1)] = np.arccos(res2_Br/mag_bac) * 180 / np.pi
 
             # Estimate VB angle
-            VBangles[str(ii+1)] = np.arccos((V_df['Vr']*res2_Br + V_df['Vt']*res2_Bt + V_df['Vn']*res2_Bn)/(mag_bac*mag_v)) * 180 / np.pi
+            VBangles[str(ii+1)] = np.arccos((Vr*res2_Br + Vt*res2_Bt + Vn*res2_Bn)/(mag_bac*mag_v)) * 180 / np.pi
 
             # Restric to 0< Θvb <90
             VBangles[str(ii+1)][VBangles[str(ii+1)]>90] = 180 - VBangles[str(ii+1)][VBangles[str(ii+1)]>90]
@@ -397,6 +401,7 @@ def estimate_wavelet_coeff(df_b, V_df,  dj , lambdaa=3):
              pass
 
     return db_x, db_y, db_z, angles, VBangles, freqs, PSD, scales
+
 
 
 """" Define function to estimate PVI timeseries"""

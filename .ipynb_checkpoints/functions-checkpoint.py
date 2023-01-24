@@ -1604,6 +1604,9 @@ def find_closest_values_of_2_arrays(a, b):
         ret_b[idx] = np.where(tt == True)[0][bw]
     return np.column_stack((uni, ret_b))
 
+def find_cadence(df):
+    dt = (df.dropna().index.to_series().diff()/np.timedelta64(1, 's')).median()
+    return dt
 
 def str2bool(v):
     '''
