@@ -317,7 +317,7 @@ def find_duration(df,what,theta1,theta2):
 
 
 @jit(nopython=True, parallel=True)      
-def smoothing_function(x,y,mean=True,  window=2, pad = 1):
+def smoothing_function(x,y, mean=True,  window=2, pad = 1):
     def bisection(array,value):
         '''Given an ``array`` , and given a ``value`` , returns an index j such that ``value`` is between array[j]
         and array[j+1]. ``array`` must be monotonic increasing. j=-1 or j=len(array) is returned
@@ -1604,6 +1604,9 @@ def find_closest_values_of_2_arrays(a, b):
         ret_b[idx] = np.where(tt == True)[0][bw]
     return np.column_stack((uni, ret_b))
 
+def find_cadence(df):
+    dt = (df.dropna().index.to_series().diff()/np.timedelta64(1, 's')).median()
+    return dt
 
 def str2bool(v):
     '''
