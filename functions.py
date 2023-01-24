@@ -1866,7 +1866,8 @@ def visualize_downloaded_intervals(
 
     # Init figure
     fig, axs        = plt.subplots(numb_subplots, sharex=True,figsize=(30,15), gridspec_kw = {'wspace':0.05, 'hspace':0.05})
-    minor_tick_params, major_tick_params = inset_axis_params(size = inset_f_size)
+    
+
 
     #Now plot
     """1st plot"""
