@@ -28,6 +28,97 @@ sys.path.insert(0,'/Users/nokni/work/MHDTurbPy/')
 import functions as func
 
 
+
+
+def TracePSD(x, y, z , remove_mean,dt):
+    """ 
+    Estimate Power spectral density:
+    Inputs:
+    u : timeseries, np.array
+    dt: 1/sampling frequency
+    """
+    if isinstance(x, np.ndarray):
+        pass
+    else:
+        x = x.values; y = y.values; z =z.values
+    
+    if remove_mean:
+        x = x  - np.nanmean(x)
+        y = y  - np.nanmean(y)
+        z = z  - np.nanmean(z)
+
+    N  = len(x)
+    xf = np.fft.rfft(x);  yf = np.fft.rfft(y); zf = np.fft.rfft(z);
+
+    
+    B_pow = (np.abs(xf) ** 2 + np.abs(yf) ** 2 + np.abs(zf) ** 2    ) / N * dt
+
+    freqs = np.fft.fftfreq(len(x), dt)
+    freqs = freqs[freqs>0]
+    idx   = np.argsort(freqs)
+    
+    return freqs[idx], B_pow[idx]
+
+
+mother_wave_dict = {
+    'gaussian': wavelet.DOG(),
+    'paul': wavelet.Paul(),
+    'mexican_hat': wavelet.MexicanHat()
+}
+
+def trace_PSD_wavelet(x, y, z, dt, dj,  mother_wave='morlet'):
+    """
+    Method to calculate the  power spectral density using wavelet method.
+    Parameters
+    ----------
+    x,y,z: array-like
+        the components of the field to apply wavelet tranform
+    dt: int
+        the sampling time of the timeseries
+    dj: determines how many scales are used to estimate wavelet coeff
+    
+        (e.g., for dj=1 -> 2**numb_scales 
+    mother_wave: str
+        The main waveform to transform data.
+        Available waves are:
+        'gaussian':
+        'paul': apply lomb method to compute PSD
+        'mexican_hat':
+    Returns
+    -------
+    db_x,db_y,db_zz: array-like
+        component coeficients of th wavelet tranform
+    freq : list
+        Frequency of the corresponding psd points.
+    psd : list
+        Power Spectral Density of the signal.
+    psd : list
+        The scales at which wavelet was estimated
+    """
+
+    
+
+    if mother_wave in mother_wave_dict.keys():
+        mother_morlet = mother_wave_dict[mother_wave]
+    else:
+        mother_morlet = wavelet.Morlet()
+        
+    N                                       = len(x)
+
+    db_x, _, freqs, _, _, _ = wavelet.cwt(x, dt,  dj, wavelet=mother_morlet)
+    db_y, _, freqs, _, _, _ = wavelet.cwt(y, dt,  dj, wavelet=mother_morlet)
+    db_z, _, freqs, _, _, _  = wavelet.cwt(z, dt, dj, wavelet=mother_morlet)
+     
+    # Estimate trace powerspectral density
+    PSD = (np.nanmean(np.abs(db_x)**2, axis=1) + np.nanmean(np.abs(db_y)**2, axis=1) + np.nanmean(np.abs(db_z)**2, axis=1)   )*( 2*dt)
+    
+    # Also estimate the scales to use later
+    scales = ((1/freqs)/dt)#.astype(int)
+    
+    return db_x, db_y, db_z, freqs, PSD, scales
+
+
+
 def estimated_windowed_PSD(mag, magvars,  w_size, chuncktime, windowStr='boxcar', chunk_plot=-1):
     """
     Args:
@@ -169,129 +260,6 @@ def estimated_windowed_PSD(mag, magvars,  w_size, chuncktime, windowStr='boxcar'
         
         return freq_log, Plog
 
-
-def TracePSD(x, y, z , remove_mean,dt):
-    """ 
-    Estimate Power spectral density:
-    Inputs:
-    u : timeseries, np.array
-    dt: 1/sampling frequency
-    """
-    if isinstance(x, np.ndarray):
-        pass
-    else:
-        x = x.values; y = y.values; z =z.values
-    
-    if remove_mean:
-        x = x  - np.nanmean(x)
-        y = y  - np.nanmean(y)
-        z = z  - np.nanmean(z)
-
-    N  = len(x)
-    xf = np.fft.rfft(x);  yf = np.fft.rfft(y); zf = np.fft.rfft(z);
-
-    
-    B_pow = (np.abs(xf) ** 2 + np.abs(yf) ** 2 + np.abs(zf) ** 2    ) / N * dt
-
-    freqs = np.fft.fftfreq(len(x), dt)
-    freqs = freqs[freqs>0]
-    idx   = np.argsort(freqs)
-    
-    return freqs[idx], B_pow[idx]
-
-
-mother_wave_dict = {
-    'gaussian': wavelet.DOG(),
-    'paul': wavelet.Paul(),
-    'mexican_hat': wavelet.MexicanHat()
-}
-
-def trace_PSD_wavelet(x, y, z, dt, dj,  mother_wave='morlet'):
-    """
-    Method to calculate the  power spectral density using wavelet method.
-    Parameters
-    ----------
-    x,y,z: array-like
-        the components of the field to apply wavelet tranform
-    dt: int
-        the sampling time of the timeseries
-    dj: determines how many scales are used to estimate wavelet coeff
-    
-        (e.g., for dj=1 -> 2**numb_scales 
-    mother_wave: str
-        The main waveform to transform data.
-        Available waves are:
-        'gaussian':
-        'paul': apply lomb method to compute PSD
-        'mexican_hat':
-    Returns
-    -------
-    db_x,db_y,db_zz: array-like
-        component coeficients of th wavelet tranform
-    freq : list
-        Frequency of the corresponding psd points.
-    psd : list
-        Power Spectral Density of the signal.
-    psd : list
-        The scales at which wavelet was estimated
-    """
-
-    
-
-    if mother_wave in mother_wave_dict.keys():
-        mother_morlet = mother_wave_dict[mother_wave]
-    else:
-        mother_morlet = wavelet.Morlet()
-        
-    N                                       = len(x)
-
-    db_x, _, freqs, _, _, _ = wavelet.cwt(x, dt,  dj, wavelet=mother_morlet)
-    db_y, _, freqs, _, _, _ = wavelet.cwt(y, dt,  dj, wavelet=mother_morlet)
-    db_z, _, freqs, _, _, _  = wavelet.cwt(z, dt, dj, wavelet=mother_morlet)
-     
-    # Estimate trace powerspectral density
-    PSD = (np.nanmean(np.abs(db_x)**2, axis=1) + np.nanmean(np.abs(db_y)**2, axis=1) + np.nanmean(np.abs(db_z)**2, axis=1)   )*( 2*dt)
-    
-    # Also estimate the scales to use later
-    scales = ((1/freqs)/dt)#.astype(int)
-    
-    return db_x, db_y, db_z, freqs, PSD, scales
-
-import numba as nb
-
-
-@nb.njit(nogil=True)
-def norm_factor_Gauss_window(scales, dt):
-    """
-    Parameters
-    ----------
-    scales: float
-        The scale of the window
-    dt: float
-        The time step of the signal
-
-    Returns
-    -------
-    window: int
-        The size of the window
-    multiplic_fac: numpy array
-        The multiplicative factor of the window
-    norm_factor: float
-        The normalization factor of the window
-    """
-
-
-    
-    s             = scales*dt
-    numer         = np.arange(-3*s, 3*s+dt, dt)
-    multiplic_fac = np.exp(-(numer)**2/(2*s**2))
-    norm_factor   = np.sum(multiplic_fac)
-    window        = len(multiplic_fac)
-    
-    return window,  multiplic_fac, norm_factor
-
-
-
 def power_spec(signal,npoints):
     """Computes FFT for the signal, discards the zero freq and the
     above-Nyquist freqs. Auto-pads signals nonmultple of npoints, auto-averages results from streams longer than npoints.
@@ -322,14 +290,12 @@ def power_spec(signal,npoints):
     return result
 
 
-
 @jit(nopython=True, parallel=True)
 def hampel_filter(input_series, window_size, n_sigmas=3):
     """
       Hampel filter function for despiking a timeseries (i.e., remove spurious datapoints) 
     """
 
-    
     n = len(input_series)
     new_series = input_series.copy()
     k = 1.4826 # scale factor for Gaussian distribution
@@ -344,61 +310,135 @@ def hampel_filter(input_series, window_size, n_sigmas=3):
     
     return new_series, indices
 
+@numba.njit(nogil=True)
+def norm_factor_Gauss_window(scales, dt, lambdaa):
+    
+    s             = scales*dt
+    numer         = np.arange(-3*s, 3*s+dt, dt)
+    multiplic_fac = np.exp(-(numer)**2/(2*(lambdaa**2)*(s**2)))
+    norm_factor   = np.sum(multiplic_fac)
+    window        = len(multiplic_fac)
+    
+    return window,  multiplic_fac, norm_factor
+
+
+def estimate_wavelet_coeff(df_b, V_df,  dj , lambdaa=3):
+    
+    """
+    Method to calculate the  1) wavelet coefficients in RTN 2) The scale dependent angle between Vsw and Β
+    
+    Parameters
+    ----------
+    df_b: dataframe
+        Magnetic field timeseries dataframe
+
+    mother_wave: str
+        The main waveform to transform data.
+        Available waves are:
+        'gaussian':
+        'paul': apply lomb method to compute PSD
+        'mexican_hat':
+    Returns
+    -------
+    freq : list
+        Frequency of the corresponding psd points.
+    psd : list
+        Power Spectral Density of the signal.
+    """
+    
+    # Turn columns of df into arrays   
+    Br, Bt, Bn                           =  df_b.Br.values, df_b.Bt.values, df_b.Bn.values
+
+    # Estimate magnitude of magnetic field
+    mag_orig                             =  np.sqrt(Br**2 + Bt**2 +  Bn**2 )
+    
+    # Estimate the magnitude of V vector
+    mag_v = np.sqrt(V_df['Vr']**2 + V_df['Vt']**2 + V_df['Vn']**2).values
+
+    #Estimate sampling time of timeseries
+    dt                                   =  (df_b.dropna().index.to_series().diff()/np.timedelta64(1, 's')).median()
+
+    angles   = pd.DataFrame()
+    VBangles = pd.DataFrame()
+    from scipy import signal
+    # Estimate PSDand scale dependent fluctuations
+    db_x, db_y, db_z, freqs, PSD, scales = trace_PSD_wavelet(Br, Bt, Bn, dt, dj,  mother_wave='morlet')
+
+
+    for ii in range(len(scales)):
+        #if np.mod(ii, 2)==0:
+           # print('Progress', 100*(ii/len(scales)))
+        try:
+            window, multiplic_fac, norm_factor= norm_factor_Gauss_window(scales[ii], dt, lambdaa)
+
+
+            # Estimate scale dependent background magnetic field using a Gaussian averaging window
+
+            res2_Br = (1/norm_factor)*signal.convolve(Br, multiplic_fac[::-1], 'same')
+            res2_Bt = (1/norm_factor)*signal.convolve(Bt, multiplic_fac[::-1], 'same')
+            res2_Bn = (1/norm_factor)*signal.convolve(Bn, multiplic_fac[::-1], 'same')
+
+
+            # Estimate magnitude of scale dependent background
+            mag_bac = np.sqrt(res2_Br**2 + res2_Bt**2 + res2_Bn**2 )
+
+            # Estimate angle
+            angles[str(ii+1)] = np.arccos(res2_Br/mag_bac) * 180 / np.pi
+
+            # Estimate VB angle
+            VBangles[str(ii+1)] = np.arccos((V_df['Vr']*res2_Br + V_df['Vt']*res2_Bt + V_df['Vn']*res2_Bn)/(mag_bac*mag_v)) * 180 / np.pi
+
+            # Restric to 0< Θvb <90
+            VBangles[str(ii+1)][VBangles[str(ii+1)]>90] = 180 - VBangles[str(ii+1)][VBangles[str(ii+1)]>90]
+
+            # Restric to 0< Θvb <90
+            angles[str(ii+1)][angles[str(ii+1)]>90] = 180 - angles[str(ii+1)][angles[str(ii+1)]>90]
+        except:
+             pass
+
+    return db_x, db_y, db_z, angles, VBangles, freqs, PSD, scales
+
+
 """" Define function to estimate PVI timeseries"""
-def estimate_PVI(B_resampled, hmany, di, Vsw,  hours ):
+def estimate_PVI(B_resampled, hmany, di, Vsw,  hours, PVI_vec_or_mod='vec'):
 
-    av_hours     = hours*3600
-    lag          = (B_resampled.index[1]-B_resampled.index[0])/np.timedelta64(1,'s') 
-    print(lag)
-    av_window    = int(av_hours/lag)
-    tau          = round((hmany*di)/(Vsw*lag))
+    av_hours                           = hours*3600
+    lag                                = (B_resampled.index[1]-B_resampled.index[0])/np.timedelta64(1,'s') 
+    av_window                          = int(av_hours/lag)
+    tau                                = round((hmany*di)/(Vsw*lag))
     if  tau>0:
+        if PVI_vec_or_mod:
+            ### Estimate PVI ###
+            B_resampled['DBtotal']         = np.sqrt((B_resampled.Br.diff(tau))**2 + (B_resampled.Bt.diff(tau))**2 + (B_resampled.Bn.diff(tau))**2)
+            B_resampled['DBtotal_squared'] = B_resampled['DBtotal']**2
+            denominator                    = np.sqrt(B_resampled['DBtotal_squared'].rolling(int(av_window), center=True).mean())
 
-        ### Estimate PVI ###
-        B_resampled['DBtotal'] = np.sqrt((B_resampled.Br.diff(tau))**2 + (B_resampled.Bt.diff(tau))**2 + (B_resampled.Bn.diff(tau))**2)
-        B_resampled['DBtotal_squared'] = B_resampled['DBtotal']**2
+            PVI_dB                         = pd.DataFrame({     'DateTime' : B_resampled.index,
+                                                                'PVI'      : B_resampled['DBtotal']/denominator})
+            PVI_dB                         = PVI_dB.set_index('DateTime')
+            B_resampled['PVI_'+str(hmany)] = PVI_dB.values
+        
+            # Save RAM
+            del  B_resampled['DBtotal_squared'], B_resampled['DBtotal']
+        else:
+            B_resampled['B_modulus']           = np.sqrt((B_resampled.Br)**2 + (B_resampled.Bt)**2 + (B_resampled.Bn)**2)
+            B_resampled['DBtotal']             = B_resampled['B_modulus'].diff(tau)
+            B_resampled['DBtotal_squared']     = B_resampled['DBtotal']**2
 
-        denominator          = np.sqrt(B_resampled['DBtotal_squared'].rolling(int(av_window), center=True).mean())
+            denominator                        = np.sqrt(B_resampled['DBtotal_squared'].rolling(int(av_window), center=True).mean())
 
-        PVI_dB  = pd.DataFrame({'DateTime': B_resampled.index,
-                                     'PVI': B_resampled['DBtotal']/denominator})
-        PVI_dB   = PVI_dB.set_index('DateTime')
-        B_resampled['PVI_'+str(hmany)] = PVI_dB.values
-        del  B_resampled['DBtotal_squared'], B_resampled['DBtotal']
+            PVI_dB                             = pd.DataFrame({'DateTime': B_resampled.index,
+                                                                    'PVI': B_resampled['DBtotal']/denominator})
+            PVI_dB                             = PVI_dB.set_index('DateTime')
+            B_resampled['PVI_mod_'+str(hmany)] = PVI_dB.values
+            del  B_resampled['DBtotal_squared'], B_resampled['DBtotal'] , B_resampled['B_modulus']
     else:
-        B_resampled['PVI_'+str(hmany)] = np.nan*B_resampled.Br.values
+        if PVI_vec_or_mod:
+            B_resampled['PVI_'+str(hmany)] = np.nan*B_resampled.Br.values
+        else:
+            B_resampled['PVI_mod_'+str(hmany)] = np.nan*B_resampled.Br.values
         
     return B_resampled
-
-"""" Define function to estimate PVI timeseries, PVI in mod |B(t+τ)| -|B(t)| """
-def estimate_PVI_mod(B_resampled, hmany, di, Vsw,  hours ):
-
-    av_hours     = hours*3600
-    lag          = (B_resampled.index[1]-B_resampled.index[0])/np.timedelta64(1,'s') 
-    print(lag)
-    av_window    = int(av_hours/lag)
-    tau          = round((hmany*di)/(Vsw*lag))
-    if  tau>0:
-
-        ### Estimate PVI ###
-        # B_resampled['DBtotal'] = np.sqrt((B_resampled.Br.diff(tau))**2 + (B_resampled.Bt.diff(tau))**2 + (B_resampled.Bn.diff(tau))**2)
-        B_resampled['B_modulus'] = np.sqrt((B_resampled.Br)**2 + (B_resampled.Bt)**2 + (B_resampled.Bn)**2)
-        B_resampled['DBtotal'] = B_resampled['B_modulus'].diff(tau)
-        B_resampled['DBtotal_squared'] = B_resampled['DBtotal']**2
-
-        denominator          = np.sqrt(B_resampled['DBtotal_squared'].rolling(int(av_window), center=True).mean())
-
-        PVI_dB  = pd.DataFrame({'DateTime': B_resampled.index,
-                                     'PVI': B_resampled['DBtotal']/denominator})
-        PVI_dB   = PVI_dB.set_index('DateTime')
-        B_resampled['PVI_mod_'+str(hmany)] = PVI_dB.values
-        del  B_resampled['DBtotal_squared'], B_resampled['DBtotal'] , B_resampled['B_modulus']
-    else:
-        B_resampled['PVI_mod_'+str(hmany)] = np.nan*B_resampled.Br.values
-        
-    return B_resampled
-
-
 
 
 
@@ -445,7 +485,6 @@ def estimate_PSD_wavelets(dbx_par, dby_par, dbz_par, unique_par, freq_par, dt):
 from numba import prange
 @jit( parallel =True, nopython=True)
 def structure_functions_wavelets(db_x, db_y, db_z, angles,  scales, dt, max_moment, per_thresh, par_thresh):
-    
     
     tau = scales*dt
     m_vals = np.arange(1, max_moment+1)
@@ -560,91 +599,8 @@ def remove_big_gaps(big_gaps, B_resampled):
         B_resampled1 = B_resampled1.reindex(nindex)
     else:
         B_resampled1 = B_resampled
-        
-    
     
     return B_resampled1
-
-
-
-
-def estimate_wavelet_coeff(df_b, V_df,  dj ):
-    
-    """
-    Method to calculate the  1) wavelet coefficients in RTN 2) The scale dependent angle between Vsw and Β
-    
-    Parameters
-    ----------
-    df_b: dataframe
-        Magnetic field timeseries dataframe
-
-    mother_wave: str
-        The main waveform to transform data.
-        Available waves are:
-        'gaussian':
-        'paul': apply lomb method to compute PSD
-        'mexican_hat':
-    Returns
-    -------
-    freq : list
-        Frequency of the corresponding psd points.
-    psd : list
-        Power Spectral Density of the signal.
-    """
-    
-    # Turn columns of df into arrays   
-    Br, Bt, Bn                           =  df_b.Br.values, df_b.Bt.values, df_b.Bn.values
-
-    # Estimate magnitude of magnetic field
-    mag_orig                             =  np.sqrt(Br**2 + Bt**2 +  Bn**2 )
-    
-    # Estimate the magnitude of V vector
-    mag_v = np.sqrt(V_df['Vr']**2 + V_df['Vt']**2 + V_df['Vn']**2).values
-
-    #Estimate sampling time of timeseries
-    dt                                   =  (df_b.dropna().index.to_series().diff()/np.timedelta64(1, 's')).median()
-
-    angles   = pd.DataFrame()
-    VBangles = pd.DataFrame()
-    from scipy import signal
-    # Estimate PSDand scale dependent fluctuations
-    db_x, db_y, db_z, freqs, PSD, scales = trace_PSD_wavelet(Br, Bt, Bn, dt, dj,  mother_wave='morlet')
-
-
-    for ii in range(len(scales)):
-        #if np.mod(ii, 2)==0:
-           # print('Progress', 100*(ii/len(scales)))
-        try:
-            window, multiplic_fac, norm_factor= norm_factor_Gauss_window(scales[ii], dt)
-
-
-            # Estimate scale dependent background magnetic field using a Gaussian averaging window
-
-            res2_Br = (1/norm_factor)*signal.convolve(Br, multiplic_fac[::-1], 'same')
-            res2_Bt = (1/norm_factor)*signal.convolve(Bt, multiplic_fac[::-1], 'same')
-            res2_Bn = (1/norm_factor)*signal.convolve(Bn, multiplic_fac[::-1], 'same')
-
-
-            # Estimate magnitude of scale dependent background
-            mag_bac = np.sqrt(res2_Br**2 + res2_Bt**2 + res2_Bn**2 )
-
-            # Estimate angle
-            angles[str(ii+1)] = np.arccos(res2_Br/mag_bac) * 180 / np.pi
-
-            # Estimate VB angle
-            VBangles[str(ii+1)] = np.arccos((V_df['Vr']*res2_Br + V_df['Vt']*res2_Bt + V_df['Vn']*res2_Bn)/(mag_bac*mag_v)) * 180 / np.pi
-
-            # Restric to 0< Θvb <90
-            VBangles[str(ii+1)][VBangles[str(ii+1)]>90] = 180 - VBangles[str(ii+1)][VBangles[str(ii+1)]>90]
-
-            # Restric to 0< Θvb <90
-            angles[str(ii+1)][angles[str(ii+1)]>90] = 180 - angles[str(ii+1)][angles[str(ii+1)]>90]
-        except:
-             pass
-
-    return db_x, db_y, db_z, angles, VBangles, freqs, PSD, scales
-
-
 
 def estimate_WT_distribution(big_gaps, B_resampled, PVI_thresholds, hmany):
     """ ESTIMATE WT DISTRIBUTIONS, remove the gaps indentified earlier """ 
@@ -676,8 +632,6 @@ def estimate_WT_distribution(big_gaps, B_resampled, PVI_thresholds, hmany):
             
         WT['PVI_'+str(k)] = thresh
             
-    
-    
     return WT
 
 
