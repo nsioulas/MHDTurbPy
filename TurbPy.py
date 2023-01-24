@@ -410,38 +410,52 @@ def estimate_PVI(B_resampled, hmany, di, Vsw,  hours, PVI_vec_or_mod='vec'):
     av_hours                           = hours*3600
     lag                                = (B_resampled.index[1]-B_resampled.index[0])/np.timedelta64(1,'s') 
     av_window                          = int(av_hours/lag)
-    tau                                = round((hmany*di)/(Vsw*lag))
-    if  tau>0:
-        if PVI_vec_or_mod:
-            ### Estimate PVI ###
-            B_resampled['DBtotal']         = np.sqrt((B_resampled.Br.diff(tau))**2 + (B_resampled.Bt.diff(tau))**2 + (B_resampled.Bn.diff(tau))**2)
-            B_resampled['DBtotal_squared'] = B_resampled['DBtotal']**2
-            denominator                    = np.sqrt(B_resampled['DBtotal_squared'].rolling(int(av_window), center=True).mean())
+    
+    
 
-            PVI_dB                         = pd.DataFrame({     'DateTime' : B_resampled.index,
-                                                                'PVI'      : B_resampled['DBtotal']/denominator})
-            PVI_dB                         = PVI_dB.set_index('DateTime')
-            B_resampled['PVI_'+str(hmany)] = PVI_dB.values
-        
-            # Save RAM
-            del  B_resampled['DBtotal_squared'], B_resampled['DBtotal']
+    for kk in range(len(hmany)):
+        tau                             = round((hmany[kk]*di)/(Vsw*lag))
+
+        if tau<1:
+            print('The value of hmany you chose is too low. You will have to use higher resol mag data!')
+            while tau<1:
+                hmany[kk] = hmany[kk] + 0.01*hmany[kk]
+                tau       = round((hmany[kk]*di)/(Vsw*lag))
+
+            print('The value was set to the minimum possible, hmany=',hmany[kk]) 
+
+
+        if  tau>0:
+            if PVI_vec_or_mod:
+                ### Estimate PVI ###
+                B_resampled['DBtotal']         = np.sqrt((B_resampled.Br.diff(tau))**2 + (B_resampled.Bt.diff(tau))**2 + (B_resampled.Bn.diff(tau))**2)
+                B_resampled['DBtotal_squared'] = B_resampled['DBtotal']**2
+                denominator                    = np.sqrt(B_resampled['DBtotal_squared'].rolling(int(av_window), center=True).mean())
+
+                PVI_dB                         = pd.DataFrame({     'DateTime' : B_resampled.index,
+                                                                    'PVI'      : B_resampled['DBtotal']/denominator})
+                PVI_dB                         = PVI_dB.set_index('DateTime')
+                B_resampled['PVI_'+str(hmany[kk])] = PVI_dB.values
+
+                # Save RAM
+                del  B_resampled['DBtotal_squared'], B_resampled['DBtotal']
+            else:
+                B_resampled['B_modulus']           = np.sqrt((B_resampled.Br)**2 + (B_resampled.Bt)**2 + (B_resampled.Bn)**2)
+                B_resampled['DBtotal']             = B_resampled['B_modulus'].diff(tau)
+                B_resampled['DBtotal_squared']     = B_resampled['DBtotal']**2
+
+                denominator                        = np.sqrt(B_resampled['DBtotal_squared'].rolling(int(av_window), center=True).mean())
+
+                PVI_dB                             = pd.DataFrame({'DateTime': B_resampled.index,
+                                                                        'PVI': B_resampled['DBtotal']/denominator})
+                PVI_dB                             = PVI_dB.set_index('DateTime')
+                B_resampled['PVI_mod_'+str(hmany[kk])] = PVI_dB.values
+                del  B_resampled['DBtotal_squared'], B_resampled['DBtotal'] , B_resampled['B_modulus']
         else:
-            B_resampled['B_modulus']           = np.sqrt((B_resampled.Br)**2 + (B_resampled.Bt)**2 + (B_resampled.Bn)**2)
-            B_resampled['DBtotal']             = B_resampled['B_modulus'].diff(tau)
-            B_resampled['DBtotal_squared']     = B_resampled['DBtotal']**2
-
-            denominator                        = np.sqrt(B_resampled['DBtotal_squared'].rolling(int(av_window), center=True).mean())
-
-            PVI_dB                             = pd.DataFrame({'DateTime': B_resampled.index,
-                                                                    'PVI': B_resampled['DBtotal']/denominator})
-            PVI_dB                             = PVI_dB.set_index('DateTime')
-            B_resampled['PVI_mod_'+str(hmany)] = PVI_dB.values
-            del  B_resampled['DBtotal_squared'], B_resampled['DBtotal'] , B_resampled['B_modulus']
-    else:
-        if PVI_vec_or_mod:
-            B_resampled['PVI_'+str(hmany)] = np.nan*B_resampled.Br.values
-        else:
-            B_resampled['PVI_mod_'+str(hmany)] = np.nan*B_resampled.Br.values
+            if PVI_vec_or_mod:
+                B_resampled['PVI_'+str(hmany[kk])] = np.nan*B_resampled.Br.values
+            else:
+                B_resampled['PVI_mod_'+str(hmany[kk])] = np.nan*B_resampled.Br.values
         
     return B_resampled
 
