@@ -30,24 +30,16 @@ If you have any questions, please don't hesitate to reach out to nsioulas@g.ucla
 If you use this work, please cite:
 
 ```
-@misc{https://doi.org/10.48550/arxiv.2209.02451,
-  doi = {10.48550/ARXIV.2209.02451},
-  
-  url = {https://arxiv.org/abs/2209.02451},
-  
-  author = {Sioulas, Nikos and Huang, Zesen and Shi, Chen and Velli, Marco and Tenerani, Anna and Vlahos, Loukas and Bowen, Trevor A. and Bale, Stuart D. and Bonnell, J. W. and Harvey, P. R. and Larson, Davin and Pulupa, arc and Livi, Roberto and Woodham, L. D. and Horbury, T. S. and Stevens, Michael L. and de Wit, T. Dudok and MacDowall, R. J. and Malaspina, David M. and Goetz, K. and Huang, Jia and Kasper, Justin and Owen, Christopher J. and Maksimović, Milan and Louarn, P. and Fedorov, A.},
-  
-  keywords = {Solar and Stellar Astrophysics (astro-ph.SR), Plasma Physics (physics.plasm-ph), Space Physics (physics.space-ph), FOS: Physical sciences, FOS: Physical sciences},
-  
-  title = {Magnetic field spectral evolution in the inner heliosphere},
-  
-  publisher = {arXiv},
-  
-  year = {2022},
-  
-  copyright = {Creative Commons Attribution 4.0 International}
+@software{nikos_sioulas_2023_7572468,
+  author       = {Nikos Sioulas},
+  title        = {MHDTurbPy},
+  month        = jan,
+  year         = 2023,
+  publisher    = {Zenodo},
+  version      = {0.1.0},
+  doi          = {10.5281/zenodo.7572468},
+  url          = {https://doi.org/10.5281/zenodo.7572468}
 }
-
 ```
 
 
