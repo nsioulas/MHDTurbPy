@@ -6,7 +6,7 @@ A collection of functions for downloading, cleaning, and analyzing data from:
  - Parker Solar Probe
  - Solar Orbiter 
  - Helios
- - Ulysses missions. 
+ - Ulysses
 
 Additional functions and documentation will be added soon.
 
