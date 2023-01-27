@@ -1,11 +1,11 @@
-![pfsspy](logo/final_2.png "turb")
+![pfsspy](logo/final.png "turb")
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.7572468.svg)]([https://zenodo.org/badge/latestdoi/163663713](https://doi.org/10.5281/zenodo.7572468))
 
 
 
 # MHDTurbPy
-A collection of functions for downloading, cleaning, and analyzing data from the Parker Solar Probe, \newpage 
+A collection of functions for downloading, cleaning, and analyzing data from the Parker Solar Probe, 
 Solar Orbiter, Helios, and Ulysses missions. Additional functions and documentation will be added soon.
 
 
