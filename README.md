@@ -5,7 +5,7 @@
 
 
 # MHDTurbPy
-A collection of functions for downloading, cleaning, and analyzing data from the Parker Solar Probe, \\ 
+A collection of functions for downloading, cleaning, and analyzing data from the Parker Solar Probe, \newpage 
 Solar Orbiter, Helios, and Ulysses missions. Additional functions and documentation will be added soon.
 
 
