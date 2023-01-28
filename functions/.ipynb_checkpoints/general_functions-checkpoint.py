@@ -317,7 +317,7 @@ def find_duration(df,what,theta1,theta2):
 
 
 @jit(nopython=True, parallel=True)      
-def smoothing_function(x,y,mean=True,  window=2, pad = 1):
+def smoothing_function(x,y, mean=True,  window=2, pad = 1):
     def bisection(array,value):
         '''Given an ``array`` , and given a ``value`` , returns an index j such that ``value`` is between array[j]
         and array[j+1]. ``array`` must be monotonic increasing. j=-1 or j=len(array) is returned
@@ -1593,6 +1593,13 @@ def closest_argmin(A, B):
     return sidx_B[sorted_idx-mask]
 
 
+def find_ind_of_closest_dates (df, dates):
+    indices = []
+    for i, date in enumerate(dates):
+        indices.append(df.index.unique().get_loc(date, method='nearest'))
+        
+    return indices
+
 def find_closest_values_of_2_arrays(a, b):
     dup = np.searchsorted(a, b)
     uni = np.unique(dup)
@@ -1866,7 +1873,8 @@ def visualize_downloaded_intervals(
 
     # Init figure
     fig, axs        = plt.subplots(numb_subplots, sharex=True,figsize=(30,15), gridspec_kw = {'wspace':0.05, 'hspace':0.05})
-    minor_tick_params, major_tick_params = inset_axis_params(size = inset_f_size)
+    
+
 
     #Now plot
     """1st plot"""
