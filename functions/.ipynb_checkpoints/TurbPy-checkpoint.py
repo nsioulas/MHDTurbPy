@@ -23,8 +23,8 @@ from pyspedas.utilities import time_string
 from pytplot import get_data
 
 
-sys.path.insert(0,'/Users/nokni/work/MHDTurbPy/')
-import functions as func
+sys.path.insert(0,'/Users/nokni/work/MHDTurbPy/functions')
+import general_functions as func
 
 def trace_PSD_wavelet(x, y, z, dt, dj,  mother_wave='morlet'):
     """

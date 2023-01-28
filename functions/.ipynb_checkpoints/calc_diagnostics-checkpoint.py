@@ -19,9 +19,9 @@ from pyspedas.utilities import time_string
 from pytplot import get_data
 
 # Import TurbPy
-sys.path.insert(1,'/Users/nokni/work/MHDTurbPy')
+sys.path.insert(1,'/Users/nokni/work/MHDTurbPy/functions')
 import TurbPy as turb
-import functions as func
+import general_functions as func
 import LoadData
 
 
