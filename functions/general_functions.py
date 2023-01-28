@@ -1593,6 +1593,13 @@ def closest_argmin(A, B):
     return sidx_B[sorted_idx-mask]
 
 
+def find_ind_of_closest_dates (df, dates):
+    indices = []
+    for i, date in enumerate(dates):
+        indices.append(df.index.unique().get_loc(date, method='nearest'))
+        
+    return indices
+
 def find_closest_values_of_2_arrays(a, b):
     dup = np.searchsorted(a, b)
     uni = np.unique(dup)
