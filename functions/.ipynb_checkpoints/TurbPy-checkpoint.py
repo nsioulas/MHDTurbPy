@@ -18,6 +18,7 @@ import traceback
 # make sure to use the local spedas
 import sys
 sys.path.insert(0, os.path.join(os.getcwd(), 'pyspedas'))
+
 import pyspedas
 from pyspedas.utilities import time_string
 from pytplot import get_data
