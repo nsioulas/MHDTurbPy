@@ -13,13 +13,16 @@ import datetime
 
 
 # SPEDAS API
-sys.path.insert(0,"/Users/nokni/work/MHDTurbPy/pyspedas")
+
+# SPEDAS API
+# make sure to use the local spedas
+sys.path.insert(0, os.path.join(os.getcwd(), 'pyspedas'))
 import pyspedas
 from pyspedas.utilities import time_string
 from pytplot import get_data
 
 # Import TurbPy
-sys.path.insert(1,'/Users/nokni/work/MHDTurbPy/functions')
+sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
 import TurbPy as turb
 import general_functions as func
 import LoadData
