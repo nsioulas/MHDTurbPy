@@ -18,9 +18,23 @@ Additional functions and documentation will be added soon.
 # Installation
   - create conda enviroment
   
+ Install virtualenv using pip:
 ```bash
-conda env create -n MHDTurbPy --file /path/to/environment.yml
-```
+ pip install virtualenv
+ ```
+Create a new virtual environment: 
+```bash
+virtualenv MHDTurbPy
+ ```
+ Activate the virtual environment: 
+ ```bash
+ source MHDTurbPy/bin/activate
+ ```
+
+Install the required packages from your environment file: 
+```bash
+pip install -r environment.txt
+ ```
 
  - Download the package
 ``` bash
