@@ -1,3 +1,9 @@
+"""
+Module providing Superposed epoch analysis functionality.
+
+"""
+
+
 import pandas as pd
 import numpy as np
 

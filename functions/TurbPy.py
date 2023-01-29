@@ -18,7 +18,6 @@ import traceback
 # make sure to use the local spedas
 import sys
 sys.path.insert(0, os.path.join(os.getcwd(), 'pyspedas'))
-
 import pyspedas
 from pyspedas.utilities import time_string
 from pytplot import get_data
@@ -26,6 +25,15 @@ from pytplot import get_data
 
 sys.path.insert(0,'/Users/nokni/work/MHDTurbPy/functions')
 import general_functions as func
+
+
+
+
+mother_wave_dict = {
+    'gaussian': wavelet.DOG(),
+    'paul': wavelet.Paul(),
+    'mexican_hat': wavelet.MexicanHat()
+}
 
 def trace_PSD_wavelet(x, y, z, dt, dj,  mother_wave='morlet'):
     """
@@ -106,14 +114,6 @@ def TracePSD(x, y, z , dt, remove_mean=False):
     idx   = np.argsort(freqs)
     
     return freqs[idx], B_pow[idx]
-
-
-mother_wave_dict = {
-    'gaussian': wavelet.DOG(),
-    'paul': wavelet.Paul(),
-    'mexican_hat': wavelet.MexicanHat()
-}
-
 
 
 
@@ -309,6 +309,7 @@ def hampel_filter(input_series, window_size, n_sigmas=3):
     
     return new_series, indices
 
+
 @njit(nogil=True)
 def norm_factor_Gauss_window(scales, dt, lambdaa):
     
@@ -322,7 +323,7 @@ def norm_factor_Gauss_window(scales, dt, lambdaa):
 
 
 def estimate_wavelet_coeff(B_df, V_df,  dj , lambdaa=3):
-    
+
     """
     Method to calculate the  1) wavelet coefficients in RTN 2) The scale dependent angle between Vsw and Β
     
@@ -424,7 +425,6 @@ def estimate_PVI(B_resampled, hmany, di, Vsw,  hours, PVI_vec_or_mod='vec'):
                 tau       = round((hmany[kk]*di)/(Vsw*lag))
 
             print('The value was set to the minimum possible, hmany=',hmany[kk]) 
-
 
         if  tau>0:
             if PVI_vec_or_mod:
@@ -534,7 +534,7 @@ def structure_functions_wavelets(db_x, db_y, db_z, angles,  scales, dt, max_mome
 
 
 
-@jit( parallel =True)
+#@jit( parallel =True)
 def estimate_PSD_wavelets_all_intervals(db_x, db_y, db_z, angles, freqs,   dt,  per_thresh, par_thresh):
     """
     Method to calculate the par and perp Power Spectral Density (PSD) of a signal using wavelets 
@@ -570,7 +570,7 @@ def estimate_PSD_wavelets_all_intervals(db_x, db_y, db_z, angles, freqs,   dt,  
     PSD_par = np.zeros(len(freqs))
     PSD_per = np.zeros(len(freqs)) 
 
-    for i in prange(np.shape(angles)[1]):
+    for i in range(np.shape(angles)[1]):
 
         index_per = (np.where(angles.T[i]>per_thresh)[0]).astype(np.int64)
         index_par = (np.where(angles.T[i]<par_thresh)[0]).astype(np.int64)
@@ -749,21 +749,6 @@ def estimate_kurtosis_with_rand_samples(hmany_stds, di, vsw, xvals, yvals, nxbin
     return xvalues, kurt, counts, Sf1_f, Sf2_f, Sf3_f, Sf4_f, Sf5_f, Sf6_f
 
 
-
-# 10) Alfvenicity functions
-@njit(parallel=True)
-def func_DB_denom(ar,at,an,tau):
-    DBtotal= np.zeros((len(ar)))
-    for i in prange(tau,len(ar),1):
-        DBtotal[i] = np.sqrt((ar[i]- ar[i -tau])**2 + (at[i]- at[i - tau])**2 + (an[i]- an[i-tau])**2)
-    return DBtotal
-
-@njit(parallel=True)
-def func_DB_numer(B,tau):
-    DBtotal= np.zeros((len(B)))
-    for i in prange(tau,len(B),1):
-        DBtotal[i] = abs(B[i]-B[i-tau])
-    return DBtotal
 
 
 def K41_linear_scaling(max_qorder):
