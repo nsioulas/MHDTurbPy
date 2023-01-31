@@ -224,6 +224,9 @@ def pdf(val, bins, loglog, density,scott_rule =False):
     errout=[]
     countsout=[]
 
+    val = np.array(val)
+    val = val[np.abs(val)<1e15]
+
     if loglog ==1:
         binsa = np.logspace(np.log10(min(val)),np.log10(max(val)),bins)
     else:
