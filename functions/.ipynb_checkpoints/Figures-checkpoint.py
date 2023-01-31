@@ -370,14 +370,14 @@ def initializeFigure_1by_2(xlabel, ylabel, scale= 'loglog',width='1col', height=
     else:
         figHeight = height * cm_to_inch # height [inch]
      
-    if share_y:
+   # if share_y:
 
         # Create figure with right resolution for publication
-        fig, axes = plt.subplots(1,2, figsize=(5*figWidth,4*figHeight), gridspec_kw = {'wspace':0.1, 'hspace':0.08},sharex =True, sharey='row',  dpi=300)
-    else:
+    fig, axes = plt.subplots(1,2, figsize=(5*figWidth,4*figHeight), gridspec_kw = {'wspace':0.1, 'hspace':0.08},sharex =True, sharey='row',  dpi=300)
+   # else:
 
         # Create figure with right resolution for publication
-        fig, axes = plt.subplots(1,2, figsize=(figWidth, figHeight), gridspec_kw = {'wspace':0.1, 'hspace':0.08},  dpi=300)
+        #fig, axes = plt.subplots(1,2, figsize=(figWidth, figHeight), gridspec_kw = {'wspace':0.1, 'hspace':0.08},  dpi=300)
     for i in range(2):
 
         ax =axes[i]

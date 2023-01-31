@@ -314,7 +314,7 @@ def hampel_filter(input_series, window_size, n_sigmas=3):
 def norm_factor_Gauss_window(scales, dt, lambdaa):
     
     s             = scales*dt
-    numer         = np.arange(-3*s, 3*s+dt, dt)
+    numer         = np.arange(-3*s, 3*s, dt)
     multiplic_fac = np.exp(-(numer)**2/(2*(lambdaa**2)*(s**2)))
     norm_factor   = np.sum(multiplic_fac)
     window        = len(multiplic_fac)
@@ -380,9 +380,9 @@ def estimate_wavelet_coeff(B_df, V_df,  dj , lambdaa=3):
 
             # Estimate scale dependent background magnetic field using a Gaussian averaging window
 
-            res2_Br = (1/norm_factor)*signal.convolve(Br, multiplic_fac[::-1], 'same')
-            res2_Bt = (1/norm_factor)*signal.convolve(Bt, multiplic_fac[::-1], 'same')
-            res2_Bn = (1/norm_factor)*signal.convolve(Bn, multiplic_fac[::-1], 'same')
+            res2_Br = (1/norm_factor)*signal.convolve(Br, multiplic_fac, 'same')
+            res2_Bt = (1/norm_factor)*signal.convolve(Bt, multiplic_fac, 'same')
+            res2_Bn = (1/norm_factor)*signal.convolve(Bn, multiplic_fac, 'same')
 
 
             # Estimate magnitude of scale dependent background
