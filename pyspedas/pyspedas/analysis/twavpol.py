@@ -86,27 +86,27 @@ if np.__version__ < '1.20':
 
 def atan2c(zx, zy):
     """Define arctan2 with complex numbers."""
-    if np.isreal(zx) and np.isreal(zy):
-        res = np.arctan2(zx, zy)
-    else:
-        res = -1j * np.log((zx + 1j*zy)/np.sqrt(zx**2 + zy**2))
-    return res
+    return (
+        np.arctan2(zx, zy)
+        if np.isreal(zx) and np.isreal(zy)
+        else -1j * np.log((zx + 1j * zy) / np.sqrt(zx**2 + zy**2))
+    )
 
 
 def wpol_ematspec(i1, i2, i3, i4, aa, nosmbins, matspec):
     """Calculate ematspec array."""
     id0 = (i2 - int((nosmbins-1)/2))
     id1 = (i2 + int((nosmbins-1)/2)) + 1
-    res = np.sum(aa[0:nosmbins] * matspec[i1, id0:id1, i3, i4])
-    return res
+    return np.sum(aa[:nosmbins] * matspec[i1, id0:id1, i3, i4])
 
 
 def wpol_matsqrd(i1, i2, i3, ematspec):
     """Calculate matsqrd array."""
-    res = (ematspec[i1, :, i2, 0] * ematspec[i1, :, 0, i3] +
-           ematspec[i1, :, i2, 1] * ematspec[i1, :, 1, i3] +
-           ematspec[i1, :, i2, 2] * ematspec[i1, :, 2, i3])
-    return res
+    return (
+        ematspec[i1, :, i2, 0] * ematspec[i1, :, 0, i3]
+        + ematspec[i1, :, i2, 1] * ematspec[i1, :, 1, i3]
+        + ematspec[i1, :, i2, 2] * ematspec[i1, :, 2, i3]
+    )
 
 
 def wpol_helicity(nosteps, nopfft, KK, ematspec, waveangle):

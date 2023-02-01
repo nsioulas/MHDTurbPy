@@ -167,44 +167,44 @@ def rdm_postprocessing(files):
     Energy[:] = 2.5
 
     prefix_project = 'akb_'
-    prefix_descriptor = 'rdm_'
-    prefix = prefix_project + prefix_descriptor
-
-    store_data(prefix_project+'L', data={'x': unix_times, 'y': L})
-    store_data(prefix_project+'INV', data={'x': unix_times, 'y': INV})
-    store_data(prefix_project+'FMLAT', data={'x': unix_times, 'y': FMLAT})
-    store_data(prefix_project+'MLAT', data={'x': unix_times, 'y': MLAT})
-    store_data(prefix_project+'MLT', data={'x': unix_times, 'y': MLT})
-    store_data(prefix_project+'ALT', data={'x': unix_times, 'y': ALT})
-    store_data(prefix_project+'GLAT', data={'x': unix_times, 'y': GLAT})
-    store_data(prefix_project+'GLON', data={'x': unix_times, 'y': GLON})
+    store_data(f'{prefix_project}L', data={'x': unix_times, 'y': L})
+    store_data(f'{prefix_project}INV', data={'x': unix_times, 'y': INV})
+    store_data(f'{prefix_project}FMLAT', data={'x': unix_times, 'y': FMLAT})
+    store_data(f'{prefix_project}MLAT', data={'x': unix_times, 'y': MLAT})
+    store_data(f'{prefix_project}MLT', data={'x': unix_times, 'y': MLT})
+    store_data(f'{prefix_project}ALT', data={'x': unix_times, 'y': ALT})
+    store_data(f'{prefix_project}GLAT', data={'x': unix_times, 'y': GLAT})
+    store_data(f'{prefix_project}GLON', data={'x': unix_times, 'y': GLON})
+    prefix = f'{prefix_project}rdm_'
     store_data(prefix+'FEIO', data={'x': unix_times, 'y': RDM_E3})
     store_data(prefix+'FEIO_Energy', data={'x': unix_times, 'y': Energy})
 
     options(prefix+'FEIO', 'spec', True)
 
-    options(prefix_project+'L', 'ytitle', 'L-value')
-    options(prefix_project+'INV', 'ytitle', 'Invariant Latitude [deg]')
-    options(prefix_project+'FMLAT', 'ytitle', 'Footprint Latitude [deg]')
-    options(prefix_project+'MLAT', 'ytitle', 'Magnetic Latitude [deg]')
-    options(prefix_project+'MLT', 'ytitle', 'Magnetic Local Time [hour]')
-    options(prefix_project+'ALT', 'ytitle', 'Altitude [km]')
-    options(prefix_project+'GLAT', 'ytitle', 'Geographic Latitude [deg]')
-    options(prefix_project+'GLON', 'ytitle', 'Geographic Longitude [deg]')
+    options(f'{prefix_project}L', 'ytitle', 'L-value')
+    options(f'{prefix_project}INV', 'ytitle', 'Invariant Latitude [deg]')
+    options(f'{prefix_project}FMLAT', 'ytitle', 'Footprint Latitude [deg]')
+    options(f'{prefix_project}MLAT', 'ytitle', 'Magnetic Latitude [deg]')
+    options(f'{prefix_project}MLT', 'ytitle', 'Magnetic Local Time [hour]')
+    options(f'{prefix_project}ALT', 'ytitle', 'Altitude [km]')
+    options(f'{prefix_project}GLAT', 'ytitle', 'Geographic Latitude [deg]')
+    options(f'{prefix_project}GLON', 'ytitle', 'Geographic Longitude [deg]')
     options(prefix+'FEIO', 'ytitle', 'Omni-directional Integral Electron Flux')
     options(prefix+'FEIO', 'ysubtitle', '[/cm^22 sec str]')
     options(prefix+'FEIO_Energy', 'ytitle', 'Elctron energy [MeV]')
 
-    return [prefix_project+'L',
-            prefix_project+'INV',
-            prefix_project+'FMLAT',
-            prefix_project+'MLAT',
-            prefix_project+'MLT',
-            prefix_project+'ALT',
-            prefix_project+'GLAT',
-            prefix_project+'GLON',
-            prefix+'FEIO',
-            prefix+'FEIO_Energy']
+    return [
+        f'{prefix_project}L',
+        f'{prefix_project}INV',
+        f'{prefix_project}FMLAT',
+        f'{prefix_project}MLAT',
+        f'{prefix_project}MLT',
+        f'{prefix_project}ALT',
+        f'{prefix_project}GLAT',
+        f'{prefix_project}GLON',
+        prefix + 'FEIO',
+        prefix + 'FEIO_Energy',
+    ]
 
 
 def orb(trange=['2012-10-01', '2012-10-02'],
@@ -273,9 +273,8 @@ def orb_postprocessing(files):
     """
     Load the orbit CSV files and create the tplot variables
     """
-    prefix_project = 'akb_'
     prefix_descriptor = 'orb_'
-    prefix = prefix_project + prefix_descriptor
+    prefix = f'akb_{prefix_descriptor}'
 
     cols = ['pass','ut', 'ksc_azm', 'ksc_elv', 'ksc_dis', 'ksc_ang', 'syo_azm', 'syo_elv', 'syo_dis', 'syo_ang',
             'pra_azm', 'pra_elv', 'pra_dis', 'pra_ang', 'esr_azm', 'esr_elv', 'esr_dis', 'esr_ang', 'gclat','gclon',
@@ -284,7 +283,22 @@ def orb_postprocessing(files):
 
     data = load_csv_file(files, cols=cols)
     values = data.to_numpy()
-    unix_times = time_double([date[2:4] + '-' + date[4:6] + '-' + date[0:2] + '/' + date[6:8] + ':' + date[8:10] + ':' + date[10:12] for date in data['ut']])
+    unix_times = time_double(
+        [
+            date[2:4]
+            + '-'
+            + date[4:6]
+            + '-'
+            + date[:2]
+            + '/'
+            + date[6:8]
+            + ':'
+            + date[8:10]
+            + ':'
+            + date[10:12]
+            for date in data['ut']
+        ]
+    )
 
     km_in_re = 6374.4
 
@@ -340,5 +354,12 @@ def load_csv_file(filenames, cols=None):
     """
     if not isinstance(filenames, list):
         filenames = [filenames]
-    df = pd.concat((pd.read_csv(f, header=0, delim_whitespace=True, dtype=str, names=cols) for f in filenames), ignore_index=True)
-    return df
+    return pd.concat(
+        (
+            pd.read_csv(
+                f, header=0, delim_whitespace=True, dtype=str, names=cols
+            )
+            for f in filenames
+        ),
+        ignore_index=True,
+    )

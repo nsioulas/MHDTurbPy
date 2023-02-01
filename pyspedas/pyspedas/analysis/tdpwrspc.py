@@ -54,23 +54,27 @@ def tdpwrspc(varname, newname=None, nboxpoints=256, nshiftpoints=128,
 
     """
     if newname is None:
-        newname = varname + '_dpwrspc'
+        newname = f'{varname}_dpwrspc'
 
     data_tuple = get_data(varname)
 
     if data_tuple is not None:
         if data_tuple[1][0].shape != ():
             split_vars = split_vec(varname)
-            out_vars = []
-            for var in split_vars:
-                out_vars.append(tdpwrspc(var, newname=var + '_dpwrspc',
-                                         nboxpoints=nboxpoints,
-                                         nshiftpoints=nshiftpoints,
-                                         binsize=binsize,
-                                         nohanning=nohanning,
-                                         noline=noline, notperhz=notperhz,
-                                         notmvariance=notmvariance))
-            return out_vars
+            return [
+                tdpwrspc(
+                    var,
+                    newname=f'{var}_dpwrspc',
+                    nboxpoints=nboxpoints,
+                    nshiftpoints=nshiftpoints,
+                    binsize=binsize,
+                    nohanning=nohanning,
+                    noline=noline,
+                    notperhz=notperhz,
+                    notmvariance=notmvariance,
+                )
+                for var in split_vars
+            ]
         else:
             pwrspc = dpwrspc(data_tuple[0], data_tuple[1],
                              nboxpoints=nboxpoints,

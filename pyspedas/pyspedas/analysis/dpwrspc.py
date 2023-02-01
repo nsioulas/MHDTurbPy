@@ -96,7 +96,7 @@ def dpwrspc(time, quantity, nboxpoints=256, nshiftpoints=128, binsize=3,
     dps = np.zeros([nspectra, nfreqs])
     fdps = np.zeros([nspectra, nfreqs])
 
-    for nthspectrum in range(0, nspectra):
+    for nthspectrum in range(nspectra):
         nbegin = int(nthspectrum*nshiftpnts)
         nend = nbegin + nboxpnts
 
@@ -123,8 +123,8 @@ def dpwrspc(time, quantity, nboxpoints=256, nshiftpoints=128, binsize=3,
             if bign % 2 != 0:
                 logging.warning('dpwrspc: needs an even number of data points,\
                       dropping last point...')
-                t = t[0:bign-1]
-                x = x[0:bign-1]
+                t = t[:bign-1]
+                x = x[:bign-1]
                 bign = bign - 1
 
             n_tm = len(t)
@@ -132,12 +132,8 @@ def dpwrspc(time, quantity, nboxpoints=256, nshiftpoints=128, binsize=3,
             # time variance can break power spectrum
             # this keyword skips over those gaps
             if notmvariance and n_tm > 1:
-                if tm_sensitivity is not None:
-                    tmsn = tm_sensitivity
-                else:
-                    tmsn = 100.0
-
-                tdiff = t[1:n_tm]-t[0:n_tm-1]
+                tmsn = tm_sensitivity if tm_sensitivity is not None else 100.0
+                tdiff = t[1:n_tm] - t[:n_tm-1]
                 med_diff = np.median(tdiff)
 
                 idx = np.where(np.abs(tdiff/med_diff-1) > 1.0/tmsn)
@@ -151,7 +147,7 @@ def dpwrspc(time, quantity, nboxpoints=256, nshiftpoints=128, binsize=3,
             # following Numerical recipes in Fortran, p. 421, sort of...
             # (actually following the IDL implementation)
             k = np.array(range(int(bign/2)+1))
-            tres = np.median(t[1:len(t)] - t[0:len(t)-1])
+            tres = np.median(t[1:] - t[:-1])
             fk = k/(bign*tres)
 
             xs2 = np.abs(np.fft.fft(x))**2

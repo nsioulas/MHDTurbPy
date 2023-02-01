@@ -96,7 +96,7 @@ else:
         logging_level = logging.DEBUG
     elif logging_level == 'info':
         logging_level = logging.INFO
-    elif logging_level == 'warn' or logging_level == 'warning':
+    elif logging_level in ['warn', 'warning']:
         logging_level = logging.WARNING
     elif logging_level == 'error':
         logging_level = logging.ERROR

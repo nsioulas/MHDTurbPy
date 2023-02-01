@@ -15,16 +15,8 @@ def minvar_matrix_make(in_var_name,
     """
     data = get_data(in_var_name)
 
-    if tstart is None:
-        start_d = data.times[0]
-    else:
-        start_d = time_double(tstart)
-
-    if tstop is None:
-        stop_d = data.times[-1]
-    else:
-        stop_d = time_double(tstop)
-
+    start_d = data.times[0] if tstart is None else time_double(tstart)
+    stop_d = data.times[-1] if tstop is None else time_double(tstop)
     if twindow is None:
         twindow = stop_d - start_d
 
@@ -34,16 +26,12 @@ def minvar_matrix_make(in_var_name,
         tslide = twindow / 2.0
 
     if newname is None:
-        newname = in_var_name + '_mva_mat'
+        newname = f'{in_var_name}_mva_mat'
 
     current_d = start_d
 
     # estimate the number of output matrices to generate temporary storage
-    if tslide != 0:
-        o_num = (stop_d - start_d) / tslide
-    else:
-        o_num = 1
-
+    o_num = (stop_d - start_d) / tslide if tslide != 0 else 1
     o_num = int(o_num)
 
     o_times = np.zeros(o_num)
@@ -52,9 +40,7 @@ def minvar_matrix_make(in_var_name,
 
     i = 0
 
-    while current_d + twindow <= stop_d + twindow:
-        if i >= o_num:
-            break
+    while current_d + twindow <= stop_d + twindow and i < o_num:
         # output time for the mva matrix is the midpoint time for the interval
         o_times[i] = current_d + twindow / 2.0
 
@@ -92,9 +78,7 @@ def minvar_matrix_make(in_var_name,
 
     out_vars = []
 
-    saved = store_data(newname, data=o_d)
-
-    if saved:
+    if saved := store_data(newname, data=o_d):
         out_vars.append(newname)
 
     return out_vars

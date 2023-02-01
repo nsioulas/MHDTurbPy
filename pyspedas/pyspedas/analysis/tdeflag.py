@@ -73,4 +73,4 @@ def tdeflag(names, method=None, new_names=None, suffix=None,
                 new_data.append(data[j])
         pytplot.store_data(n_names[i], data={'x': new_time, 'y': new_data})
 
-        logging.info('tdeflag was applied to: ' + n_names[i])
+        logging.info(f'tdeflag was applied to: {n_names[i]}')
