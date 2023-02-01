@@ -48,13 +48,8 @@ def LoadTimeSeriesWrapper(
     # change to root dir, mainly for spedas
     if 'rootdir' in settings.keys():
         os.chdir(settings['rootdir'])
-    else:
-        pass
-
     # clean settings
-    if settings:
-        pass
-    else:
+    if not settings:
         settings = {}
 
     # set verbose
@@ -63,12 +58,12 @@ def LoadTimeSeriesWrapper(
     else:
         verbose = True
         settings['verbose'] = verbose
-    
+
     # print settings
     if verbose:
         print("Current Settings...")
         for k, v in settings.items():
-            print("{} : {}".format(k, v))
+            print(f"{k} : {v}")
 
     if sc == 0:
         df, misc = LoadTimeSeriesPSP(
@@ -103,12 +98,12 @@ def LoadTimeSeriesWrapper(
     else:
         raise ValueError("sc=%d not supported!" %(sc))
 
-    
+
     # print settings
     if verbose:
         print("Final Settings...")
         for k, v in settings.items():
-            print("{} : {}".format(k, v))
+            print(f"{k} : {v}")
 
     return df, misc
 
@@ -226,9 +221,7 @@ def LoadTimeSeriesSOLO(start_time, end_time, settings = {}, credentials = None):
 
 
     # check local directory
-    if os.path.exists("./solar_orbiter_data"):
-        pass
-    else:
+    if not os.path.exists("./solar_orbiter_data"):
         working_dir = os.getcwd()
         os.makedirs(str(Path(working_dir).joinpath("solar_orbiter_data")), exist_ok=True)
 

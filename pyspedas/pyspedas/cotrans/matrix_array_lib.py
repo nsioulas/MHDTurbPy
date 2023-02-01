@@ -86,10 +86,7 @@ def ctv_left_mats(m):
     """
     idx = np.argwhere(ctv_err_test(ctv_determ_mats(m),-1))
     c = idx.shape[0]
-    if c > 0:
-        return 1
-    else:
-        return 0
+    return 1 if c > 0 else 0
 
 
 def ctv_swap_hands(m):
@@ -108,9 +105,7 @@ def ctv_norm_vec_rot(v):
     """
     if v is None:
         return -1
-    if v.ndim != 2:
-        return -1
-    return np.sqrt(np.sum(v**2, axis=1))
+    return -1 if v.ndim != 2 else np.sqrt(np.sum(v**2, axis=1))
 
 
 def ctv_normalize_vec_rot(v):
@@ -160,7 +155,5 @@ def ctv_mx_vec_rot(m, x):
     # custom multiplication requires rebin to stack vector across rows,
     # not columns
     y_t = np.transpose(y_t, (0, 2, 1))
-    # 9 multiplications and 3 additions per matrix
-    y = np.sum(y_t*m, axis=2)
-    return y
+    return np.sum(y_t*m, axis=2)
 
