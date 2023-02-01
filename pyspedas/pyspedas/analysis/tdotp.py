@@ -30,15 +30,15 @@ def tdotp(variable1, variable2, newname=None):
     data2 = get_data(variable2, xarray=True)
 
     if data1 is None:
-        logging.error('Variable not found: ' + variable1)
+        logging.error(f'Variable not found: {variable1}')
         return
 
     if data2 is None:
-        logging.error('Variable not found: ' + variable2)
+        logging.error(f'Variable not found: {variable2}')
         return
 
     if newname is None:
-        newname = variable1 + '_dot_' + variable2
+        newname = f'{variable1}_dot_{variable2}'
 
     # calculate the dot product
     out = data1.dot(data2, dims='v_dim')

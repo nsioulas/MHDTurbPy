@@ -13,4 +13,4 @@ def version():
     """
     import pkg_resources
     ver = pkg_resources.get_distribution("pyspedas").version
-    logging.info("pyspedas version: " + ver)
+    logging.info(f"pyspedas version: {ver}")

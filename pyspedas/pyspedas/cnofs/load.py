@@ -26,11 +26,11 @@ def load(trange=['2013-11-5', '2013-11-6'],
     """
 
     if instrument == 'cindi':
-        pathformat = instrument+'/ivm_500ms_cdf/%Y/cnofs_'+instrument+'_ivm_500ms_%Y%m%d_v??.cdf'
+        pathformat = f'{instrument}/ivm_500ms_cdf/%Y/cnofs_{instrument}_ivm_500ms_%Y%m%d_v??.cdf'
     elif instrument == 'plp':
-        pathformat = instrument+'/plasma_1sec/%Y/cnofs_'+instrument+'_plasma_1sec_%Y%m%d_v??.cdf'
+        pathformat = f'{instrument}/plasma_1sec/%Y/cnofs_{instrument}_plasma_1sec_%Y%m%d_v??.cdf'
     elif instrument == 'vefi':
-        pathformat = instrument+'/'+datatype+'/%Y/cnofs_'+instrument+'_'+datatype+'_%Y%m%d_v??.cdf'
+        pathformat = f'{instrument}/{datatype}/%Y/cnofs_{instrument}_{datatype}_%Y%m%d_v??.cdf'
 
     # find the full remote path names using the trange
     remote_names = dailynames(file_format=pathformat, trange=trange)
@@ -39,16 +39,14 @@ def load(trange=['2013-11-5', '2013-11-6'],
 
     files = download(remote_file=remote_names, remote_path=CONFIG['remote_data_dir'], local_path=CONFIG['local_data_dir'], no_download=no_update)
     if files is not None:
-        for file in files:
-            out_files.append(file)
-
+        out_files.extend(iter(files))
     out_files = sorted(out_files)
 
     if downloadonly:
         return out_files
 
     tvars = cdf_to_tplot(out_files, suffix=suffix, get_support_data=get_support_data, varformat=varformat, varnames=varnames, notplot=notplot)
-    
+
     if notplot:
         return tvars
 

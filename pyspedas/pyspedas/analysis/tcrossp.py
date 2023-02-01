@@ -51,19 +51,18 @@ def tcrossp(v1, v2, newname=None, return_data=False):
         data2 = v2
 
     if newname is None:
-        newname = v1_name + '_cross_' + v2_name
+        newname = f'{v1_name}_cross_{v2_name}'
 
     cp = np.cross(data1, data2)
 
     if return_data:
         return cp
+    out = cp
+    if v2_data is None:
+        if len(cp.shape) == 1:
+            out = np.atleast_2d(cp)
+        times = np.zeros(out.shape[0])
     else:
-        out = cp
-        if v2_data is None:
-            if len(cp.shape) == 1:
-                out = np.atleast_2d(cp)
-            times = np.zeros(out.shape[0])
-        else:
-            times = v2_data[0]
-        store_data(newname, data={'x': times, 'y': out})
-        return newname
+        times = v2_data[0]
+    store_data(newname, data={'x': times, 'y': out})
+    return newname

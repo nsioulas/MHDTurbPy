@@ -26,9 +26,8 @@ def cotrans_get_coord(name):
     if metadata is None:
         return None
 
-    if metadata.get('data_att'):
-        if metadata['data_att'].get('coord_sys'):
-            return metadata['data_att']['coord_sys']
+    if metadata.get('data_att') and metadata['data_att'].get('coord_sys'):
+        return metadata['data_att']['coord_sys']
 
-    logging.error('Coordinate system not found: ' + name)
+    logging.error(f'Coordinate system not found: {name}')
     return None

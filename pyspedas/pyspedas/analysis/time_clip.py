@@ -68,11 +68,10 @@ def time_clip(names, time_start, time_end, new_names=None, suffix=None,
 
         if not isinstance(alldata, tuple): # NRV variable
             continue
-            
+
         time = alldata[0]
         data = alldata[1]
 
-        index_start = 0
         index_end = len(time)
 
         if index_end < 1:
@@ -95,15 +94,17 @@ def time_clip(names, time_start, time_end, new_names=None, suffix=None,
             logging.info('Time clip returns full data set.')
             continue
 
-        for i in range(index_end):
-            if new_time[i] >= new_time_start:
-                index_start = i
-                break
-        found_end = index_end
-        for i in range(index_start, index_end):
-            if new_time[i] > new_time_end:
-                found_end = i
-                break
+        index_start = next(
+            (i for i in range(index_end) if new_time[i] >= new_time_start), 0
+        )
+        found_end = next(
+            (
+                i
+                for i in range(index_start, index_end)
+                if new_time[i] > new_time_end
+            ),
+            index_end,
+        )
         index_end = found_end
 
         tmp_q = pytplot.data_quants[n_names[j]]
@@ -181,7 +182,7 @@ def time_clip(names, time_start, time_end, new_names=None, suffix=None,
                     'y': data[index_start:index_end]},
                     attr_dict=metadata)
         except:
-            logging.error('Problem time clipping: ' + n_names[j])
+            logging.error(f'Problem time clipping: {n_names[j]}')
             continue
 
-        logging.info('Time clip was applied to: ' + n_names[j])
+        logging.info(f'Time clip was applied to: {n_names[j]}')

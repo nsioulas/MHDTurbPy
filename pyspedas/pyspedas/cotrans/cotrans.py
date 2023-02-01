@@ -50,9 +50,9 @@ def cotrans(name_in=None, name_out=None, time_in=None, data_in=None,
 
     if coord_in is None:
         coord_in = cotrans_get_coord(name_in)
-        if coord_in is None:
-            logging.error("cotrans error: No input coordinates were provided.")
-            return 0
+    if coord_in is None:
+        logging.error("cotrans error: No input coordinates were provided.")
+        return 0
 
     coord_in = coord_in.lower()
     coord_out = coord_out.lower()
@@ -78,15 +78,15 @@ def cotrans(name_in=None, name_out=None, time_in=None, data_in=None,
     # Perform coordinate transformation.
     data_out = subcotrans(list(time_in), list(data_in), coord_in, coord_out)
 
-    if name_in is None and name_out is None:
-        return data_out
-
     if name_in is None:
+        if name_out is None:
+            return data_out
+
         name_in = 'cotranstemp'
 
     # Find the name of the output pytplot variable.
     if name_out is None:
-        name_out = name_in + "_" + coord_out
+        name_out = f"{name_in}_{coord_out}"
 
     # Save output pytplot variable.
     pytplot.tplot_copy(name_in, name_out)
@@ -98,16 +98,18 @@ def cotrans(name_in=None, name_out=None, time_in=None, data_in=None,
     # should also update the legend, if it includes the coordinate system
     # for this to work, the coordinate system should be in all upper case
     metadata = pytplot.get_data(name_out, metadata=True)
-    if metadata.get('plot_options') is not None:
-        if metadata['plot_options'].get('yaxis_opt') is not None:
-            if metadata['plot_options']['yaxis_opt'].get('legend_names') is not None:
-                legend = metadata['plot_options']['yaxis_opt'].get('legend_names')
-                updated_legend = [item.replace(coord_in.upper(), coord_out.upper()) for item in legend]
-                metadata['plot_options']['yaxis_opt']['legend_names'] = updated_legend
-            if metadata['plot_options']['yaxis_opt'].get('axis_label') is not None:
-                ytitle = metadata['plot_options']['yaxis_opt'].get('axis_label')
-                metadata['plot_options']['yaxis_opt']['axis_label'] = ytitle.replace(coord_in.upper(), coord_out.upper())
+    if (
+        metadata.get('plot_options') is not None
+        and metadata['plot_options'].get('yaxis_opt') is not None
+    ):
+        if metadata['plot_options']['yaxis_opt'].get('legend_names') is not None:
+            legend = metadata['plot_options']['yaxis_opt'].get('legend_names')
+            updated_legend = [item.replace(coord_in.upper(), coord_out.upper()) for item in legend]
+            metadata['plot_options']['yaxis_opt']['legend_names'] = updated_legend
+        if metadata['plot_options']['yaxis_opt'].get('axis_label') is not None:
+            ytitle = metadata['plot_options']['yaxis_opt'].get('axis_label')
+            metadata['plot_options']['yaxis_opt']['axis_label'] = ytitle.replace(coord_in.upper(), coord_out.upper())
 
-    logging.info("Output variable: " + name_out)
+    logging.info(f"Output variable: {name_out}")
 
     return 1

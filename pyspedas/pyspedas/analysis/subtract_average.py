@@ -44,11 +44,7 @@ def subtract_average(names, new_names=None, suffix=None, overwrite=None,
         return
 
     if suffix is None:
-        if median:
-            suffix = '-m'
-        else:
-            suffix = '-d'
-
+        suffix = '-m' if median else '-d'
     if overwrite is not None:
         n_names = old_names
     elif new_names is None:
@@ -89,4 +85,4 @@ def subtract_average(names, new_names=None, suffix=None, overwrite=None,
 
         pytplot.data_quants[new].values = data
 
-        logging.info('Subtract ' + ptype + ' was applied to: ' + new)
+        logging.info(f'Subtract {ptype} was applied to: {new}')
