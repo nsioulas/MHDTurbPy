@@ -24,40 +24,30 @@ def time_domain_filter(data,time, freq_low, freq_high):
     flow = freq_low/nyquist
     fhigh = freq_high/nyquist
     A = 120. # from Ergun's fa_fields_filter
-    if flow == 0.0:
-        f = fhigh
-    else:
-        f = flow
+    f = fhigh if flow == 0.0 else flow
     nterms = int(5./f)
-    if nterms > 5000.:
-        nterms = 5000.
+    nterms = min(nterms, 5000.)
     out = digital_filter(flow,fhigh,A,nterms)
     new_series_x = signal.convolve(data[:,0],out,mode='same',method='direct')
     new_series_y = signal.convolve(data[:,1],out,mode='same',method='direct')
     new_series_z = signal.convolve(data[:,2],out,mode='same',method='direct')
-    new_series =  np.transpose(np.vstack((new_series_x,new_series_y,new_series_z)))
-
-    return new_series
+    return np.transpose(np.vstack((new_series_x,new_series_y,new_series_z)))
 
 def digital_filter(flow,fhigh,aGibbs,nterms):
     
-    if fhigh < flow:
-        fstop = float(1)
-    else:
-        fstop = float(0)
-    
+    fstop = float(1) if fhigh < flow else float(0)
     # Computes Kaiser weights W(N,K) for digital filters
     # W = coef = returned array of Kaiser weights
     # N = value of N in W(N,K), ie number of terms
     # A = Size of gibbs phenomenon wiggles in -DB
-    
+
     if aGibbs <= 21 :
         alpha = 0.
     elif (aGibbs >= 50) :
         alpha = 0.1102*(aGibbs-8.7)
     else:
         alpha = 0.5842*(aGibbs-21)**(0.4) + 0.07886*(aGibbs-21)
-        
+
     arg = (np.arange(nterms)+1)/nterms
     coef = special.iv(0,alpha*np.sqrt(1.-arg**2))/special.iv(0,alpha)
     t = (np.arange(nterms)+1)*np.pi

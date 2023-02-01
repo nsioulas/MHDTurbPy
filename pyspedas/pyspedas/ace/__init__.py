@@ -69,17 +69,17 @@ def mfi(trange=['2018-11-5', '2018-11-6'],
 
     """
     tvars = load(instrument='fgm', trange=trange, datatype=datatype, suffix=suffix, get_support_data=get_support_data, varformat=varformat, varnames=varnames, downloadonly=downloadonly, notplot=notplot, time_clip=time_clip, no_update=no_update)
-    
+
     if tvars is None or notplot or downloadonly:
         return tvars
 
-    if 'Magnitude'+suffix in tvars:
-        options('Magnitude'+suffix, 'ytitle', 'ACE MFI')
-        options('Magnitude'+suffix, 'legend_names',  'Magnitude')
+    if f'Magnitude{suffix}' in tvars:
+        options(f'Magnitude{suffix}', 'ytitle', 'ACE MFI')
+        options(f'Magnitude{suffix}', 'legend_names', 'Magnitude')
 
-    if 'BGSEc'+suffix in tvars:
-        options('BGSEc'+suffix, 'ytitle', 'ACE MFI')
-        options('BGSEc'+suffix, 'legend_names',  ['Bx', 'By', 'Bz'])
+    if f'BGSEc{suffix}' in tvars:
+        options(f'BGSEc{suffix}', 'ytitle', 'ACE MFI')
+        options(f'BGSEc{suffix}', 'legend_names', ['Bx', 'By', 'Bz'])
 
     return tvars
 

@@ -34,22 +34,22 @@ def load(trange=['2013-11-5', '2013-11-6'],
     """
 
     if instrument == 'fgm':
-        pathformat = 'mag/level_2_cdaweb/mfi_'+datatype+'/%Y/ac_'+datatype+'_mfi_%Y%m%d_v??.cdf'
+        pathformat = f'mag/level_2_cdaweb/mfi_{datatype}/%Y/ac_{datatype}_mfi_%Y%m%d_v??.cdf'
     elif instrument == 'swe':
-        pathformat = 'swepam/level_2_cdaweb/swe_'+datatype+'/%Y/ac_'+datatype+'_swe_%Y%m%d_v??.cdf'
+        pathformat = f'swepam/level_2_cdaweb/swe_{datatype}/%Y/ac_{datatype}_swe_%Y%m%d_v??.cdf'
     elif instrument == 'epm':
-        pathformat = 'epam/level_2_cdaweb/epm_'+datatype+'/%Y/ac_'+datatype+'_epm_%Y%m%d_v??.cdf'
+        pathformat = f'epam/level_2_cdaweb/epm_{datatype}/%Y/ac_{datatype}_epm_%Y%m%d_v??.cdf'
     elif instrument == 'cris':
-        pathformat = 'cris/level_2_cdaweb/cris_'+datatype+'/%Y/ac_'+datatype+'_cris_%Y%m%d_v??.cdf'
+        pathformat = f'cris/level_2_cdaweb/cris_{datatype}/%Y/ac_{datatype}_cris_%Y%m%d_v??.cdf'
     elif instrument == 'sis':
-        pathformat = 'sis/level_2_cdaweb/sis_'+datatype+'/%Y/ac_'+datatype+'_sis_%Y%m%d_v??.cdf'
+        pathformat = f'sis/level_2_cdaweb/sis_{datatype}/%Y/ac_{datatype}_sis_%Y%m%d_v??.cdf'
     elif instrument == 'ule':
-        pathformat = 'uleis/level_2_cdaweb/ule_'+datatype+'/%Y/ac_'+datatype+'_ule_%Y%m%d_v??.cdf'
+        pathformat = f'uleis/level_2_cdaweb/ule_{datatype}/%Y/ac_{datatype}_ule_%Y%m%d_v??.cdf'
     elif instrument == 'sep':
-        pathformat = 'sepica/level_2_cdaweb/sep_'+datatype+'/%Y/ac_'+datatype+'_sep_%Y%m%d_v??.cdf'
+        pathformat = f'sepica/level_2_cdaweb/sep_{datatype}/%Y/ac_{datatype}_sep_%Y%m%d_v??.cdf'
     elif instrument == 'swics':
         filename_dtype = datatype.split('_')[1] + '_' + datatype.split('_')[0]
-        pathformat = 'swics/level_2_cdaweb/'+datatype+'/%Y/ac_'+filename_dtype+'_%Y%m%d_v??.cdf'
+        pathformat = f'swics/level_2_cdaweb/{datatype}/%Y/ac_{filename_dtype}_%Y%m%d_v??.cdf'
 
     # find the full remote path names using the trange
     remote_names = dailynames(file_format=pathformat, trange=trange)
@@ -58,9 +58,7 @@ def load(trange=['2013-11-5', '2013-11-6'],
 
     files = download(remote_file=remote_names, remote_path=CONFIG['remote_data_dir'], local_path=CONFIG['local_data_dir'], no_download=no_update)
     if files is not None:
-        for file in files:
-            out_files.append(file)
-
+        out_files.extend(iter(files))
     out_files = sorted(out_files)
 
     if downloadonly:
@@ -72,7 +70,7 @@ def load(trange=['2013-11-5', '2013-11-6'],
         # see: https://github.com/astropy/astropy/issues/9603
         warnings.simplefilter('ignore', astropy.utils.exceptions.ErfaWarning)
         tvars = cdf_to_tplot(out_files, suffix=suffix, get_support_data=get_support_data, varformat=varformat, varnames=varnames, notplot=notplot)
-    
+
     if notplot:
         return tvars
 

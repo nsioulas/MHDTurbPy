@@ -61,4 +61,4 @@ def deriv_data(names, new_names=None, suffix=None, overwrite=None):
     for i, old in enumerate(old_names):
         data = pytplot.get_data(old, dt=True)
         pytplot.store_data(n_names[i], data={'x': data.times, 'y': np.gradient(data.y)})
-        logging.info('deriv_data was applied to: ' + n_names[i])
+        logging.info(f'deriv_data was applied to: {n_names[i]}')

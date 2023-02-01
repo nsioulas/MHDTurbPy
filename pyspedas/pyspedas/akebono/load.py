@@ -33,15 +33,15 @@ def load(trange=['2012-10-01', '2012-10-02'],
     if instrument == 'pws':
         #  only PWS data are available in CDF files
         prefix = 'akb_pws_'
-        pathformat = instrument + '/NPW-DS/%Y/ak_h1_pws_%Y%m%d_v??.cdf'
+        pathformat = f'{instrument}/NPW-DS/%Y/ak_h1_pws_%Y%m%d_v??.cdf'
     elif instrument == 'rdm':
         prefix = 'akb_rdm_'
-        pathformat = instrument + '/%Y/sf%y%m%d'
+        pathformat = f'{instrument}/%Y/sf%y%m%d'
     elif instrument == 'orb':
         prefix = 'akb_orb_'
         pathformat = 'orbit/daily/%Y%m/ED%y%m%d.txt'
     else:
-        logging.error('Unknown instrument: ' + instrument)
+        logging.error(f'Unknown instrument: {instrument}')
         return
 
     # find the full remote path names using the trange
@@ -51,16 +51,14 @@ def load(trange=['2012-10-01', '2012-10-02'],
 
     files = download(remote_file=remote_names, remote_path=CONFIG['remote_data_dir'], local_path=CONFIG['local_data_dir'], no_download=no_update)
     if files is not None:
-        for file in files:
-            out_files.append(file)
-
+        out_files.extend(iter(files))
     out_files = sorted(out_files)
 
     if downloadonly or instrument != 'pws':
         return out_files
 
     tvars = cdf_to_tplot(out_files, prefix=prefix, suffix=suffix, get_support_data=get_support_data, varformat=varformat, varnames=varnames, notplot=notplot)
-    
+
     if notplot:
         return tvars
 

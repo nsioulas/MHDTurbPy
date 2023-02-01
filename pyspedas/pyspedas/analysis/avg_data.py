@@ -72,17 +72,13 @@ def avg_data(names, dt=None, width=60, noremainder=False,
         metadata = pytplot.get_data(old, metadata=True)
 
         dim = data.shape
-        dim0 = dim[0]
-        if len(dim) < 2:
-            dim1 = 1
-        else:
-            dim1 = dim[1]
-
+        dim1 = 1 if len(dim) < 2 else dim[1]
         new_data = []
         new_time = []
         if dt is None:
             # Use width
             width = int(width)
+            dim0 = dim[0]
             for i in range(0, dim0, width):
                 last = (i + width) if (i + width) < dim0 else dim0
                 # idx = int(i + width/2) # redefined below before it's ever used?
@@ -95,16 +91,14 @@ def avg_data(names, dt=None, width=60, noremainder=False,
                 if dim1 < 2:
                     nd0 = np.average(data[i:last])
                 else:
-                    nd0 = []
-                    for j in range(dim1):
-                        nd0.append(np.average(data[i:last, j]))
+                    nd0 = [np.average(data[i:last, j]) for j in range(dim1)]
                 new_data.append(nd0)
         else:
             # Use dt
             dt = float(dt)
             timedbl = np.array(pyspedas.time_float(time))
             alldt = timedbl[-1] - timedbl[0]
-            if not dt > 0.0:
+            if dt <= 0.0:
                 logging.error("avg_data: Time interval dt<=0.0. Exiting.")
                 return
             if dt > alldt:
@@ -119,7 +113,7 @@ def avg_data(names, dt=None, width=60, noremainder=False,
 
             time0 = timedbl[0]
             maxtime = timedbl[-1]
-            for i in range(bincount):
+            for _ in range(bincount):
                 time1 = time0 + dt
                 bintime = time0 + dt/2.0
                 if bintime > maxtime:
@@ -130,17 +124,11 @@ def avg_data(names, dt=None, width=60, noremainder=False,
 
                 # Check if idx is empty, ie. there is a gap in data.
                 idx_is_empty = False
-                if not idx:
+                if idx and len(idx) == 1 and len(idx[0]) == 0 or not idx:
                     idx_is_empty = True
-                elif len(idx) == 1:
-                    if len(idx[0]) == 0:
-                        idx_is_empty = True
 
                 if dim1 < 2:
-                    if idx_is_empty:  # Empty list.
-                        nd0 = np.nan
-                    else:
-                        nd0 = np.average(data[idx])
+                    nd0 = np.nan if idx_is_empty else np.average(data[idx])
                 else:
                     nd0 = []
                     for j in range(dim1):
@@ -153,4 +141,4 @@ def avg_data(names, dt=None, width=60, noremainder=False,
 
         pytplot.store_data(new, data={'x': new_time, 'y': new_data}, attr_dict=metadata)
 
-        logging.info('avg_data was applied to: ' + new)
+        logging.info(f'avg_data was applied to: {new}')
