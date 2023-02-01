@@ -71,7 +71,7 @@ def tinterpol(names, interp_to, method=None, newname=None, suffix=None):
         interp_to_data = get_data(interp_to, dt=True)
 
         if interp_to_data is None:
-            logging.error('Error, tplot variable: ' + interp_to + ' not found.')
+            logging.error(f'Error, tplot variable: {interp_to} not found.')
             return
 
         interp_to_times = interp_to_data[0]
@@ -97,4 +97,4 @@ def tinterpol(names, interp_to, method=None, newname=None, suffix=None):
             store_data(n_names[name_idx], data={'x': interp_to_times,
                        'y': xdata_interpolated.values})
 
-        logging.info('tinterpol (' + method + ') was applied to: ' + n_names[name_idx])
+        logging.info(f'tinterpol ({method}) was applied to: {n_names[name_idx]}')

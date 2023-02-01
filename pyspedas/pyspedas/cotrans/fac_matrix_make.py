@@ -61,11 +61,11 @@ def fac_matrix_make(mag_var_name, other_dim='Xgse', pos_var_name=None, newname=N
     mag_data = get_data(mag_var_name)
 
     if mag_data is None:
-        logging.error('Error reading tplot variable: ' + mag_var_name)
+        logging.error(f'Error reading tplot variable: {mag_var_name}')
         return
 
     if newname is None:
-        newname = mag_var_name + '_fac_mat'
+        newname = f'{mag_var_name}_fac_mat'
 
     other_dim = other_dim.lower()
 

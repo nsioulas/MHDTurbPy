@@ -126,4 +126,4 @@ def tsmooth(names, width=10, median=None, preserve_nans=None,
 
         pytplot.data_quants[new].values = data
 
-        logging.info('tsmooth was applied to: ' + new)
+        logging.info(f'tsmooth was applied to: {new}')

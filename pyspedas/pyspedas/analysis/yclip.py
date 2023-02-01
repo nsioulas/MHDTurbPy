@@ -72,4 +72,4 @@ def yclip(names, ymin, ymax, flag=None, new_names=None, suffix=None,
 
         data = pytplot.clip(old, ymin, ymax, new)
 
-        logging.info('yclip was applied to: ' + new)
+        logging.info(f'yclip was applied to: {new}')
