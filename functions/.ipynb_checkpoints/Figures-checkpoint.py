@@ -51,35 +51,29 @@ def initializeFigure(xlabel, ylabel, scale= 'loglog',width='1col', height=None):
 
     # Prepare figure width and height
     cm_to_inch = 0.393701 # [inch/cm]
-     
+
     # Get figure width in inch
     if width == '1col':
         width = 8.8 # width [cm]
     elif width == '2col':
         width = 18.0 # width [cm]
     figWidth = width * cm_to_inch # width [inch]
-     
- 
+
+
     # Get figure height in inch
-    if height is None:
-        fig_aspect_ratio = 7.5/10.
-        figHeight = figWidth * fig_aspect_ratio  # height [inch]
-    else:
-        figHeight = height * cm_to_inch # height [inch]
-     
- 
+    figHeight = figWidth * (7.5/10.) if height is None else height * cm_to_inch
     # Create figure with right resolution for publication
     fig = plt.figure(figsize=(figWidth, figHeight), dpi=300)
-     
- 
+
+
     # Add axis object and select as current axis for pyplot
     ax = fig.add_subplot(111)
     plt.sca(ax)
-    
+
     ax.tick_params(axis='both', which='minor',left=0,right=0,bottom=0, top=0, direction='out', labelsize='medium', pad=2)
     ax.tick_params(axis='both', which='major',left=1,right=0,bottom=1, top=0, direction='out', labelsize='small', pad=2) 
-    
-    
+
+
     if scale=='loglog':
        # ax.loglog(x,y, label =label)
         ax.set_yscale('log')
@@ -88,13 +82,10 @@ def initializeFigure(xlabel, ylabel, scale= 'loglog',width='1col', height=None):
         ax.set_yscale('log')
     elif scale=='semilogx':
         ax.set_xscale('log')
-    else:
-        pass
-    
     ax.set_ylabel(xlabel)
     ax.set_xlabel(ylabel)
-    
-     
+
+
     return fig, ax
 
 def create_colors(hmany):
@@ -102,9 +93,7 @@ def create_colors(hmany):
     interval = np.hstack([np.linspace(0, 0.4), np.linspace(0.60, 1)])
     colors   = plt.cm.RdBu_r(interval)
     cmap     = LinearSegmentedColormap.from_list('name', colors)
-    col      = cmap(np.linspace(0,1,hmany))
-    
-    return col
+    return cmap(np.linspace(0,1,hmany))
 
 
 
@@ -266,13 +255,13 @@ def initializeFigure_1by_2_noshare_y(xlabel, ylabel, scale= 'loglog',width='1col
     plt.rc('axes', linewidth=2)
    # plt.rc('xtick_params', width=1, length=6) 
    # plt.rc('ytick_params', width=1, length=6)
-   
 
 
- 
+
+
     # Prepare figure width and height
     cm_to_inch = 0.393701 # [inch/cm]
-     
+
     # Get figure width in inch
     if width == '1col':
         width = 12 # width [cm]
@@ -282,15 +271,10 @@ def initializeFigure_1by_2_noshare_y(xlabel, ylabel, scale= 'loglog',width='1col
         width = 24.0 # width [cm]
 
     figWidth = width * cm_to_inch # width [inch]
-     
- 
+
+
     # Get figure height in inch
-    if height is None:
-        fig_aspect_ratio = 5/10.
-        figHeight = figWidth * fig_aspect_ratio  # height [inch]
-    else:
-        figHeight = height * cm_to_inch # height [inch]
-     
+    figHeight = figWidth * (5/10.) if height is None else height * cm_to_inch
     if share_y==0:
 
         # Create figure with right resolution for publication
@@ -317,12 +301,12 @@ def initializeFigure_1by_2_noshare_y(xlabel, ylabel, scale= 'loglog',width='1col
         ax.set_xscale('log')
     else:
         print('linear')
-    
+
     # ax.set_ylabel(ylabel)
     # if i ==1:
     #     axes[i, k].set_xlabel(xlabel)
-    
-     
+
+
     return fig, axes
 
 
@@ -351,7 +335,7 @@ def initializeFigure_1by_2(xlabel, ylabel, scale= 'loglog',width='1col', height=
 
     # Prepare figure width and height
     cm_to_inch = 0.393701 # [inch/cm]
-     
+
     # Get figure width in inch
     if width == '1col':
         width = 12 # width [cm]
@@ -361,23 +345,11 @@ def initializeFigure_1by_2(xlabel, ylabel, scale= 'loglog',width='1col', height=
         width = 24.0 # width [cm]
 
     figWidth = width * cm_to_inch # width [inch]
-     
- 
+
+
     # Get figure height in inch
-    if height is None:
-        fig_aspect_ratio = 5/10.
-        figHeight = figWidth * fig_aspect_ratio  # height [inch]
-    else:
-        figHeight = height * cm_to_inch # height [inch]
-     
-   # if share_y:
-
-        # Create figure with right resolution for publication
+    figHeight = figWidth * (5/10.) if height is None else height * cm_to_inch
     fig, axes = plt.subplots(1,2, figsize=(5*figWidth,4*figHeight), gridspec_kw = {'wspace':0.1, 'hspace':0.08},sharex =True, sharey='row',  dpi=300)
-   # else:
-
-        # Create figure with right resolution for publication
-        #fig, axes = plt.subplots(1,2, figsize=(figWidth, figHeight), gridspec_kw = {'wspace':0.1, 'hspace':0.08},  dpi=300)
     for i in range(2):
 
         ax =axes[i]
@@ -396,12 +368,12 @@ def initializeFigure_1by_2(xlabel, ylabel, scale= 'loglog',width='1col', height=
         ax.set_xscale('log')
     else:
         print('linear')
-    
+
     # ax.set_ylabel(ylabel)
     # if i ==1:
     #     axes[i, k].set_xlabel(xlabel)
-    
-     
+
+
     return fig, axes
 
 
@@ -428,7 +400,7 @@ def initializeFigure_2by_3(xlabel, ylabel, scale= 'loglog',width='1col', height=
     '''
     # Prepare figure width and height
     cm_to_inch = 0.393701 # [inch/cm]
-     
+
     # Get figure width in inch
     if width == '1col':
         width = 12 # width [cm]
@@ -438,15 +410,10 @@ def initializeFigure_2by_3(xlabel, ylabel, scale= 'loglog',width='1col', height=
         width = 24.0 # width [cm]
 
     figWidth = width * cm_to_inch # width [inch]
-     
- 
+
+
     # Get figure height in inch
-    if height is None:
-        fig_aspect_ratio = 5/10.
-        figHeight = figWidth * fig_aspect_ratio  # height [inch]
-    else:
-        figHeight = height * cm_to_inch # height [inch]
-     
+    figHeight = figWidth * (5/10.) if height is None else height * cm_to_inch
     if share_y:
 
         # Create figure with right resolution for publication
@@ -473,12 +440,12 @@ def initializeFigure_2by_3(xlabel, ylabel, scale= 'loglog',width='1col', height=
                 ax.set_xscale('log')
             else:
                 print('linear')
-    
+
     # ax.set_ylabel(ylabel)
     # if i ==1:
     #     axes[i, k].set_xlabel(xlabel)
-    
-     
+
+
     return fig, axes
 
 
@@ -529,34 +496,28 @@ def initializeFigure_2by_2(xlabel, ylabel, scale= 'loglog',width='1col', height=
 
     # Prepare figure width and height
     cm_to_inch = 0.393701 # [inch/cm]
-     
+
     # Get figure width in inch
     if width == '1col':
         width = 12 # width [cm]
     elif width == '2col':
         width = 18.0 # width [cm]
     figWidth = width * cm_to_inch # width [inch]
-     
- 
+
+
     # Get figure height in inch
-    if height is None:
-        fig_aspect_ratio = 7.5/10.
-        figHeight = figWidth * fig_aspect_ratio  # height [inch]
-    else:
-        figHeight = height * cm_to_inch # height [inch]
-     
- 
+    figHeight = figWidth * (7.5/10.) if height is None else height * cm_to_inch
     # Create figure with right resolution for publication
     fig, axes = plt.subplots(2,2, figsize=(figWidth, figHeight), gridspec_kw = {'wspace':0.1, 'hspace':0.08, 'height_ratios': [2.5,1.2]},sharex =True, sharey='row',  dpi=300)
 
     for i in range(2):
         for k in range(2):
             ax =axes[i, k ]
-            
+
             ax.tick_params(axis='both', which='minor',left=0,right=0,bottom=0, top=0, direction='out', labelsize='medium', pad=2)
             ax.tick_params(axis='both', which='major',left=1,right=0,bottom=i, top=0, direction='out', labelsize='medium', pad=2) 
-    
-    
+
+
     if scale=='loglog':
        # ax.loglog(x,y, label =label)
         ax.set_yscale('log')
@@ -567,12 +528,12 @@ def initializeFigure_2by_2(xlabel, ylabel, scale= 'loglog',width='1col', height=
         ax.set_xscale('log')
     else:
         print('linear')
-    
+
     # ax.set_ylabel(ylabel)
     # if i ==1:
     #     axes[i, k].set_xlabel(xlabel)
-    
-     
+
+
     return fig, axes
 
 
@@ -589,25 +550,20 @@ def visualize_downloaded_intervals(
 
                                  ):
 
-    if sc ==0:
-        spacecraft = 'PSP'
-    else:
-        spacecraft = 'SolO'
-
-        
+    spacecraft = 'PSP' if sc ==0 else 'SolO'
     # Creat figure name using start, end date and sc.
     f1          = format_timestamp(final_Mag.index[0], format_2_return)
     f2          = format_timestamp(final_Mag.index[-1], format_2_return)
-    figure_name = f1+"_"+f2+"_"+str(sc)+str('.png')
-     
+    figure_name = f1+"_"+f2+"_"+str(sc) + '.png'
+
     # Resample to desired rate
-    final_Mag   =  final_Mag.resample(str(res_rate)+'s').mean()
-    final_Par   = final_Par.resample(str(res_rate)+'s').mean()
-    
+    final_Mag = final_Mag.resample(f'{str(res_rate)}s').mean()
+    final_Par = final_Par.resample(f'{str(res_rate)}s').mean()
+
     # Estimate relevant quantitities
     nn_df       = func.prepare_particle_data_for_visualization( final_Par, final_Mag)
-    nn_df       = nn_df.resample(str(res_rate)+'s').mean()
-    
+    nn_df = nn_df.resample(f'{str(res_rate)}s').mean()
+
     # Choose limiting dates
     start_date_lim  = final_Par.index[0]
     end_date_lim    = final_Par.index[-1]
@@ -615,7 +571,7 @@ def visualize_downloaded_intervals(
     # Init figure
     fig, axs        = plt.subplots(numb_subplots, sharex=True,figsize=(30,15), gridspec_kw = {'wspace':0.05, 'hspace':0.05})
     minor_tick_params, major_tick_params = inset_axis_params(size ='xx-large')
-    
+
 
 
     #Now plot

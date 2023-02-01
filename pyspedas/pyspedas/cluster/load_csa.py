@@ -24,35 +24,61 @@ from pyspedas.cluster.config import CONFIG
 
 def cl_master_datatypes():
     """Return list of data types."""
-    md = ['CE_WBD_WAVEFORM_CDF', 'CP_AUX_POSGSE_1M',
-          'CP_CIS-CODIF_HS_H1_MOMENTS', 'CP_CIS-CODIF_HS_He1_MOMENTS',
-          'CP_CIS-CODIF_HS_O1_MOMENTS', 'CP_CIS-CODIF_PAD_HS_H1_PF',
-          'CP_CIS-CODIF_PAD_HS_He1_PF', 'CP_CIS-CODIF_PAD_HS_O1_PF',
-          'CP_CIS-HIA_ONBOARD_MOMENTS', 'CP_CIS-HIA_PAD_HS_MAG_IONS_PF',
-          'CP_EDI_AEDC', 'CP_EDI_MP', 'CP_EDI_SPIN', 'CP_EFW_L2_E3D_INERT',
-          'CP_EFW_L2_P', 'CP_EFW_L2_V3D_INERT', 'CP_EFW_L3_E3D_INERT',
-          'CP_EFW_L3_P', 'CP_EFW_L3_V3D_INERT', 'CP_FGM_5VPS', 'CP_FGM_FULL',
-          'CP_FGM_SPIN', 'CP_PEA_MOMENTS', 'CP_PEA_PITCH_SPIN_DEFlux',
-          'CP_PEA_PITCH_SPIN_DPFlux', 'CP_PEA_PITCH_SPIN_PSD', 'CP_RAP_ESPCT6',
-          'CP_RAP_ESPCT6_R', 'CP_RAP_HSPCT', 'CP_RAP_HSPCT_R',
-          'CP_RAP_ISPCT_CNO', 'CP_RAP_ISPCT_He', 'CP_STA_CS_HBR',
-          'CP_STA_CS_NBR', 'CP_STA_CWF_GSE', 'CP_STA_CWF_HBR_ISR2',
-          'CP_STA_CWF_NBR_ISR2', 'CP_STA_PSD', 'CP_WBD_WAVEFORM',
-          'CP_WHI_ELECTRON_DENSITY', 'CP_WHI_NATURAL', 'JP_PMP', 'JP_PSE']
-    return md
+    return [
+        'CE_WBD_WAVEFORM_CDF',
+        'CP_AUX_POSGSE_1M',
+        'CP_CIS-CODIF_HS_H1_MOMENTS',
+        'CP_CIS-CODIF_HS_He1_MOMENTS',
+        'CP_CIS-CODIF_HS_O1_MOMENTS',
+        'CP_CIS-CODIF_PAD_HS_H1_PF',
+        'CP_CIS-CODIF_PAD_HS_He1_PF',
+        'CP_CIS-CODIF_PAD_HS_O1_PF',
+        'CP_CIS-HIA_ONBOARD_MOMENTS',
+        'CP_CIS-HIA_PAD_HS_MAG_IONS_PF',
+        'CP_EDI_AEDC',
+        'CP_EDI_MP',
+        'CP_EDI_SPIN',
+        'CP_EFW_L2_E3D_INERT',
+        'CP_EFW_L2_P',
+        'CP_EFW_L2_V3D_INERT',
+        'CP_EFW_L3_E3D_INERT',
+        'CP_EFW_L3_P',
+        'CP_EFW_L3_V3D_INERT',
+        'CP_FGM_5VPS',
+        'CP_FGM_FULL',
+        'CP_FGM_SPIN',
+        'CP_PEA_MOMENTS',
+        'CP_PEA_PITCH_SPIN_DEFlux',
+        'CP_PEA_PITCH_SPIN_DPFlux',
+        'CP_PEA_PITCH_SPIN_PSD',
+        'CP_RAP_ESPCT6',
+        'CP_RAP_ESPCT6_R',
+        'CP_RAP_HSPCT',
+        'CP_RAP_HSPCT_R',
+        'CP_RAP_ISPCT_CNO',
+        'CP_RAP_ISPCT_He',
+        'CP_STA_CS_HBR',
+        'CP_STA_CS_NBR',
+        'CP_STA_CWF_GSE',
+        'CP_STA_CWF_HBR_ISR2',
+        'CP_STA_CWF_NBR_ISR2',
+        'CP_STA_PSD',
+        'CP_WBD_WAVEFORM',
+        'CP_WHI_ELECTRON_DENSITY',
+        'CP_WHI_NATURAL',
+        'JP_PMP',
+        'JP_PSE',
+    ]
 
 
 def cl_master_probes():
     """Return list of probe names."""
-    mp = ['C1', 'C2', 'C3', 'C4']
-    return mp
+    return ['C1', 'C2', 'C3', 'C4']
 
 
 def cl_format_time(s):
     """Return a string formated for Cluster web services."""
-    # Date format: YYYY-MM-DDThh:mm:ssZ
-    r = time_string(time_double(s), "%Y-%m-%dT%H:%M:%SZ")
-    return r
+    return time_string(time_double(s), "%Y-%m-%dT%H:%M:%SZ")
 
 
 def load_csa(trange=['2001-02-01', '2001-02-03'],
@@ -131,24 +157,18 @@ def load_csa(trange=['2001-02-01', '2001-02-03'],
     if probes[0] == '*':  # load all probes
         probes = cl_master_probes()
 
-    # Construct the query string
-    base_url = 'https://csa.esac.esa.int/csa-sl-tap/data?'
-    query_string = ('retrieval_type=PRODUCT&START_DATE=' + start_date +
-                    '&END_DATE=' + end_date +
-                    '&DELIVERY_FORMAT=' + delivery_format +
-                    '&DELIVERY_INTERVAL=' + delivery_interval +
-                    '&NON_BROWSER')
+    query_string = f'retrieval_type=PRODUCT&START_DATE={start_date}&END_DATE={end_date}&DELIVERY_FORMAT={delivery_format}&DELIVERY_INTERVAL={delivery_interval}&NON_BROWSER'
 
     for p in probes:
         for d in datatypes:
-            query_string += '&DATASET_ID=' + p + '_' + d
+            query_string += f'&DATASET_ID={p}_{d}'
 
     # Encode the url urllib.parse.quote
-    url = base_url + (query_string)
+    url = f'https://csa.esac.esa.int/csa-sl-tap/data?{query_string}'
 
     local_path = CONFIG['local_data_dir']
     Path(local_path).mkdir(parents=True, exist_ok=True)
-    out_gz = local_path + 'temp_cluster_file.tar.gz'  # Temp file name
+    out_gz = f'{local_path}temp_cluster_file.tar.gz'
 
     # Download the file.
     logging.info("Downloading Cluster data, please wait....")
@@ -156,10 +176,10 @@ def load_csa(trange=['2001-02-01', '2001-02-03'],
         r = requests.get(url, allow_redirects=True)
         r.raise_for_status()
     except requests.exceptions.HTTPError as err:
-        logging.error("Download HTTP error: " + str(err))
+        logging.error(f"Download HTTP error: {str(err)}")
         return tvars
     except requests.exceptions.RequestException as e:
-        logging.error("Download error: " + str(e))
+        logging.error(f"Download error: {str(e)}")
         return tvars
     logging.info("Download complete.")
 

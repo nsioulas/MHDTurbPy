@@ -54,7 +54,7 @@ def LoadSCAMFromSPEDAS_PSP(in_RTN, start_time, end_time, credentials = None):
         except:
             t0 = start_time
             t1 = end_time
-    
+
     if credentials is None:
         if in_RTN:
             scam_vars = pyspedas.psp.fields(
@@ -86,9 +86,6 @@ def LoadSCAMFromSPEDAS_PSP(in_RTN, start_time, end_time, credentials = None):
         dfscam.index      = time_string.time_datetime(time=dfscam.index)
         dfscam.index      = dfscam.index.tz_localize(None)
         dfscam.index.name = 'datetime'
-        #print("SCAM data", dfscam)
-        return dfscam
-
     else:
         # use credentials
 
@@ -134,7 +131,9 @@ def LoadSCAMFromSPEDAS_PSP(in_RTN, start_time, end_time, credentials = None):
         dfscam   = dfscam[r8:r8a]
 
 
-        return dfscam
+
+    #print("SCAM data", dfscam)
+    return dfscam
 
 
 def LoadTimeSeriesFromSPEDAS_PSP(
