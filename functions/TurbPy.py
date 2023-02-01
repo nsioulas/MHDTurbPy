@@ -13,6 +13,7 @@ from distutils.log import warn
 import time
 from numba import jit,njit,prange,objmode 
 import traceback
+import ssqueezepy
 
 # SPEDAS API
 # make sure to use the local spedas
@@ -84,6 +85,59 @@ def trace_PSD_wavelet(x, y, z, dt, dj,  mother_wave='morlet'):
     scales = ((1/freqs)/dt)#.astype(int)
     
     return db_x, db_y, db_z, freqs, PSD, scales
+
+
+def trace_PSD_cwt_ssqueezepy(x, y, z, dt, nv =16, scales='log-piecewise', wavelet=None, wname=None, l1_norm=False, est_PSD=True):
+    """
+    Method to calculate the wavelet coefficients and  power spectral density using wavelet method.
+    Parameters
+    ----------
+    x,y,z: array-like
+        the components of the field to apply wavelet tranform
+    dt: float
+        the sampling time of the timeseries
+        
+    scales: str['log', 'log-piecewise', 'linear', 'log:maximal', ...]
+                / np.ndarray
+            CWT scales.
+    Returns
+    -------
+    W_x, W_y, W_zz: array-like
+        component coeficients of th wavelet tranform
+    freq : list
+        Frequency of the corresponding psd points.
+    psd : list
+        Power Spectral Density of the signal.
+    scales : list
+        The scales at which wavelet was estimated
+    """
+    
+    if wavelet is None:
+        wavelet    = ssqueezepy.Wavelet(('morlet', {'mu': 13.4}))
+    else:
+        wavelet    = ssqueezepy.Wavelet((wname, {'mu': 13.4}))  
+        
+    if  scales is  None:
+        scales = 'log-piecewise'
+
+    # Estimate sampling frequency
+    fs         = 1/dt
+    # Estimate wavelet coefficients
+    Wx, scales = ssqueezepy.cwt(x, wavelet, scales, fs, l1_norm=l1_norm, nv=nv)
+    Wy, _      = ssqueezepy.cwt(y, wavelet, scales, fs, l1_norm=l1_norm, nv=nv)
+    Wz, _      = ssqueezepy.cwt(z, wavelet, scales, fs, l1_norm=l1_norm, nv=nv)
+    
+    # Estimate corresponding frequencies
+    freqs      = ssqueezepy.experimental.scale_to_freq(scales, wavelet, len(x), fs)
+    
+    if est_PSD:
+        # Estimate trace powers pectral density
+        PSD = (np.nanmean(np.abs(Wx)**2, axis=1) + np.nanmean(np.abs(Wy)**2, axis=1) + np.nanmean(np.abs(Wz)**2, axis=1)   )*( 2*dt)
+    else:
+        PSD = None
+    
+    return Wx, Wy, Wz, freqs, PSD, scales
+
 
 
 def TracePSD(x, y, z , dt, remove_mean=False):
@@ -322,7 +376,7 @@ def norm_factor_Gauss_window(scales, dt, lambdaa):
     return window,  multiplic_fac, norm_factor
 
 
-def estimate_wavelet_coeff(B_df, V_df,  dj , lambdaa=3):
+def estimate_wavelet_coeff(B_df, V_df,  dj , lambdaa=3, pycwt=False):
 
     """
     Method to calculate the  1) wavelet coefficients in RTN 2) The scale dependent angle between Vsw and Β
@@ -370,8 +424,11 @@ def estimate_wavelet_coeff(B_df, V_df,  dj , lambdaa=3):
     VBangles = pd.DataFrame()
     from scipy import signal
     # Estimate PSDand scale dependent fluctuations
-    db_x, db_y, db_z, freqs, PSD, scales = trace_PSD_wavelet(Br, Bt, Bn, dt, dj,  mother_wave='morlet')
-
+    if pycwt:
+        db_x, db_y, db_z, freqs, PSD, scales = trace_PSD_wavelet(Br, Bt, Bn, dt, dj,  mother_wave='morlet')
+    else:
+        # To avoid rewrititing the code (2/dj) is a good compromise (and it doesnt really matter)
+        db_x, db_y, db_z, freqs, PSD, scales = trace_PSD_cwt_ssqueezepy(Br, Bt, Bn, dt, nv=int(2/dj))   
 
     for ii in range(len(scales)):
         try:
