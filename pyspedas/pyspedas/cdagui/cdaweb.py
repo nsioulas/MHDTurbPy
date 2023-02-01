@@ -43,8 +43,7 @@ class CDAWeb():
 
     def clean_time_str(self, t):
         """Remove the time part from datetime variable."""
-        t0 = re.sub('T.+Z', '', t)
-        return t0
+        return re.sub('T.+Z', '', t)
 
     def get_datasets(self, mission_list, instrument_list):
         """Return a list of datasets given the missions and instruments.
@@ -65,7 +64,7 @@ class CDAWeb():
                 t2 = tinterval["End"].strip()
                 t1 = self.clean_time_str(t1)
                 t2 = self.clean_time_str(t2)
-                data_item += " (" + t1 + ' to ' + t2 + ")"
+                data_item += f" ({t1} to {t2})"
             dnames.append(data_item)
         return dnames
 
@@ -96,8 +95,7 @@ class CDAWeb():
                 status, result = self.cdas.get_data_file(d0[0], [], t0, t1)
                 if (status == 200 and (result is not None)):
                     r = result.get('FileDescription')
-                    for f in r:
-                        remote_url.append(f.get('Name'))
+                    remote_url.extend(f.get('Name') for f in r)
         return remote_url
 
     def cda_download(self, remote_files, local_dir, download_only=False,
@@ -135,9 +133,9 @@ class CDAWeb():
                             loaded_vars.extend(cvars)
                         tplot_loaded = 1
                     except ValueError as err:
-                        msg = "cdf_to_tplot could not load " + localfile
+                        msg = f"cdf_to_tplot could not load {localfile}"
                         msg += "\n\n"
-                        msg += "Error from pytplot: " + str(err)
+                        msg += f"Error from pytplot: {str(err)}"
                         logging.error(msg)
                         tplot_loaded = 0
             else:
@@ -147,7 +145,7 @@ class CDAWeb():
                 localfile = ''
             result.append([remotef, localfile, tplot_loaded])
 
-        logging.info('Downloaded ' + str(dcount) + ' files.')
+        logging.info(f'Downloaded {str(dcount)} files.')
         if not download_only:
             loaded_vars = list(set(loaded_vars))
             logging.info('tplot variables:')

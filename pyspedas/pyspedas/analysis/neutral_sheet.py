@@ -11,11 +11,7 @@ def sm_ns_model(time, gsm_pos, sc2NS=False):
     # convert gsm to sm coordinates
     sm_pos = cotrans(time_in=time, data_in=gsm_pos, coord_in='gsm', coord_out='sm')
     zns = gsm_pos[:, 2] - sm_pos[:, 2]
-    if not sc2NS:
-        return zns
-    else:
-        sc2NS = gsm_pos[:, 2] - zns
-        return sc2NS
+    return gsm_pos[:, 2] - zns if sc2NS else zns
 
 
 def themis_ns_model(time, gsm_pos, sc2NS=False):
@@ -50,11 +46,6 @@ def themis_ns_model(time, gsm_pos, sc2NS=False):
     rad = np.pi/180.
     dz2NS = np.zeros(len(time))
 
-    # constants used in hammond model
-    H1=8.6
-    Y0=20.2
-    D=12.2
-
     # calculate the radial distance
     rdist = np.sqrt(gsm_pos[:,0]**2 + gsm_pos[:,1]**2 + gsm_pos[:,2]**2)
 
@@ -77,19 +68,21 @@ def themis_ns_model(time, gsm_pos, sc2NS=False):
             # calculate the tilt in degrees
             tilt[i] = geopack_recalc(time_double(time[lr_ind[i]]))
 
+        Y0=20.2
         # hammond model
         iless = np.argwhere(np.abs(y) < Y0).flatten()
+        D=12.2
+
         if len(iless) > 0:
+            # constants used in hammond model
+            H1=8.6
             dz2NS[lr_ind[iless]] = ((H1+D)*np.sqrt(1-y[iless]**2/Y0**2)-D)*np.sin(tilt[iless])
 
         imore = np.argwhere(np.abs(y) >= Y0).flatten()
         if len(imore) > 0:
             dz2NS[lr_ind[imore]] = -D*np.sin(tilt[imore])
 
-    if not sc2NS:
-        return gsm_pos[:, 2] - (-dz2NS)
-    else:
-        return -dz2NS
+    return -dz2NS if sc2NS else gsm_pos[:, 2] - (-dz2NS)
 
 
 def aen_ns_model(time, gsm_pos, sc2NS=False):
@@ -141,10 +134,7 @@ def aen_ns_model(time, gsm_pos, sc2NS=False):
         # calculate the position of the neutral sheet
         dz2ns[i] = -h0 * np.sin(tt) * np.arctan(gsm_pos[i,0]/5) * (2*np.cos(gsm_pos[i,1]/6))
 
-    if not sc2NS:
-        return dz2ns
-    else:
-        return gsm_pos[:, 2]-dz2ns
+    return gsm_pos[:, 2]-dz2ns if sc2NS else dz2ns
 
 
 def den_ns_model(time, gsm_pos, sc2NS=False):
@@ -223,9 +213,8 @@ def den_ns_model(time, gsm_pos, sc2NS=False):
 
     if not sc2NS:
         return dz2ns
-    else:
-        sc2NS = gsm_pos[:,2] - dz2ns
-        return sc2NS
+    sc2NS = gsm_pos[:,2] - dz2ns
+    return sc2NS
 
 
 def sfa4(aa, bb, cc, dd):
@@ -247,7 +236,7 @@ def sfa4(aa, bb, cc, dd):
         if ry < 0:
             x = x-dx
             dx = dx/10.
-            ndx = ndx+1
+            ndx += 1
         else:
             yy = y
     return x
@@ -314,8 +303,6 @@ def fairfield_ns_model(time, gsm_pos, sc2NS=False):
     HISTORY:
     """
 
-    # constants (in re)
-    h0 = 10.5
     y0 = 22.5
     d = 14.
 
@@ -332,13 +319,14 @@ def fairfield_ns_model(time, gsm_pos, sc2NS=False):
     if len(y_ge_y0) > 0:
         dz2NS[y_ge_y0] = -d*np.sin(tilt[y_ge_y0])
     if len(y_lt_y0) > 0:
+        # constants (in re)
+        h0 = 10.5
         dz2NS[y_lt_y0] = ((h0 + d) * np.sqrt(1 - gsm_pos[y_lt_y0,0]**2/y0**2) - d)*np.sin(tilt[y_lt_y0])
 
     if not sc2NS:
         return dz2NS
-    else:
-        sc2NS = gsm_pos[:, 2] - dz2NS
-        return sc2NS
+    sc2NS = gsm_pos[:, 2] - dz2NS
+    return sc2NS
 
    
 def den_fairfield_ns_model(time, gsm_pos, sc2NS=False):
@@ -376,9 +364,8 @@ def den_fairfield_ns_model(time, gsm_pos, sc2NS=False):
 
     if not sc2NS:
         return dz2ns
-    else:
-        sc2NS = gsm_pos[:,2] - dz2ns
-        return sc2NS
+    sc2NS = gsm_pos[:,2] - dz2ns
+    return sc2NS
 
 
 def lopez_ns_model(time, gsm_pos, kp=None, mlt=None, sc2NS=False):
@@ -430,9 +417,8 @@ def lopez_ns_model(time, gsm_pos, kp=None, mlt=None, sc2NS=False):
 
     if not sc2NS:
         return z
-    else:
-        sc2NS = gsm_pos[:,2] - z
-        return sc2NS
+    sc2NS = gsm_pos[:,2] - z
+    return sc2NS
 
 
 def rthph2xyz(r,th,ph):
@@ -495,10 +481,7 @@ def neutral_sheet(time, pos, kp=None, model='themis', mlt=None, in_coord='gsm', 
     time = np.array(time)
 
     # validate and initialize parameters if not set
-    if model is None:
-        model = 'themis'
-    else:
-        model = model.lower()
+    model = 'themis' if model is None else model.lower()
     models = ['sm', 'themis', 'aen', 'den', 'fairfield', 'den_fairfield', 'lopez']
     if model not in models:
         logging.error('An invalid neutral sheet model name was used. Valid entries include: ')
@@ -506,10 +489,7 @@ def neutral_sheet(time, pos, kp=None, model='themis', mlt=None, in_coord='gsm', 
         return
 
     # check input coordinate system, convert to gsm if needed
-    if in_coord is None:
-        in_coord = 'gsm'
-    else:
-        in_coord = in_coord.lower()
+    in_coord = 'gsm' if in_coord is None else in_coord.lower()
     if in_coord == 'gsm':
         gsm_pos = pos
     else:

@@ -70,7 +70,7 @@ def wavelet(names, new_names=None, suffix='_pow', wavename='morl', scales=None,
         data = alldata[1]
 
         if len_time < 2:
-            logging.error('wavelet error: Not enought data points for ' + old)
+            logging.error(f'wavelet error: Not enought data points for {old}')
             continue
 
         coef, freqs = pywt.cwt(data, scales=scales, wavelet=wavename,
@@ -82,6 +82,6 @@ def wavelet(names, new_names=None, suffix='_pow', wavename='morl', scales=None,
         pytplot.options(new, 'spec', 1)
         powervar.append(new)
 
-        logging.info('wavelet was applied to: ' + new)
+        logging.info(f'wavelet was applied to: {new}')
 
     return powervar

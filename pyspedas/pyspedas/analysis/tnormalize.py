@@ -46,8 +46,7 @@ def tnormalize(variable, newname=None, return_data=False):
 
     if return_data:
         return data_norm
-    else:
-        if newname is None:
-            newname = variable + '_normalized'
-        store_data(newname, data={'x': times, 'y': data_norm}, attr_dict=metadata_in)
-        return newname
+    if newname is None:
+        newname = f'{variable}_normalized'
+    store_data(newname, data={'x': times, 'y': data_norm}, attr_dict=metadata_in)
+    return newname
