@@ -93,26 +93,28 @@ def TracePSD(x, y, z , dt, remove_mean=False):
     u : timeseries, np.array
     dt: 1/sampling frequency
     """
-    if isinstance(x, np.ndarray):
-        pass
-    else:
-        x = x.values; y = y.values; z =z.values
-    
+    if not isinstance(x, np.ndarray):
+        x = x.values
+        y = y.values
+        z =z.values
+
     if remove_mean:
         x = x  - np.nanmean(x)
         y = y  - np.nanmean(y)
         z = z  - np.nanmean(z)
 
     N  = len(x)
-    xf = np.fft.rfft(x);  yf = np.fft.rfft(y); zf = np.fft.rfft(z);
+    xf = np.fft.rfft(x)
+    yf = np.fft.rfft(y)
+    zf = np.fft.rfft(z);
 
-    
+
     B_pow = 2 * (np.abs(xf) ** 2 + np.abs(yf) ** 2 + np.abs(zf) ** 2    ) / N * dt
 
     freqs = np.fft.fftfreq(len(x), dt)
     freqs = freqs[freqs>0]
     idx   = np.argsort(freqs)
-    
+
     return freqs[idx], B_pow[idx]
 
 
@@ -144,11 +146,13 @@ def estimated_windowed_PSD(mag, magvars,  w_size, chuncktime, windowStr='boxcar'
     # build chunks
     # time per chunk in seconds
     chunk_duration_sec = chuncktime
-    chunktime_str = str(int(chuncktime)) + 's'
+    chunktime_str = f'{int(chuncktime)}s'
     ts_chunk = func.chunkify(mag.index, chunk_duration_sec)
 
     # get timeseries for the break freq (in-between ts_chunk)
-    ts_spec = pd.Series(ts_chunk[:-1]) + pd.Timedelta(str(int(chunk_duration_sec / 2)) + 's')
+    ts_spec = pd.Series(ts_chunk[:-1]) + pd.Timedelta(
+        f'{int(chunk_duration_sec / 2)}s'
+    )
 
     Nchunks = len(ts_chunk)
 
@@ -188,11 +192,7 @@ def estimated_windowed_PSD(mag, magvars,  w_size, chuncktime, windowStr='boxcar'
     for ti in range(Nchunks - 1):
         # for ti in chunk_plot:
 
-        if ti == chunk_plot:
-            plotsteps = True
-        else:
-            plotsteps = False
-
+        plotsteps = ti == chunk_plot
         # print('ti = %d' % ti)
 
         t0str = ts_chunk[ti]
@@ -200,7 +200,7 @@ def estimated_windowed_PSD(mag, magvars,  w_size, chuncktime, windowStr='boxcar'
 
         # use strings to get chunk data
         dat = mag[t0str:tNstr][magvars]
-        
+
 
         # get chunk size
         N = dat.index.size
@@ -225,7 +225,7 @@ def estimated_windowed_PSD(mag, magvars,  w_size, chuncktime, windowStr='boxcar'
             # set window
             # ft_window = window_selector(N, win_name=windowStr)
             ft_window = func.window_selector(N, win_name=windowStr)
- 
+
             # get the current component
             Bi = dat[dat.columns[i]].values
 
@@ -256,7 +256,7 @@ def estimated_windowed_PSD(mag, magvars,  w_size, chuncktime, windowStr='boxcar'
 
         # interpolate smoothed trace to log-spaced freqs
         Plog = np.interp(freq_log, freq, Btr_smooth)
-        
+
         return freq_log, Plog
 
 def power_spec(signal,npoints):
@@ -275,7 +275,9 @@ def power_spec(signal,npoints):
     window = scipy.signal.hanning(npoints)
    # print(int(len(signal) / npoints))
    # print(signal)
-    window_blocks = scipy.vstack( [ window for x in range(int(len(signal) / npoints)) ] )
+    window_blocks = scipy.vstack(
+        [window for _ in range(int(len(signal) / npoints))]
+    )
 
     signal_blocks = signal.reshape((-1,npoints))
 
@@ -410,10 +412,10 @@ def estimate_wavelet_coeff(B_df, V_df,  dj , lambdaa=3):
 def estimate_PVI(B_resampled, hmany, di, Vsw,  hours, PVI_vec_or_mod='vec'):
 
     av_hours                           = hours*3600
-    lag                                = (B_resampled.index[1]-B_resampled.index[0])/np.timedelta64(1,'s') 
+    lag                                = (B_resampled.index[1]-B_resampled.index[0])/np.timedelta64(1,'s')
     av_window                          = int(av_hours/lag)
-    
-    
+
+
 
     for kk in range(len(hmany)):
         tau                             = round((hmany[kk]*di)/(Vsw*lag))
@@ -426,17 +428,21 @@ def estimate_PVI(B_resampled, hmany, di, Vsw,  hours, PVI_vec_or_mod='vec'):
 
             print('The value was set to the minimum possible, hmany=',hmany[kk]) 
 
-        if  tau>0:
+        if tau>0:
             if PVI_vec_or_mod:
                 ### Estimate PVI ###
                 B_resampled['DBtotal']         = np.sqrt((B_resampled.Br.diff(tau))**2 + (B_resampled.Bt.diff(tau))**2 + (B_resampled.Bn.diff(tau))**2)
                 B_resampled['DBtotal_squared'] = B_resampled['DBtotal']**2
-                denominator                    = np.sqrt(B_resampled['DBtotal_squared'].rolling(int(av_window), center=True).mean())
+                denominator = np.sqrt(
+                    B_resampled['DBtotal_squared']
+                    .rolling(av_window, center=True)
+                    .mean()
+                )
 
                 PVI_dB                         = pd.DataFrame({     'DateTime' : B_resampled.index,
                                                                     'PVI'      : B_resampled['DBtotal']/denominator})
                 PVI_dB                         = PVI_dB.set_index('DateTime')
-                B_resampled['PVI_'+str(hmany[kk])] = PVI_dB.values
+                B_resampled[f'PVI_{str(hmany[kk])}'] = PVI_dB.values
 
                 # Save RAM
                 del  B_resampled['DBtotal_squared'], B_resampled['DBtotal']
@@ -445,19 +451,22 @@ def estimate_PVI(B_resampled, hmany, di, Vsw,  hours, PVI_vec_or_mod='vec'):
                 B_resampled['DBtotal']             = B_resampled['B_modulus'].diff(tau)
                 B_resampled['DBtotal_squared']     = B_resampled['DBtotal']**2
 
-                denominator                        = np.sqrt(B_resampled['DBtotal_squared'].rolling(int(av_window), center=True).mean())
+                denominator = np.sqrt(
+                    B_resampled['DBtotal_squared']
+                    .rolling(av_window, center=True)
+                    .mean()
+                )
 
                 PVI_dB                             = pd.DataFrame({'DateTime': B_resampled.index,
                                                                         'PVI': B_resampled['DBtotal']/denominator})
                 PVI_dB                             = PVI_dB.set_index('DateTime')
-                B_resampled['PVI_mod_'+str(hmany[kk])] = PVI_dB.values
+                B_resampled[f'PVI_mod_{str(hmany[kk])}'] = PVI_dB.values
                 del  B_resampled['DBtotal_squared'], B_resampled['DBtotal'] , B_resampled['B_modulus']
+        elif PVI_vec_or_mod:
+            B_resampled[f'PVI_{str(hmany[kk])}'] = np.nan*B_resampled.Br.values
         else:
-            if PVI_vec_or_mod:
-                B_resampled['PVI_'+str(hmany[kk])] = np.nan*B_resampled.Br.values
-            else:
-                B_resampled['PVI_mod_'+str(hmany[kk])] = np.nan*B_resampled.Br.values
-        
+            B_resampled[f'PVI_mod_{str(hmany[kk])}'] = np.nan*B_resampled.Br.values
+
     return B_resampled
 
 
@@ -604,30 +613,30 @@ def estimate_PSD_wavelets_all_intervals_E1(db_x, db_y, db_z, angles, freqs,   dt
 
 def remove_big_gaps(big_gaps, B_resampled):
     """ Removes big gaps identified earlier """ 
-    if len(big_gaps)>0:
-        for o in range(len(big_gaps)):
-            if o%50==0:
-                print("Completed = "+ str(100*o/len(big_gaps)))
-            dt2 = big_gaps.index[o]
-            dt1 = big_gaps.index[o]-datetime.timedelta(seconds=big_gaps[o])
-            if o==0:
-                B_resampled1   = B_resampled[(B_resampled.index<dt1) | (B_resampled.index>dt2) ]
-            else:
-                B_resampled1   = B_resampled1[(B_resampled1.index<dt1) | (B_resampled1.index>dt2) ]   
+    if len(big_gaps) <= 0:
+        return B_resampled
 
-        nindex = pd.date_range( B_resampled1.index[0], periods=len( B_resampled1.index), freq=str(1e3*(B_resampled1.index[1]-B_resampled1.index[0])/np.timedelta64(1,'s'))+"ms")
-        B_resampled1 = B_resampled1.reindex(nindex)
-    else:
-        B_resampled1 = B_resampled
-    
-    return B_resampled1
+    for o in range(len(big_gaps)):
+        if o%50==0:
+            print(f"Completed = {str(100 * o / len(big_gaps))}")
+        dt2 = big_gaps.index[o]
+        dt1 = big_gaps.index[o]-datetime.timedelta(seconds=big_gaps[o])
+        B_resampled1 = (
+            B_resampled[(B_resampled.index < dt1) | (B_resampled.index > dt2)]
+            if o == 0
+            else B_resampled1[
+                (B_resampled1.index < dt1) | (B_resampled1.index > dt2)
+            ]
+        )
+    nindex = pd.date_range( B_resampled1.index[0], periods=len( B_resampled1.index), freq=str(1e3*(B_resampled1.index[1]-B_resampled1.index[0])/np.timedelta64(1,'s'))+"ms")
+    return B_resampled1.reindex(nindex)
 
 def estimate_WT_distribution(big_gaps, B_resampled, PVI_thresholds, hmany):
     """ ESTIMATE WT DISTRIBUTIONS, remove the gaps indentified earlier """ 
     if len(big_gaps)>0:
         for o in range(len(big_gaps)):
             if o%50==0:
-                print("Completed = "+ str(100*o/len(big_gaps)))
+                print(f"Completed = {str(100 * o / len(big_gaps))}")
             dt2 = big_gaps.index[o]
             dt1 = big_gaps.index[o]-datetime.timedelta(seconds=big_gaps[o])
             if o==0:
@@ -639,19 +648,19 @@ def estimate_WT_distribution(big_gaps, B_resampled, PVI_thresholds, hmany):
         B_resampled1 = B_resampled1.reindex(nindex)
     else:
         B_resampled1 = B_resampled
-        
-    
+
+
     WT     = {}
     for k in hmany:
         thresh = {}
         for i in PVI_thresholds:
-            f2          = B_resampled1['PVI_'+str(k)][B_resampled1['PVI_'+str(k)]>i]
+            f2 = B_resampled1[f'PVI_{str(k)}'][B_resampled1[f'PVI_{str(k)}'] > i]
             time        = (f2.index.to_series().diff()/np.timedelta64(1, 's'))
             #res2        = func.pdf(time.values[1:], hmany_bins_PDF_WT, 1,1)
-            thresh['PVI>'+str(i)]      = time.values[1:]
-            
-        WT['PVI_'+str(k)] = thresh
-            
+            thresh[f'PVI>{str(i)}'] = time.values[1:]
+
+        WT[f'PVI_{str(k)}'] = thresh
+
     return WT
 
 
@@ -669,7 +678,7 @@ def estimate_kurtosis_with_rand_samples(hmany_stds, di, vsw, xvals, yvals, nxbin
 
     gfg         = np.digitize(fxvals, bins)
     unique_vals = np.unique(gfg)
-    
+
     kurt       = np.empty((len(unique_vals),nrounds))*np.nan
     xvalues    = np.empty((len(unique_vals),nrounds))*np.nan
     counts     = np.empty((len(unique_vals),nrounds))*np.nan
@@ -680,7 +689,7 @@ def estimate_kurtosis_with_rand_samples(hmany_stds, di, vsw, xvals, yvals, nxbin
     Sf4_f      = np.empty((len(unique_vals),nrounds))*np.nan
     Sf5_f      = np.empty((len(unique_vals),nrounds))*np.nan
     Sf6_f      = np.empty((len(unique_vals),nrounds))*np.nan
-    
+
     for i in prange(len(unique_vals)):
         if np.mod(i,10)==0:
             print('Unique values completed', round(100*i/len(unique_vals),2))
@@ -689,34 +698,26 @@ def estimate_kurtosis_with_rand_samples(hmany_stds, di, vsw, xvals, yvals, nxbin
         xnew_f   = fxvals[gfg==unique_vals[i]]
         di_new   = di[gfg==unique_vals[i]]
         Vsw_new  = vsw[gfg==unique_vals[i]]        
-        
-        
+
+
         #percentile   = np.percentile(ynew, remove_percntile)
         nanstd       = np.nanstd(ynew)
         init_length  = len(ynew)
         remove_ind   = ~(ynew>hmany_stds*nanstd);
 
-        
+
 
         ynew         = ynew[remove_ind]
         xnew         = xnew[remove_ind];
-        di_new       = di_new[remove_ind]; 
+        di_new       = di_new[remove_ind];
         xnew_f       = xnew_f[remove_ind];
-        Vsw_new      = Vsw_new[remove_ind]; 
+        Vsw_new      = Vsw_new[remove_ind];
         len_xnew_f   = len(xnew_f)
         print('Removed (%)',100*(1-len_xnew_f/init_length))
-        
-        
-        if len_xnew_f<sample_size:
-            sample_size1 = len(xnew_f)
-        else:
-            sample_size1 = sample_size
 
-        if sample_size1<sample_size:
-            nrounds1=1
-        else:
-            nrounds1=nrounds
-        
+
+        sample_size1 = len(xnew_f) if len_xnew_f<sample_size else sample_size
+        nrounds1 = 1 if sample_size1<sample_size else nrounds
         index_array = np.arange(0, len_xnew_f,1)
         if sample_size1>0:
             for k in prange(nrounds1):
@@ -725,14 +726,14 @@ def estimate_kurtosis_with_rand_samples(hmany_stds, di, vsw, xvals, yvals, nxbin
                 if np.mod(k,10)==0:
                     print('Rounds completed',k)
 
-                rand_indices = np.array(random.choices(index_array,k=int(sample_size1))) 
+                rand_indices = np.array(random.choices(index_array,k=int(sample_size1)))
                 terma        = di_new[rand_indices]/Vsw_new[rand_indices]
                 termb        = ynew[rand_indices]/np.sqrt(xnew[rand_indices] )
 
                 Sf1          = np.nanmean(((terma)**(1/2))*np.abs(termb)**1)
-                Sf2          = np.nanmean(((terma)**(2/2))*np.abs(termb)**2)
+                Sf2 = np.nanmean(terma**1 * np.abs(termb)**2)
                 Sf3          = np.nanmean(((terma)**(3/2))*np.abs(termb)**3)
-                Sf4          = np.nanmean(((terma)**(4/2))*np.abs(termb)**4)                   
+                Sf4          = np.nanmean(((terma)**(4/2))*np.abs(termb)**4)
                 Sf5          = np.nanmean(((terma)**(5/2))*np.abs(termb)**5)
                 Sf6          = np.nanmean(((terma)**(6/2))*np.abs(termb)**6)  
 
@@ -745,7 +746,7 @@ def estimate_kurtosis_with_rand_samples(hmany_stds, di, vsw, xvals, yvals, nxbin
                 Sf4_f[i,k]       = Sf4
                 Sf5_f[i,k]       = Sf5
                 Sf6_f[i,k]       = Sf6
-            
+
     return xvalues, kurt, counts, Sf1_f, Sf2_f, Sf3_f, Sf4_f, Sf5_f, Sf6_f
 
 

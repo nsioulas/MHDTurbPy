@@ -88,7 +88,7 @@ class GUIWidget(QWidget):
                             self.mission_box.selectedItems()]
             instrument_list = [item.text() for item in
                                self.instrument_box.selectedItems()]
-            if len(mission_list) < 1 or len(instrument_list) < 1:
+            if not mission_list or not instrument_list:
                 msg = "Please select at least one mission and one instrument."
                 aaa = show_my_message(self.parent, title, msg)
                 return 0
@@ -99,7 +99,7 @@ class GUIWidget(QWidget):
                 aaa = show_my_message(self.parent, title, msg)
                 return 0
             elif datalen > 50:
-                msg = "Number of datasets found: " + str(datalen)
+                msg = f"Number of datasets found: {datalen}"
                 msg += "\nOnly 50 will be shown."
                 aaa = show_my_message(self.parent, title, msg)
             self.mission_selected.setText(str(mission_list))
@@ -183,7 +183,7 @@ class GUIWidget(QWidget):
                             self.dataset_box.selectedItems()]
             t0 = self.time_start_box.text()
             t1 = self.time_end_box.text()
-            if len(dataset_list) < 1 or len(t0) < 9 or len(t1) < 9:
+            if not dataset_list or len(t0) < 9 or len(t1) < 9:
                 msg = "Please select at least one dataset and start-end times."
                 aaa = show_my_message(self.parent, title, msg)
                 return 0
@@ -194,7 +194,7 @@ class GUIWidget(QWidget):
                 aaa = show_my_message(self.parent, title, msg)
                 return 0
             elif filelen > 50:
-                msg = "Number of files found: " + str(filelen)
+                msg = f"Number of files found: {filelen}"
                 msg += "\nOnly 50 will be shown."
                 aaa = show_my_message(self.parent, title, msg)
             self.file_box.addItems(file_list[:50])
@@ -204,10 +204,7 @@ class GUIWidget(QWidget):
             dlg = QDialog(self)
             gridc = QVBoxLayout()
             dlg.setLayout(gridc)
-            if (start_or_end == "start"):
-                title_str = "Start date"
-            else:
-                title_str = "End date"
+            title_str = "Start date" if (start_or_end == "start") else "End date"
             titlelabel = QLabel(title_str)
             gridc.addWidget(titlelabel)
 
@@ -230,9 +227,9 @@ class GUIWidget(QWidget):
                 date = my_calendar.selectedDate()
                 date_string = date.toString('yyyy-MM-dd')
                 if (start_or_end == "start"):
-                    self.time_start_box.setText(date_string + " 00:00:01")
+                    self.time_start_box.setText(f"{date_string} 00:00:01")
                 else:
-                    self.time_end_box.setText(date_string + " 23:59:59")
+                    self.time_end_box.setText(f"{date_string} 23:59:59")
                 labeldate.setText(date_string)
 
             my_calendar.clicked[QDate].connect(show_date)
@@ -247,13 +244,13 @@ class GUIWidget(QWidget):
         label1 = QLabel("Start Time:")
         t0 = datetime.datetime.strftime(datetime.datetime.now()
                                         - datetime.timedelta(7), '%Y-%m-%d')
-        time1 = QLineEdit(str(t0) + " 00:00:01")
+        time1 = QLineEdit(f"{str(t0)} 00:00:01")
         self.time_start_box = time1
         button1 = QPushButton("Select")
         button1.clicked.connect(lambda: pick_time("start"))
 
         label2 = QLabel("End Time:")
-        time2 = QLineEdit(str(t0) + " 23:59:59")
+        time2 = QLineEdit(f"{str(t0)} 23:59:59")
         self.time_end_box = time2
         button2 = QPushButton("Select")
         button2.clicked.connect(lambda: pick_time("end"))
@@ -282,7 +279,7 @@ class GUIWidget(QWidget):
             """Get data button."""
             title = "Download Files"
             file_list = [item.text() for item in self.file_box.selectedItems()]
-            if len(file_list) < 1:
+            if not file_list:
                 msg = "Please select at least one file to download."
                 aaa = show_my_message(self.parent, title, msg)
                 return 0
@@ -320,8 +317,7 @@ class GUIWidget(QWidget):
                         count_tplot_problem += 1
                     elif item[2] == 1:
                         count_tplot += 1
-                msg = "Results:"
-                msg += "\n"
+                msg = "Results:" + "\n"
                 msg += "\nFiles to download: " + str(filelen)
                 msg += ("\nFiles that could not be downloaded: "
                         + str(count_no_downloads))

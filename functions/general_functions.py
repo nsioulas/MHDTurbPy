@@ -82,8 +82,8 @@ def best_fit(X, Y):
     ybar = sum(Y)/len(Y)
     n = len(X) # or len(Y)
 
-    numer = sum([xi*yi for xi,yi in zip(X, Y)]) - n * xbar * ybar
-    denum = sum([xi**2 for xi in X]) - n * xbar**2
+    numer = sum(xi*yi for xi,yi in zip(X, Y)) - n * xbar * ybar
+    denum = sum(xi**2 for xi in X) - n * xbar**2
 
     b = numer / denum
     a = ybar - b * xbar
@@ -179,14 +179,16 @@ def histogram(quant, bins2, logx):
         binsa = np.logspace(np.log10(min(quant)),np.log10(max(quant)),bins2)
     else:
         binsa = np.linspace((min(quant)),(max(quant)),bins2)
-            
+
     histoout,binsout = np.histogram(quant,binsa,density=True)
     erroutt = histoout/np.float64(np.size(quant))
     erroutt = np.sqrt(erroutt*(1.0-erroutt)/np.float64(np.size(quant)))
-    erroutt[0:np.size(erroutt)] = erroutt[0:np.size(erroutt)] /(binsout[1:np.size(binsout)]-binsout[0:np.size(binsout)-1])
+    erroutt[: np.size(erroutt)] = erroutt[: np.size(erroutt)] / (
+        binsout[1 : np.size(binsout)] - binsout[: np.size(binsout) - 1]
+    )
 
     bin_centersout   = binsout[:-1] + np.log10(0.5) * (binsout[1:] - binsout[:-1])
-        
+
     for k in range(len(bin_centersout)):
         if (histoout[k]!=0.):
             nout.append(histoout[k])
@@ -229,41 +231,42 @@ def pdf(val, bins, loglog, density,scott_rule =False):
 
     if loglog ==1:
         binsa = np.logspace(np.log10(min(val)),np.log10(max(val)),bins)
+    elif scott_rule:
+        binsa = scotts_rule_PDF(val)
+        #print(binsa)
     else:
-        if scott_rule:
-            binsa = scotts_rule_PDF(val)
-            #print(binsa)
-        else:
-            binsa = np.linspace((min(val)),(max(val)),bins)
-        
+        binsa = np.linspace((min(val)),(max(val)),bins)
+
     if density ==1:
         numout, binsout, patchesout = plt.hist(val,density= True,bins=binsa, alpha = 0)
-        
+
     else:
         numout, binsout, patchesout = plt.hist(val,density= False,bins=binsa, alpha = 0)
     counts, _,_ = plt.hist(val,density= False,bins=binsa, alpha = 0)
-        
+
     if loglog ==1:
         bin_centers = binsout[:-1] + np.log10(0.5) * (binsout[1:] - binsout[:-1])
     else:
         bin_centers = binsout[:-1] +         (0.5) * (binsout[1:] - binsout[:-1])
-        
+
     if density ==1:
         histoout,edgeout=np.histogram(val,binsa,density= True)
     else:
         histoout,edgeout=np.histogram(val,binsa,density= False)
-    
+
     erroutt = histoout/np.float64(np.size(val))
     erroutt = np.sqrt(erroutt*(1.0-erroutt)/np.float64(np.size(val)))
-    erroutt[0:np.size(erroutt)] = erroutt[0:np.size(erroutt)] /(edgeout[1:np.size(edgeout)]-edgeout[0:np.size(edgeout)-1])
- 
+    erroutt[: np.size(erroutt)] = erroutt[: np.size(erroutt)] / (
+        edgeout[1 : np.size(edgeout)] - edgeout[: np.size(edgeout) - 1]
+    )
+
     for i in range(len(numout)):
         if (numout[i]!=0.):
             nout.append(numout[i])
             bout.append(bin_centers[i]) 
             errout.append(erroutt[i])
             countsout.append(counts[i])
-    
+
     return  np.array(bout), np.array(nout), np.array(errout), np.array(countsout)
 
 
@@ -427,34 +430,34 @@ def binned_quantity_percentile(x, y, what, std_or_error_of_mean, mov_aver_window
 
 
 def binned_quantity(x, y, what, std_or_error_of_mean, mov_aver_window,loglog, return_counts=False):
-    x = np.array(x); y =np.array(y)
-    x = x.astype(float); y =y.astype(float)
+    x = np.array(x)
+    y =np.array(y)
+    x = x.astype(float)
+    y =y.astype(float)
     index =np.array(np.argsort(x).astype(int))
     #print(index)
     x = x[index]
     y = y[index]
     # print(x)
     # print(y)
-    
+
     ind = y>-1e10
 
-    x = np.array(x[ind]); y =np.array(y[ind])
+    x = np.array(x[ind])
+    y =np.array(y[ind])
     if loglog:
         mov_aver_window = np.logspace(np.log10(np.nanmin(x)),np.log10(np.nanmax(x)), mov_aver_window)
     y_b, x_b, binnumber     = stats.binned_statistic(x, y, what, bins   = mov_aver_window)  # from scipy stats
     z_b, x_b, binnumber     = stats.binned_statistic(x, y, 'std',   bins  = mov_aver_window)
-    points , x_b, binnumber = stats.binned_statistic(x, y, 'count', bins= mov_aver_window)    
+    points , x_b, binnumber = stats.binned_statistic(x, y, 'count', bins= mov_aver_window)
    # percentiles , x_b, binnumber = stats.binned_statistic(x, y, lambda y: np.percentile(y, percentile), bins= mov_aver_window) 
 
 
     if std_or_error_of_mean==0:
         z_b =z_b/np.sqrt(points)
-    x_b = x_b[:-1] + 0.5*(x_b[1:]-x_b[:-1]) 
-    #x_b = x_b[1:]  
-    if return_counts:
-        return x_b, y_b, z_b, points
-    else:
-        return x_b, y_b, z_b
+    x_b = x_b[:-1] + 0.5*(x_b[1:]-x_b[:-1])
+    #x_b = x_b[1:]
+    return (x_b, y_b, z_b, points) if return_counts else (x_b, y_b, z_b)
 
 def progress_bar(jj, length):
     print('Completed', round(100*(jj/length),2))
@@ -524,36 +527,46 @@ def find_fit_semilogy(x, y, x0, xf):
 
 
 def mov_fit_func(xx, yy, w_size,  xmin, xmax, numb_fits, keep_plot):
-    keep_err = []; keep_ind = []; keep_x =[];xvals =[]; yvals =[];
-    
+    keep_err = []
+    keep_ind = []
+    keep_x =[]
+    xvals =[]
+    yvals =[];
+
     index1   = np.where(xx>xmin)[0].astype(int)#[0]
 
-    if index1.size!=0:
-        index1     = index1[0]
-        index2     =  np.where(xx<xmax)[0].astype(int)[-1]
-
-        where_fit = np.arange(index1, index2+1, 1)
-        
-        for i in range(index1, len(where_fit)):
-            x0 = xx[int(where_fit[i])]
-            xf = w_size*x0
-            if xf<0.95*xmax:
-                fit, s, e, x1, y1       = find_fit(xx, yy, x0, xf) 
-                if len(np.shape(x1))>0:
-
-                    keep_err.append(np.sqrt(fit[1][1][1]))
-                    keep_ind.append(fit[0][1])
-                    #keep_x.append(x1[s])# + np.log10(0.5) * (x1[s] - x1[e])) 
-                    keep_x.append(x1[s])# + np.log10(0.5) * (x1[s] - x1[e])) 
-                    if keep_plot:
-                        xvals.append(x1[s:e])
-                        yvals.append(2*fit[2])
-        if keep_plot:
-            return {'xvals': keep_x, 'plaw': keep_ind, 'fit_err': keep_err, "plot_x": xvals, 'plot_y': yvals}
-        else:
-            return {'xvals': keep_x, 'plaw': keep_ind, 'fit_err': keep_err}
-    else:
+    if index1.size == 0:
         return {np.nan}
+    index1     = index1[0]
+    index2     =  np.where(xx<xmax)[0].astype(int)[-1]
+
+    where_fit = np.arange(index1, index2+1, 1)
+
+    for i in range(index1, len(where_fit)):
+        x0 = xx[int(where_fit[i])]
+        xf = w_size*x0
+        if xf<0.95*xmax:
+            fit, s, e, x1, y1       = find_fit(xx, yy, x0, xf) 
+            if len(np.shape(x1))>0:
+
+                keep_err.append(np.sqrt(fit[1][1][1]))
+                keep_ind.append(fit[0][1])
+                #keep_x.append(x1[s])# + np.log10(0.5) * (x1[s] - x1[e])) 
+                keep_x.append(x1[s])# + np.log10(0.5) * (x1[s] - x1[e])) 
+                if keep_plot:
+                    xvals.append(x1[s:e])
+                    yvals.append(2*fit[2])
+    return (
+        {
+            'xvals': keep_x,
+            'plaw': keep_ind,
+            'fit_err': keep_err,
+            "plot_x": xvals,
+            'plot_y': yvals,
+        }
+        if keep_plot
+        else {'xvals': keep_x, 'plaw': keep_ind, 'fit_err': keep_err}
+    )
 
 
 
@@ -585,9 +598,7 @@ def smooth(x, n=5):
     Returns:
         xs: [ndarray] Smoothed signal of same length as *x*
     """
-    xs = np.convolve(x, np.ones(n) / n, mode='same')
-
-    return xs
+    return np.convolve(x, np.ones(n) / n, mode='same')
 
 
 def resample_find_equal_elements(keep_unique, interpolate, xarr1, yarr1, xarr2, yarr2,choose_min_max, interp_method, npoints,parx_min, parx_max, perx_min, perx_max ):
@@ -723,9 +734,7 @@ def replace_filename_extension(oldfilename, newextension, addon=False):
     if addon:
         dot_ix = len(oldfilename)
 
-    newfilename = oldfilename[:dot_ix] + '.' + newextension.strip('.')
-
-    return newfilename
+    return oldfilename[:dot_ix] + '.' + newextension.strip('.')
 
 
 def newindex(df, ix_new, interp_method='linear'):
@@ -751,10 +760,7 @@ def newindex(df, ix_new, interp_method='linear'):
     # re-index and interpolate over the non-matching points
     df2 = df.reindex(ix_com).interpolate(method=interp_method)
 
-    # drop all the old index points by re-indexing to new index
-    df3 = df2.reindex(ix_new)
-    #print(len(df3)), print(len(ix_new))
-    return df3
+    return df2.reindex(ix_new)
 
 
 def plot_fixrate(df, df_new, L, r):
@@ -805,7 +811,7 @@ def plot_fixrate(df, df_new, L, r):
     plt.ylabel('$\Delta t$ [nanoseconds]')
     plt.xlabel('Time [UT]')
     plt.grid(which='both')
-    plt.title(str(df.index[0]) + ' --> ' + str(df.index[-1]))
+    plt.title(f'{str(df.index[0])} --> {str(df.index[-1])}')
     plt.tight_layout()
     plt.legend()
 
@@ -825,18 +831,7 @@ def listsearch(search_string, input_list):
 
     """
 
-    found_list = []
-    i = 0
-
-    for si in input_list:
-
-        if si.startswith(search_string):
-            # print('%d: %s' % (i, si))
-            found_list.append(si)
-
-        i += 1
-
-    return found_list
+    return [si for si in input_list if si.startswith(search_string)]
 
 
 def window_selector(N, win_name='Hanning'):
@@ -852,9 +847,7 @@ def window_selector(N, win_name='Hanning'):
     """
     import scipy.signal as signal
 
-    w = signal.windows.get_window(win_name, N)
-
-    return w
+    return signal.windows.get_window(win_name, N)
 
 
 def chunkify(ts_in, chunk_duration):
@@ -870,11 +863,11 @@ def chunkify(ts_in, chunk_duration):
     """
     #print('converting to chunks of len %.2f sec' % chunk_duration)
 
-    dchunk_str = str(chunk_duration) + 'S'
+    dchunk_str = f'{str(chunk_duration)}S'
 
-    chunks_time = pd.date_range(ts_in[0].ceil('1s'), ts_in[-1].floor('1s'), freq=dchunk_str)
-
-    return chunks_time
+    return pd.date_range(
+        ts_in[0].ceil('1s'), ts_in[-1].floor('1s'), freq=dchunk_str
+    )
 
 
 from scipy import signal, special
@@ -894,44 +887,34 @@ def time_domain_filter(data, dt, freq_low, freq_high):
     flow = freq_low/nyquist
     fhigh = freq_high/nyquist
     A = 120. # from Ergun's fa_fields_filter
-    if flow == 0.0:
-        f = fhigh
-    else:
-        f = flow
+    f = fhigh if flow == 0.0 else flow
     nterms = int(5./f)
-    if nterms > 5000.:
-        nterms = 5000.
+    nterms = min(nterms, 5000.)
     out = digital_filter(flow,fhigh,A,nterms)
-    
-    if len(np.shape(data))>1:
-        new_series_x = signal.convolve(data[:,0],out,mode='same',method='direct')
-        new_series_y = signal.convolve(data[:,1],out,mode='same',method='direct')
-        new_series_z = signal.convolve(data[:,2],out,mode='same',method='direct')
-        new_series =  np.transpose(np.vstack((new_series_x,new_series_y,new_series_z)))
-    else:
-        new_series = signal.convolve(data,out,mode='same',method='direct')
 
-    return new_series
+    if len(np.shape(data)) <= 1:
+        return signal.convolve(data,out,mode='same',method='direct')
+
+    new_series_x = signal.convolve(data[:,0],out,mode='same',method='direct')
+    new_series_y = signal.convolve(data[:,1],out,mode='same',method='direct')
+    new_series_z = signal.convolve(data[:,2],out,mode='same',method='direct')
+    return np.transpose(np.vstack((new_series_x,new_series_y,new_series_z)))
 
 def digital_filter(flow,fhigh,aGibbs,nterms):
     
-    if fhigh < flow:
-        fstop = float(1)
-    else:
-        fstop = float(0)
-    
+    fstop = float(1) if fhigh < flow else float(0)
     # Computes Kaiser weights W(N,K) for digital filters
     # W = coef = returned array of Kaiser weights
     # N = value of N in W(N,K), ie number of terms
     # A = Size of gibbs phenomenon wiggles in -DB
-    
+
     if aGibbs <= 21 :
         alpha = 0.
     elif (aGibbs >= 50) :
         alpha = 0.1102*(aGibbs-8.7)
     else:
         alpha = 0.5842*(aGibbs-21)**(0.4) + 0.07886*(aGibbs-21)
-        
+
     arg = (np.arange(nterms)+1)/nterms
     coef = special.iv(0,alpha*np.sqrt(1.-arg**2))/special.iv(0,alpha)
     t = (np.arange(nterms)+1)*np.pi
@@ -952,12 +935,8 @@ def closest_argmin(A, B):
     return sidx_B[sorted_idx-mask]
 
 
-def find_ind_of_closest_dates (df, dates):
-    indices = []
-    for i, date in enumerate(dates):
-        indices.append(df.index.unique().get_loc(date, method='nearest'))
-        
-    return indices
+def find_ind_of_closest_dates(df, dates):
+    return [df.index.unique().get_loc(date, method='nearest') for date in dates]
 
 def find_closest_values_of_2_arrays(a, b):
     dup = np.searchsorted(a, b)
@@ -967,12 +946,11 @@ def find_closest_values_of_2_arrays(a, b):
     for idx, val in enumerate(uni):
         bw = np.argmin(np.abs(a[val]-b[dup == val]))
         tt = dup == val
-        ret_b[idx] = np.where(tt == True)[0][bw]
+        ret_b[idx] = np.where(tt)[0][bw]
     return np.column_stack((uni, ret_b))
 
 def find_cadence(df):
-    dt = (df.dropna().index.to_series().diff()/np.timedelta64(1, 's')).median()
-    return dt
+    return (df.dropna().index.to_series().diff()/np.timedelta64(1, 's')).median()
 
 def str2bool(v):
     '''
@@ -1009,10 +987,10 @@ def createFolder(folder_name):
     if not(os.path.exists(folder_name)):
         os.makedirs(folder_name)
         print('SUCCESS: \n\tFolder created. \n\t' + folder_name)
-        print(' ')
     else:
         print('WARNING: \n\tFolder already exists (folder not created). \n\t' + folder_name)
-        print(' ')
+
+    print(' ')
 
 def setupInfo(filepath):
     ''' setupInfo
@@ -1030,7 +1008,7 @@ def setupInfo(filepath):
         print('\t\t' + '\n\t\t'.join(file_names))
         print(' ')
     ## return data
-    return [file_names, int(len(file_names)/2)]
+    return [file_names, len(file_names) // 2]
 
 def createFilePath(names):
     ''' creatFilePath

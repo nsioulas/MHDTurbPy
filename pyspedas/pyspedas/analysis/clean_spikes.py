@@ -67,7 +67,7 @@ def clean_spikes(names, nsmooth=10, thresh=0.3, sub_avg=False,
 
     for old_idx, old in enumerate(old_names):
         new = n_names[old_idx]
-        tmp = new + '_tmp_data'
+        tmp = f'{new}_tmp_data'
 
         # Create new
         if old != new:
@@ -80,7 +80,7 @@ def clean_spikes(names, nsmooth=10, thresh=0.3, sub_avg=False,
             pyspedas.tcopy(new, tmp)
 
         # Find spikes
-        tmps = tmp + '-s'
+        tmps = f'{tmp}-s'
         tsmooth(tmp, new_names=tmps, width=nsmooth)
         ds0 = pytplot.get_data(tmps)  # smoothed out values
         ds = ds0[1]
@@ -111,4 +111,4 @@ def clean_spikes(names, nsmooth=10, thresh=0.3, sub_avg=False,
         del pytplot.data_quants[tmp]
         del pytplot.data_quants[tmps]
 
-        logging.info('clean_spikes was applied to: ' + new)
+        logging.info(f'clean_spikes was applied to: {new}')

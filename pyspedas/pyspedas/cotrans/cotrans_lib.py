@@ -1034,10 +1034,7 @@ def j2000_matrix_vec(time_in):
     nutmat[2, 0, :] = sinpsi*sinep
     nutmat[2, 1, :] = cospsi*sinep*cosepO - cosep*sinepO
     nutmat[2, 2, :] = cospsi*sinep*sinepO + cosep*cosepO
-    # ctv_mm_mult
-    cmatrix = ctv_mm_mult(premat, nutmat)
-
-    return cmatrix
+    return ctv_mm_mult(premat, nutmat)
 
 
 def ctv_mx_vec_rot(m, v):
@@ -1070,9 +1067,7 @@ def ctv_mx_vec_rot(m, v):
     for i in range(k):
         a[i] = v[:, i]
 
-    out = np.sum(m * a, 0)
-
-    return out
+    return np.sum(m * a, 0)
 
 
 def subgei2j2000(time_in, data_in):
@@ -1141,19 +1136,19 @@ def get_all_paths_t1_t2():
     -------
     Dictionary of strings.
     """
-    p = {'gei': {'gse': 'subgei2gse',
-                 'geo': 'subgei2geo',
-                 'j2000': 'subgei2j2000'},
-         'gse': {'gei': 'subgse2gei',
-                 'gsm': 'subgse2gsm'},
-         'gsm': {'gse': 'subgsm2gse',
-                 'sm': 'subgsm2sm'},
-         'geo': {'gei': 'subgeo2gei',
-                 'mag': 'subgeo2mag'},
-         'sm': {'gsm': 'subsm2gsm'},
-         'mag': {'geo': 'submag2geo'},
-         'j2000': {'gei': 'subj20002gei'}}
-    return p
+    return {
+        'gei': {
+            'gse': 'subgei2gse',
+            'geo': 'subgei2geo',
+            'j2000': 'subgei2j2000',
+        },
+        'gse': {'gei': 'subgse2gei', 'gsm': 'subgse2gsm'},
+        'gsm': {'gse': 'subgsm2gse', 'sm': 'subgsm2sm'},
+        'geo': {'gei': 'subgeo2gei', 'mag': 'subgeo2mag'},
+        'sm': {'gsm': 'subsm2gsm'},
+        'mag': {'geo': 'submag2geo'},
+        'j2000': {'gei': 'subj20002gei'},
+    }
 
 
 def find_path_t1_t2(c1, c2, cpath=None):
@@ -1174,9 +1169,7 @@ def find_path_t1_t2(c1, c2, cpath=None):
     """
     if cpath is None:
         cpath = [c1]
-    elif c1 in cpath:
-        return
-    elif c2 in cpath:
+    elif c1 in cpath or c2 in cpath:
         return
     else:
         cpath.append(c1)
@@ -1275,7 +1268,7 @@ def subcotrans(time_in, data_in, coord_in, coord_out):
     for i in range(len(p)-1):
         c1 = p[i]
         c2 = p[i+1]
-        subname = "sub" + c1 + "2" + c2
+        subname = f"sub{c1}2{c2}"
         data_out = globals()[subname](time_in, data_out)
 
     return data_out

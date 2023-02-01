@@ -61,9 +61,7 @@ def qmult(q1, q2):
     qtmp2 = q1i[:, 2] * q2i[:, 0] + q1i[:, 3] * q2i[:, 1] + q1i[:, 0] * q2i[:, 2] - q1i[:, 1] * q2i[:, 3]
     qtmp3 = q1i[:, 3] * q2i[:, 0] - q1i[:, 2] * q2i[:, 1] + q1i[:, 1] * q2i[:, 2] + q1i[:, 0] * q2i[:, 3]
 
-    qout = np.array([qtmp0, qtmp1, qtmp2, qtmp3]).T
-
-    return qout
+    return np.array([qtmp0, qtmp1, qtmp2, qtmp3]).T
 
 
 def qdecompose(q):
@@ -89,7 +87,6 @@ def qdecompose(q):
 
     This routine is based on the IDL version by Patrick Cruce
     """
-    EPSILON = 1.0e-20  # Where sin(theta) is close enough to theta
     # this is to avoid mutating the input variable
     qi = q
     # check to make sure input has the correct dimensions
@@ -117,6 +114,7 @@ def qdecompose(q):
         theta2 = np.arccos(qi[idx, 0])
         aout[idx, 0] = 2 * theta2
 
+        EPSILON = 1.0e-20  # Where sin(theta) is close enough to theta
         idx2 = np.argwhere(theta2 < EPSILON).flatten()
         if len(idx2) != 0:
             aout[idx[idx2], 1] = 1.0
@@ -161,19 +159,24 @@ def qvalidate(q, argname, fxname):
     if isinstance(qi, int):
         return -1
 
-    # check to make sure input has the correct dimensions
     elif np.size(np.shape(qi)) == 1:
         if np.size(qi) != 4:
-            logging.error('Wrong number of elements in quaternion ' + argname + '. Found when validating input for ' + fxname)
+            logging.error(
+                f'Wrong number of elements in quaternion {argname}. Found when validating input for {fxname}'
+            )
             return -1
         qi = np.reshape(qi, (1, 4))
     elif np.size(np.shape(qi)) == 2:
         s = np.shape(qi)
         if s[np.size(s)-1] != 4:
-            logging.error('Dimension 2 of quaternion ' +argname+' must have 4 elements. Found when validating input for ' + fxname)
+            logging.error(
+                f'Dimension 2 of quaternion {argname} must have 4 elements. Found when validating input for {fxname}'
+            )
             return -1
     else:
-        logging.error('Quaternion '+argname+' has the wrong number of dimensions. Found when validating input for ' + fxname)
+        logging.error(
+            f'Quaternion {argname} has the wrong number of dimensions. Found when validating input for {fxname}'
+        )
         return -1
 
     return qi
@@ -287,14 +290,14 @@ def qslerp(q, x1, x2, geometric=False, eq_tolerance=1e-12):
 
     # check that input abscissa values are monotonic
     if len(x1i) > 1:
-        idx = np.argwhere((x1i[1:len(x1i)]-x1i[0:len(x1i)-1]) < 0)
+        idx = np.argwhere(x1i[1:] - x1i[:-1] < 0)
         if len(idx) > 0:
             logging.error('input abscissa values not monotonic')
             return
 
     # check that output abscissa values are strictly monotonic
     if len(x2i) > 1:
-        idx = np.argwhere((x2i[1:len(x2i)]-x2i[0:len(x2i)-1]) < 0)
+        idx = np.argwhere(x2i[1:] - x2i[:-1] < 0)
         if len(idx) > 0:
             logging.error('output abscissa values not monotonic')
             return
@@ -468,8 +471,7 @@ def qdotp(q1, q2):
     """
     q1i = deepcopy(q1)
     q2i = deepcopy(q2)
-    qout = np.nansum(q1i*q2i, axis=1)
-    return qout
+    return np.nansum(q1i*q2i, axis=1)
 
 
 def qnorm(q):
