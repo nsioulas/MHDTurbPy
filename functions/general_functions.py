@@ -21,6 +21,56 @@ from matplotlib.gridspec import GridSpec
 
 
 
+def filter_dict(d, keys_to_keep):
+    return dict(filter(lambda item: item[0] in keys_to_keep, d.items()))
+
+
+def string_to_datetime_index(datetime_string, datetime_format='%Y-%m-%d %H:%M:%S.%f'):
+    return pd.to_datetime(datetime_string, format=datetime_format)
+
+def string_to_timestamp(datetime_string, datetime_format='%Y-%m-%d %H:%M:%S'):
+    """
+    Converts a string representation of a date and time to a timestamp in the format 'Timestamp('YYYY-MM-DD HH:MM:SS.ssssss')'.
+
+    Parameters:
+    datetime_string (str): The string representation of the date and time.
+    datetime_format (str, optional): The format of the input string. Defaults to '%Y-%m-%d %H:%M:%S'.
+
+    Returns:
+    str: The timestamp representation of the date and time in the format 'Timestamp('YYYY-MM-DD HH:MM:SS.ssssss')'.
+
+    Raises:
+    ValueError: If the input string does not match the specified format.
+    """
+    datetime_object = datetime.datetime.strptime(datetime_string, datetime_format)
+    timestamp = datetime_object.timestamp()
+    return f"Timestamp('{datetime.datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S.%f')}')"
+
+def add_time_to_datetime_string(start_time, time_amount, time_unit):
+    """
+    Adds a specified amount of time to a datetime string and returns the result as a string.
+
+    Parameters:
+    start_time (str): The original datetime string in the format '%Y-%m-%d %H:%M:%S'.
+    time_amount (int): The amount of time to add.
+    time_unit (str): The unit of the added time, either 's' (seconds), 'm' (minutes), 'h' (hours), or 'd' (days).
+
+    Returns:
+    str: The datetime string after the specified time has been added, in the format '%Y-%m-%d %H:%M:%S'.
+
+    Raises:
+    ValueError: If an invalid time unit is specified.
+    """
+    import datetime
+    units = {'s': 'seconds', 'm': 'minutes', 'h': 'hours', 'd': 'days'}
+    unit = units.get(time_unit, None)
+    if unit is None:
+        raise ValueError("Invalid time unit")
+    delta = datetime.timedelta(**{unit: time_amount})
+    end_datetime = datetime.datetime.strptime(start_time, '%Y-%m-%d %H:%M:%S') + delta
+    return end_datetime.strftime('%Y-%m-%d %H:%M:%S')
+
+
 
 @jit(nopython=True, parallel=True)
 def hampel_filter(input_series, window_size, n_sigmas=3):
@@ -400,7 +450,43 @@ def find_fit_expo(x, y, x0, xf):
         else:
             return [0],0,0,0,[0]
 
+def use_dates_return_elements_of_df_inbetween(t0, t1, df):
+    """
+    This function finds the nearest date index of t0 and t1 in the data frame df, and returns the mean of values
+    of df within the range of the nearest indices.
 
+    Parameters:
+    t0 (datetime-like object): The start date to find the nearest index for.
+    t1 (datetime-like object): The end date to find the nearest index for.
+    df (pandas DataFrame): The data frame to use. The data frame's index should be a datetime-like object.
+
+    Returns:
+    float: The mean of values of df within the range of the nearest indices of t0 and t1.
+    """
+    r8   = df.index.unique().get_loc(t0, method='nearest');
+    r8a  = df.index.unique().get_loc(t1, method='nearest');
+    f_df = df[r8:r8a]
+    
+    return f_df
+
+def find_big_gaps(df, gap_time_threshold):
+    """
+    Filter a data set by the values of its first column and identify gaps in time that are greater than a specified threshold.
+
+    Parameters:
+    df (pandas DataFrame): The data set to be filtered and analyzed.
+    gap_time_threshold (float): The threshold for identifying gaps in time, in seconds.
+
+    Returns:
+    big_gaps (pandas Series): The time differences between consecutive records in df that are greater than gap_time_threshold.
+    """
+    keys = df.keys()
+
+    filtered_data = df[df[keys[1]] > -1e10]
+    time_diff     = (filtered_data.index.to_series().diff() / np.timedelta64(1, 's'))
+    big_gaps      = time_diff[time_diff > gap_time_threshold]
+
+    return big_gaps
 
 def percentile(y,percentile):
     return(np.percentile(y,percentile))
@@ -427,6 +513,25 @@ def binned_quantity_percentile(x, y, what, std_or_error_of_mean, mov_aver_window
     return x_b, y_b, z_b, percentiles
 
 
+def ensure_time_format(start_time, end_time):
+    from datetime import datetime
+    desired_format = "%Y-%m-%d %H:%M:%S"
+    if not isinstance(start_time, str):
+        start_time = datetime.strftime(start_time, desired_format)
+    if not isinstance(end_time, str):
+        end_time = datetime.strftime(end_time, desired_format)
+    
+    try:
+        t0 = datetime.strptime(start_time, desired_format)
+    except ValueError:
+        t0 = datetime.strptime(start_time + " 00:00:00", desired_format)
+    
+    try:
+        t1 = datetime.strptime(end_time, desired_format)
+    except ValueError:
+        t1 = datetime.strptime(end_time + " 00:00:00", desired_format)
+        
+    return t0.strftime(desired_format), t1.strftime(desired_format)
 
 
 def binned_quantity(x, y, what, std_or_error_of_mean, mov_aver_window,loglog, return_counts=False):
@@ -569,6 +674,25 @@ def mov_fit_func(xx, yy, w_size,  xmin, xmax, numb_fits, keep_plot):
     )
 
 
+def angle_between_vectors(V, B):
+    """
+    This function calculates the angle between two vectors.
+
+    Parameters:
+    V (ndarray): A 2D numpy array representing the first vector.
+    B (ndarray): A 2D numpy array representing the second vector.
+
+    Returns:
+    ndarray    : A 1D numpy array representing the angles in degrees between the two input vectors.
+    """
+    V_norm = np.linalg.norm(V, axis=1, keepdims=True).T[0]
+    B_norm = np.linalg.norm(B, axis=1, keepdims=True).T[0]
+    dot_product = (V * B).sum(axis=1)
+    angle = np.arccos(dot_product / (V_norm * B_norm))/ np.pi * 180
+
+    return angle 
+
+
 
 def freq2wavenum(freq, P, Vtot, di):
     """ Takes the frequency, the PSD, the SW velocity and the di.
@@ -691,6 +815,8 @@ def fit(x, y, deg=1, fullyes=False):
     return fitpars, fitpars_std
 
 
+
+
 def savepickle(df_2_save,  save_path, filename):
     """
     Save a list of variables in to a single pickle file.
@@ -762,60 +888,6 @@ def newindex(df, ix_new, interp_method='linear'):
 
     return df2.reindex(ix_new)
 
-
-def plot_fixrate(df, df_new, L, r):
-    """
-    Make a summary plot of the difference between the original data frame *df* and fixed *df_new*.
-
-    Args:
-        df: [pandas DataFrame] Original dataframe
-        df_new: [pandas DataFrame] Dataframe returned by fix_data_rate()
-        L: [float] The sample cycle duration
-        r: [pandas DataSeries] Data rate variable of *df*
-
-    Returns:
-        999 [int]
-    """
-
-    # get the time index in to a non-index variable
-    df['t'] = df.index.values
-
-    # running difference of *t* is the *cadence* of the sampling
-    df['delta'] = df.t.diff()
-
-    # remove NANs
-    df['delta'] = df.delta.fillna(pd.Timedelta(seconds=0))
-
-    # get the time index in to a non-index variable
-    df_new['t'] = df_new.index.values
-
-    # running difference of *t* is the *cadence* of the sampling
-    df_new['delta'] = df_new.t.diff()
-
-    # remove NANs
-    df_new['delta'] = df_new.delta.fillna(pd.Timedelta(seconds=0))
-
-    # open new figure window
-    plt.figure()
-
-    # plot the delta_t
-    df.delta.plot(marker='.', label='original')
-
-    # plot the delta_t as it should be according to the data rate
-    (L / r).mul(1e9).plot(label='acc to datarate')
-
-    # plot the delta_t of the fixed-data-rate dataframe
-    df_new.delta.plot(marker='x', ls='', label='fixed')
-
-    # apply figure labels, titles, etc
-    plt.ylabel('$\Delta t$ [nanoseconds]')
-    plt.xlabel('Time [UT]')
-    plt.grid(which='both')
-    plt.title(f'{str(df.index[0])} --> {str(df.index[-1])}')
-    plt.tight_layout()
-    plt.legend()
-
-    return 999
 
 
 def listsearch(search_string, input_list):
@@ -952,6 +1024,68 @@ def find_closest_values_of_2_arrays(a, b):
 def find_cadence(df):
     return (df.dropna().index.to_series().diff()/np.timedelta64(1, 's')).median()
 
+def resample_timeseries_estimate_gaps(df, resolution, large_gaps=10):
+    """
+    Resample timeseries and estimate gaps, default setting is for FIELDS data
+    Resample to 10Hz and return the resampled timeseries and gaps infos
+    Input: 
+        df                  :       input time series
+        resolution          :       resolution to resample [ms]
+    Keywords:
+        large_gaps  =   10 [s]      large gaps in timeseries [s]
+    Outputs: 
+        init_dt             :       initial resolution of df
+        df_resampled        :       resampled dataframe
+        fraction_missing    :       fraction of missing values in the interval
+        total_large_gaps    :       fraction of large gaps in the interval
+        total_gaps          :       total fraction of gaps in the interval  
+        resolution          :       resolution of resmapled dataframe
+        
+        
+    """
+    keys = df.keys()
+    init_dt = find_cadence(df[keys[1]])
+    if init_dt > -1e10:
+        
+        # Make sure that you resample to a resolution that is lower than initial df's resolution
+        while init_dt > resolution * 1e-3:
+            resolution     = 1.005 * resolution
+        
+        # estimate duration of interval selected in seconds #
+        interval_dur = (df.index[-1] - df.index[0]).total_seconds()
+        
+        # Resample time-series to desired resolution # 
+        df_resampled       = df.resample(f"{int(resolution)}ms").mean()
+        
+        # Estimate fraction of missing values within interval #
+        fraction_missing   = 100 * df_resampled[keys[1]].isna().mean()
+        
+        # Estimate sum of gaps greater than large_gaps seconds
+        res = (df_resampled.dropna().index.to_series().diff() / np.timedelta64(1, 's'))
+        
+        # Gives you the fraction of  large gaps in timeseries
+        total_large_gaps  = 100 * (res[res > large_gaps].sum() / interval_dur)
+        
+        # Gives you the total fraction  gaps in timeseries
+        total_gaps       = 100 * (res[res > resolution * 1e-3].sum() / interval_dur)
+    else:
+        init_dt            = None
+        df_resampled       = None
+        fraction_missing   = 100
+        total_gaps         = None
+        total_large_gaps   = None
+        resolution = np.nan
+    return {
+        "Init_dt": init_dt,
+        "resampled_df": df_resampled,
+        "Frac_miss": fraction_missing,
+        "Large_gaps": total_large_gaps,
+        "Tot_gaps": total_gaps,
+        "resol": resolution
+    }
+
+
+
 def str2bool(v):
     '''
     FROM:
@@ -1018,156 +1152,4 @@ def createFilePath(names):
     return ('/'.join([x for x in names if x != '']))
 
 
-
-
-def prepare_particle_data_for_visualization( df_part, mag_resampled, subtract_rol_mean=True, smoothed = True, in_rtn=True):
-    from scipy import constants
-    mu_0            = constants.mu_0  # Vacuum magnetic permeability [N A^-2]
-    mu0             = constants.mu_0   #
-    m_p             = constants.m_p    # Proton mass [kg]
-    kb              = constants.k      # Boltzman's constant     [j/K]
-    au_to_km        = 1.496e8
-    T_to_Gauss      = 1e4
-    
-    # Particle data remove nan values
-    df_part = df_part.dropna()
-    
-    # Reindex magnetic field data to particle data index
-    dtv                 = (df_part.dropna().index.to_series().diff()/np.timedelta64(1, 's'))[1]
-    dtb                 = (mag_resampled.dropna().index.to_series().diff()/np.timedelta64(1, 's'))[1]
-
-    freq_final          = str(int(dtv*1e3))+'ms'
-    print('final resol', freq_final)
-
-    f_df = mag_resampled.resample(freq_final).mean().join(
-         df_part.resample(freq_final).mean()
-    )
-
-    """Define magentic field components"""
-    Bx     = f_df.values.T[0];  By     = f_df.values.T[1];  Bz     = f_df.values.T[2]; Bmag = np.sqrt(Bx**2 + By**2 + Bz**2)
-
-    #f_df      = mag_resampled.reindex(mag_resampled.index.union(nindex)).interpolate(method='linear').reindex(nindex)
-    #print(f_df)
-    if subtract_rol_mean:
-        f_df[['Br_mean','Bt_mean','Bn_mean']]                   = f_df[['Br','Bt','Bn']].rolling('2H', center=True).mean().interpolate()
-        f_df[['Vr_mean', 'Vt_mean','Vn_mean', 'np_mean']]  = f_df[['Vr','Vt','Vn', 'np']].rolling('2H', center=True).mean().interpolate()
-       
-
-    #Estimate median solar wind speed   
-    Vth       = f_df.Vth.values;   Vth[Vth < 0] = np.nan; Vth_mean =np.nanmedian(Vth); Vth_std =np.nanstd(Vth);
-    
-    #Estimate median solar wind speed  
-    if in_rtn:
-        try:
-            Vsw       = np.sqrt(f_df.Vr.values**2 + f_df.Vt.values**2 + f_df.Vn.values**2); Vsw_mean =np.nanmedian(Vsw); Vsw_std =np.nanstd(Vsw);
-        except:
-            Vsw       = np.sqrt(f_df.Vx.values**2 + f_df.Vy.values**2 + f_df.Vz.values**2); Vsw_mean =np.nanmedian(Vsw); Vsw_std =np.nanstd(Vsw);
-
-    else:
-        Vsw       = np.sqrt(f_df.Vx.values**2 + f_df.Vy.values**2 + f_df.Vz.values**2); Vsw_mean =np.nanmedian(Vsw); Vsw_std =np.nanstd(Vsw);
-    Vsw[Vsw < 0] = np.nan
-    Vsw[np.abs(Vsw) > 1e5] = np.nan
-
-    # estimate mean number density
-    Np        = np.nanmean([f_df['np_qtn'].values,f_df['np'].values], axis=0)  
-    Np_mean =np.nanmedian(Np); Np_std =np.nanstd(Np);
-        
-    # Estimate Ion inertial length di in [Km]
-    di        = 228/np.sqrt(Np); di[np.log10(di) < -3] = np.nan;  di_mean =np.nanmedian(di); di_std =np.nanstd(di);
-    
-    # Estimate plasma Beta
-    km2m        = 1e3
-    nT2T        = 1e-9
-    cm2m        = 1e-2
-    B_mag       = Bmag * nT2T                              # |B| units:      [T]
-    temp        = 1./2 * m_p * (Vth*km2m)**2              # in [J] = [kg] * [m]^2 * [s]^-2
-    dens        = Np/(cm2m**3)                            # number density: [m^-3] 
-    beta        = (dens*temp)/((B_mag**2)/(2*mu_0))       # plasma beta 
-    beta[beta < 0] = np.nan
-    beta[np.abs(np.log10(beta))>4] = np.nan # delete some weird data
-    beta_mean   = np.nanmedian(beta); beta_std   = np.nanstd(beta);
-    
-    
-    # ion gyro radius
-    rho_ci = 10.43968491 * Vth/B_mag #in [km]
-    rho_ci[rho_ci < 0] = np.nan
-    rho_ci[np.log10(rho_ci) < -3] = np.nan
-    rho_ci_mean               = np.nanmedian(rho_ci); rho_ci_std =np.nanstd(rho_ci);
- 
-    ### Define b and v ###
-    if in_rtn:
-        try:
-            vr, vt, vn        = f_df.Vr.values, f_df.Vt.values, f_df.Vn.values
-            br, bt, bn        = f_df.Br.values, f_df.Bt.values, f_df.Bn.values
-        except:
-            vr, vt, vn        = f_df.Vx.values, f_df.Vy.values, f_df.Vz.values
-            br, bt, bn        = f_df.Bx.values, f_df.By.values, f_df.Bz.values
-    else:
-        vr, vt, vn            = f_df.Vx.values, f_df.Vy.values, f_df.Vz.values
-        br, bt, bn            = f_df.Bx.values, f_df.By.values, f_df.Bz.values
-      
-    #VBangle_mean, dVB, VBangle_std = BVangle(br, bt, bn, vr, vt, vn , smoothed)  
-
-    Va_r                      = 1e-15* br/np.sqrt(mu0*f_df['np'].values*m_p)   
-    Va_t                      = 1e-15* bt/np.sqrt(mu0*f_df['np'].values*m_p)   ### Multuply by 1e-15 to get units of [Km/s]
-    Va_n                      = 1e-15* bn/np.sqrt(mu0*f_df['np'].values*m_p)   
-    
-    # Estimate VB angle
-    vbang                     = np.arccos((Va_r * vr + Va_t * vt + Va_n * vn)/np.sqrt((Va_r**2+Va_t**2+Va_n**2)*(vr**2+vt**2+vn**2)))
-    vbang                     = vbang/np.pi*180#
-    VBangle_mean, VBangle_std = np.nanmean(vbang), np.nanstd(vbang)
-    
-    # Also save the components of Vsw an Valfven
-    alfv_speed                = [np.nanmean(Va_r), np.nanmean(Va_t), np.nanmean(Va_n)]
-    sw_speed                  = [np.nanmean(vr), np.nanmean(vt), np.nanmean(vn)]
-
-    # sign of Br within the window
-    signB                     = - np.sign(np.nanmean(Va_r))
-    
-    # # Estimate fluctuations of fields #
-    if subtract_rol_mean:
-        va_r                  = Va_r - 1e-15*f_df['Br_mean'].values/np.sqrt(mu0*f_df['np_mean'].values*m_p);    v_r = vr - f_df['Vr_mean'].values
-        va_t                  = Va_t - 1e-15*f_df['Bt_mean'].values/np.sqrt(mu0*f_df['np_mean'].values*m_p);    v_t = vt - f_df['Vt_mean'].values
-        va_n                  = Va_n - 1e-15*f_df['Bn_mean'].values/np.sqrt(mu0*f_df['np_mean'].values*m_p);    v_n = vn - f_df['Vn_mean'].values
-
-    else:
-        va_r                   = Va_r - np.nanmean(Va_r);   v_r = vr - np.nanmean(vr)
-        va_t                   = Va_t - np.nanmean(Va_t);   v_t = vt - np.nanmean(vt)
-        va_n                   = Va_n - np.nanmean(Va_n);   v_n = vn - np.nanmean(vn)
-    
-
-
-    # Estimate Zp, Zm components
-    Zpr = v_r +  signB *va_r; Zmr = v_r - signB *va_r
-    Zpt = v_t +  signB *va_t; Zmt = v_t - signB *va_t
-    Zpn = v_n +  signB *va_n; Zmn = v_n - signB *va_n
-
-
-    # Estimate energy in Zp, Zm
-    Z_plus_squared  = Zpr**2 +  Zpt**2 + Zpn**2
-    Z_minus_squared = Zmr**2 +  Zmt**2 + Zmn**2
-    
-    # Estimate amplitude of fluctuations
-    Z_amplitude     = np.sqrt( (Z_plus_squared + Z_minus_squared)/2 ) ; Z_amplitude_mean    = np.nanmedian(Z_amplitude); Z_amplitude_std = np.nanstd(Z_amplitude);
-
-    # Kin, mag energy
-    Ek           = v_r**2 + v_t**2 + v_n**2
-    Eb           = va_r**2 + va_t**2 + va_n**2
-    
-    #Estimate normalized residual energy
-    sigma_r      = (Ek-Eb)/(Ek+Eb);                                                         sigma_r[np.abs(sigma_r) > 1e5] = np.nan;
-    sigma_c      = (Z_plus_squared - Z_minus_squared)/( Z_plus_squared + Z_minus_squared);  sigma_c[np.abs(sigma_c) > 1e5] = np.nan
-    
-    #Save in DF format to estimate spectraly
-    nn_df       = pd.DataFrame({'DateTime': f_df.index.values,
-                                'Zpr'     : Zpr,    'Zpt': Zpt, 'Zpn' : Zpn,
-                                'Zmr'     : Zmr,    'Zmt': Zmt, 'Zmn' : Zmn, 
-                                'va_r'    : va_r,  'va_t': va_t,'va_n': va_n,
-                                'v_r'     : v_r,   'v_t' : v_t, 'v_n' : v_n,
-                                'beta'    : beta,  'np'  : Np,  'Tp'  : temp, 'VB': vbang,
-                                'sigma_c' : sigma_c,         'sigma_r': sigma_r}).set_index('DateTime')
-    nn_df       = nn_df.mask(np.isinf(nn_df)).dropna().interpolate(method='linear')
-
-    
-    return   nn_df
 
