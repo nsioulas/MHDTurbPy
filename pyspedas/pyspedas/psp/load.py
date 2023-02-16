@@ -56,7 +56,7 @@ def load(trange=['2018-11-5', '2018-11-6'],
 
         # 4_per_cycle and 1min are daily, not 6h like the full resolution 'mag_(rtn|sc)'
         if datatype in ['mag_rtn', 'mag_sc']:
-            pathformat = instrument + '/' + level + '/' + datatype + '/%Y/psp_fld_' + level + '_' + datatype + '_%Y%m%d%H_v??.cdf'
+            pathformat = instrument + '/' + level + '/' + datatype + '/%Y/psp_fld_' + level + '_' + datatype + '_%Y%m%d%H_v02.cdf'
             file_resolution = 6*3600.
         elif datatype in ['mag_rtn_1min', 'mag_sc_1min', 'rfs_hfr', 'rfs_lfr', 'rfs_burst', 'f2_100bps', 'aeb']:
             pathformat = instrument + '/' + level + '/' + datatype + '/%Y/psp_fld_' + level + '_' + datatype + '_%Y%m%d_v??.cdf'
@@ -98,7 +98,7 @@ def load(trange=['2018-11-5', '2018-11-6'],
         # unpublished data
         elif username != None:
             if datatype in ['mag_RTN', 'mag_SC']:
-                pathformat = instrument + '/' + level + '/' + datatype + '/%Y/%m/psp_fld_' + level + '_' + datatype + '_%Y%m%d%H_v??.cdf'
+                pathformat = instrument + '/' + level + '/' + datatype + '/%Y/%m/psp_fld_' + level + '_' + datatype + '_%Y%m%d%H_v02.cdf'
                 file_resolution = 6*3600.
 
             elif datatype in ['mag_RTN_1min', 'mag_RTN_4_Sa_per_Cyc', 'mag_SC_1min', 'mag_SC_4_Sa_per_Cyc']:
