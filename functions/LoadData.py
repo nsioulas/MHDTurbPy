@@ -357,13 +357,12 @@ def LoadTimeSeriesPSP(
 
     # default settings
     default_settings = {
-        'particle_mode': 'empirical',
-        'resolution': 5,
-        'use_hampel': False,
-        'interpolate_qtn': True,
-        'interpolate_rolling': True,
-        'verbose': True,
-        'must_have_qtn': True
+        'particle_mode'   : 'empirical',
+        'resolution'      : 1,
+        'use_hampel'      : False,
+        'interpolate_qtn' : True,
+        'must_have_qtn'   : False,
+        'rtn_only'        : True
     }
 
     for k in default_settings.keys():
@@ -436,13 +435,20 @@ def LoadTimeSeriesPSP(
             )
             dfmag1.columns = ['Br','Bt','Bn']
 
-            names = pyspedas.psp.fields(trange=[t0,t1], datatype='mag_sc_4_per_cycle', level='l2', time_clip=True)
-            data = get_data(names[0])
-            dfmag2 = pd.DataFrame(
-                index = data[0],
-                data = data[1]
-            )
-            dfmag2.columns = ['Bx','By','Bz']
+            if settings['rtn_only']:
+                dfmag = dfmag1
+            else:
+                names = pyspedas.psp.fields(trange=[t0,t1], datatype='mag_sc_4_per_cycle', level='l2', time_clip=True)
+                data = get_data(names[0])
+                dfmag2 = pd.DataFrame(
+                    index = data[0],
+                    data = data[1]
+                )
+                dfmag2.columns = ['Bx','By','Bz']
+
+                dfmag = dfmag1.join(dfmag2)
+
+
         except:
             print("No MAG data is presented in the public repository!")
             print("Trying unpublished data... please provide credentials...")
@@ -463,18 +469,24 @@ def LoadTimeSeriesPSP(
             )
             dfmag1.columns = ['Br','Bt','Bn']
 
-            names = pyspedas.psp.fields(trange=[t0,t1], 
-                datatype='mag_SC_4_Sa_per_Cyc', level='l2', time_clip=True,
-                username=username, password=password
-            )
-            data = get_data(names[0])
-            dfmag2 = pd.DataFrame(
-                index = data[0],
-                data = data[1]
-            )
-            dfmag2.columns = ['Bx','By','Bz']
+            if settings['rtn_only']:
+                dfmag = dfmag1
 
-        dfmag = dfmag1.join(dfmag2)
+            else:
+                names = pyspedas.psp.fields(trange=[t0,t1], 
+                    datatype='mag_SC_4_Sa_per_Cyc', level='l2', time_clip=True,
+                    username=username, password=password
+                )
+                data = get_data(names[0])
+                dfmag2 = pd.DataFrame(
+                    index = data[0],
+                    data = data[1]
+                )
+                dfmag2.columns = ['Bx','By','Bz']
+
+                dfmag = dfmag1.join(dfmag2)
+
+
         dfmag.index = time_string.time_datetime(time=dfmag.index)
         dfmag.index = dfmag.index.tz_localize(None)
     except:
@@ -493,7 +505,8 @@ def LoadTimeSeriesPSP(
                                         'sc_pos_HCI',
                                         'sc_vel_HCI',
                                         'carr_latitude',
-                                        'carr_longitude'
+                                        'carr_longitude',
+                                        'na_fit'
                                     ], 
                                     time_clip=True)
 
@@ -516,7 +529,8 @@ def LoadTimeSeriesPSP(
                                         'sc_pos_HCI',
                                         'sc_vel_HCI',
                                         'carr_latitude',
-                                        'carr_longitude'
+                                        'carr_longitude',
+                                        'na_fit'
                                     ], 
                                     time_clip=True, username=username, password=password)
 
@@ -536,6 +550,7 @@ def LoadTimeSeriesPSP(
                 columns = ['np']
             )
         )
+
 
         temp = get_data(spcdata[1])
         dfspc = dfspc.join(
@@ -600,6 +615,15 @@ def LoadTimeSeriesPSP(
             )
         )
 
+        temp = get_data(spcdata[8])
+        dfspc = dfspc.join(
+            pd.DataFrame(
+                index = temp.times,
+                data = temp.y,
+                columns = ['na']
+            )
+        )        
+
         # calculate Dist_au
         dfspc['Dist_au'] = (dfspc[['sc_x','sc_y','sc_z']]**2).sum(axis=1).apply(np.sqrt)/au_to_km
 
@@ -624,6 +648,13 @@ def LoadTimeSeriesPSP(
                     ], 
                     time_clip=True)
             temp = get_data(spandata[0])
+
+            spandata_a = pyspedas.psp.spi(trange=[t0, t1], datatype='spi_sf0a_l3_mom', level='l3', 
+                    varnames = [
+                        'DENS'
+                    ], 
+                    time_clip=True)
+            temp_a = get_data(spandata_a[0])
         except:
             print("No SPAN data is presented in the public repository!")
             print("Trying unpublished data... please provide credentials...")
@@ -644,6 +675,13 @@ def LoadTimeSeriesPSP(
                     ], 
                     time_clip=True, username=username, password=password)
             temp = get_data(spandata[0])
+
+            spandata_a = pyspedas.psp.spi(trange=[t0, t1], datatype='spi_sf0a', level='L3', 
+                    varnames = [
+                        'DENS'
+                    ], 
+                    time_clip=True, username=username, password=password)
+            temp_a = get_data(spandata_a[0])
 
 
         dfspan = pd.DataFrame(
@@ -698,6 +736,14 @@ def LoadTimeSeriesPSP(
             )
         )
 
+        # alpha particle
+        temp = get_data(spandata_a[0])
+        dfspan_a = pd.DataFrame(
+                index = temp.times,
+                data = temp.y,
+                columns = ['na']
+            )
+
         # calculate Vth from TEMP
         # k T (eV) = 1/2 mp Vth^2 => Vth = 13.84112218*sqrt(TEMP)
         dfspan['Vth'] = 13.84112218 * np.sqrt(dfspan['TEMP'])
@@ -708,9 +754,14 @@ def LoadTimeSeriesPSP(
         dfspan.index = time_string.time_datetime(time=dfspan.index)
         dfspan.index = dfspan.index.tz_localize(None)
         dfspan.index.name = 'datetime'
+
+        dfspan_a.index = time_string.time_datetime(time=dfspan_a.index)
+        dfspan_a.index = dfspan_a.index.tz_localize(None)
+        dfspan_a.index.name = 'datetime'
     except:
         print("No SPAN!")
         dfspan = None
+        dfspan_a = None
 
     # merge particle data
 
@@ -733,9 +784,9 @@ def LoadTimeSeriesPSP(
     print("Parmode: %s" %(parmode))
     # fill dfpar with values
     if parmode == 'spc_only':
-        dfpar = dfpar.join(dfspc.resample(freq).mean())
+        dfpar = dfpar.join(dfspc.resample(freq).mean().interpolate())
     elif parmode == 'span_only':
-        dfpar = dfpar.join(dfspan.resample(freq).mean())
+        dfpar = dfpar.join(dfspan.resample(freq).mean().interpolate()).join(dfspan_a.resample(freq).mean().interpolate())
     elif parmode == 'empirical':
         # empirical use of data
         # encounter date: https://sppgway.jhuapl.edu/index.php/encounters
@@ -770,51 +821,82 @@ def LoadTimeSeriesPSP(
             dfspan = pd.DataFrame(index = dfpar.index)
             dfspan[keep_keys] = np.nan
 
-
-        # Perihelion cut
-        ind1 = dfpar.index < pd.Timestamp('2021-07-15')
-        ind2 = dfpar.index >= pd.Timestamp('2021-07-15')
-
-        ind11 = dfspc.index < pd.Timestamp('2021-07-15')
-        ind12 = dfspc.index >= pd.Timestamp('2021-07-15')
-
-        ind21 = dfspan.index < pd.Timestamp('2021-07-15')
-        ind22 = dfspan.index >= pd.Timestamp('2021-07-15')
+        # Define dates to use SPC, SPAN
+        ind11 = dfspc.index < pd.Timestamp('2021-07-01')
+        ind12 = dfspc.index >= pd.Timestamp('2021-07-01')
 
         # before encounter 9 use spc
         dfpar1 = dfspc.loc[ind11,keep_keys].resample(freq).mean()
 
         # use span after 2021-07-15
         dfpar2 = dfspan.loc[ind22,keep_keys].resample(freq).mean()
-        # dfpar2 = dfpar21.copy()
-        # ind21t = dfpar21['Vr'].apply(np.isnan)
-        # ind22t = dfpar22['Vr'].apply(np.isnan)
-        # dfpar2.loc[~ind21t,['MOMENT_FLAG','DENSITY_FLAG']] = 1 # SPC
-        # dfpar2.loc[~ind22t,['MOMENT_FLAG','DENSITY_FLAG']] = 2 # SPAN
-        # fill SPAN empty with SPC
-        # dfpar2.loc[ind21t] = dfpar22.loc[ind21t]
-
-        # # combine qtn
-        # dfpar_qtn = pd.DataFrame(
-        #     index = index
-        # ).join(dfqtn.resample(freq).mean())
         
         # merge qtn and particle data
         dftemp = pd.concat([dfpar1,dfpar2])
         dfpar = dfpar.join(dftemp[keep_keys])
 
+        # join carr longitude
+        try:
+            dfpar = dfpar.join(dfspc[['carr_lon','carr_lat']].resample(freq).mean())
+        except:
+            print("No carr lon and lat information from SPC!")
+            dfpar[['carr_lon','carr_lat']] = np.nan
+
     elif parmode == 'keep_all':
-        raise ValueError("particle mode: %s under construction!" %(parmode))
+        # keep all particle information, default np is qtn, moments are empirical
+        # default all are interpolated!
+
+        # add qtn
+        try:
+            dfpar['np_qtn'] = dfqtn['np_qtn'].resample(freq).mean().interpolate()
+        except:
+            warnings.warn("No QTN data!")
+            dfpar['np_qtn'] = np.nan
+
+        keep_keys = ['np','Vx','Vy','Vz','Vr','Vt','Vn','Vth','Dist_au','na']
+        # add SPC
+        for k in keep_keys:
+            try:
+                dfpar[k+"_spc"] = dfspc[k].resample(freq).mean().interpolate()
+            except:
+                warnings.warn("key: %s not present in dfspc!" %(k))
+                dfpar[k+"_spc"] = np.nan
+
+        # add SPAN
+        for k in keep_keys:
+            try:
+                if k == 'na':
+                    dfpar[k+"_span"] = dfspan_a[k].resample(freq).mean().interpolate()
+                else:
+                    dfpar[k+"_span"] = dfspan[k].resample(freq).mean().interpolate()
+            except:
+                warnings.warn("key: %s not present in dfspan!" %(k))
+                dfpar[k+"_span"] = np.nan
+
+        # join carr longitude
+        try:
+            dfpar = dfpar.join(dfspc[['carr_lon','carr_lat']].resample(freq).mean())
+        except:
+            print("No carr lon and lat information from SPC!")
+            dfpar[['carr_lon','carr_lat']] = np.nan
+
+        # set default
+        # default density: QTN
+        dfpar['np'] = dfpar['np_qtn']
+
+        # before encounter 9, default set to SPC
+        if dfpar.index[-1] < pd.Timestamp('2021-07-01'):
+            for k in keep_keys:
+                dfpar[k] = dfpar[k+'_spc']
+        # at and after encounter 9, default set to SPAN
+        else:
+            for k in keep_keys:
+                dfpar[k] = dfpar[k+'_span']
+
+        # raise ValueError("particle mode: %s under construction!" %(parmode))
     
     else:
         raise ValueError("particle mode: %s not supported!" %(parmode))
-
-
-    # if settings['use_hampel'] == True:
-    #     for k in dfpar.columns:
-    #         ns, _ = hampel_filter_forloop_numba(dfpar[k].values, 100)
-    #         dfpar[k] = ns
-
 
 
 
@@ -866,33 +948,37 @@ def LoadTimeSeriesPSP(
         except:
             raise ValueError("Ephemeris could not be loaded!")
 
-    # if settings['interpolate_rolling']:
-    #     dfts[['Vr0','Vt0','Vn0']] = dfts[['Vr','Vt','Vn']].rolling(rolling_rate).mean().interpolate()
-    #     dfts[['Vx0','Vy0','Vz0']] = dfts[['Vx','Vy','Vz']].rolling(rolling_rate).mean().interpolate()
-    #     dfts[['Br0','Bt0','Bn0']] = dfts[['Br','Bt','Bn']].rolling(rolling_rate).mean().interpolate()
-    #     dfts[['Bx0','By0','Bz0']] = dfts[['Bx','By','Bz']].rolling(rolling_rate).mean().interpolate()
-    # else:
-    #     dfts[['Vr0','Vt0','Vn0']] = dfts[['Vr','Vt','Vn']].rolling(rolling_rate).mean()
-    #     dfts[['Vx0','Vy0','Vz0']] = dfts[['Vx','Vy','Vz']].rolling(rolling_rate).mean()
-    #     dfts[['Br0','Bt0','Bn0']] = dfts[['Br','Bt','Bn']].rolling(rolling_rate).mean()
-    #     dfts[['Bx0','By0','Bz0']] = dfts[['Bx','By','Bz']].rolling(rolling_rate).mean()
+    
+    if 'local_carr_lon' in settings.keys():
+        print("Loading local carr lon from %s" %(Path(settings['local_carr_lon']).absolute()))
+        df_carr = pd.read_pickle(settings['local_carr_lon'])
+        ind = (df_carr.index > start_time - pd.Timedelta('1d')) & (df_carr.index < end_time + pd.Timedelta('1d'))
+        df_carr = df_carr[ind]
+        df_carr = df_carr.resample(freq).interpolate()
 
-    # resample dfmag to create B?0
-    # dfmag = dfmag.resample(freq).mean()
-    # dfmag[['Br0','Bt0','Bn0','Bx0','By0','Bz0']] = dfmag[['Br','Bt','Bn','Bx','By','Bz']].rolling(rolling_rate).mean()
-    # dfpar = dfts[['Vr','Vt','Vn','Vx','Vy','Vz','Vr0','Vt0','Vn0','Vx0','Vy0','Vz0','np','Vth']]
+        dfts.drop(columns = ['carr_lon','carr_lat'], inplace=True)
+        dfts = dfts.join(df_carr)
+        
+
+    else:
+        df_carr = None
+
 
     misc = {
-        'dfqtn': dfqtn,
-        'dfspc': dfspc,
-        'dfspan': dfspan,
-        'parmode': parmode,
-        'settings': settings,
-        'dfpar': dfpar,
-        'dfmag': dfmag
+        'dfqtn'    : dfqtn,
+        'dfspc'    : dfspc,
+        'dfspan'   : dfspan,
+        'dfspan_a' : dfspan_a,
+        'parmode'  : parmode,
+        'settings' : settings,
+        'dfpar'    : dfpar,
+        'dfmag'    : dfmag,
+        'dfe'      : dfe,
+        'df_carr'  : df_carr
     }
 
     return dfts, misc
+
 
 
 def LoadTimeSeriesULYSSES(

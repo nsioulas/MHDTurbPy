@@ -23,7 +23,7 @@ plt.rcParams['text.usetex'] = True
 import sys
 sys.path.insert(0,'/Users/nokni/work/MHDTurbPy/functions')
 import general_functions as func
-
+import calc_diagnostics as calc
 def format_timestamp(timestamp,format_2_return):
     return timestamp.strftime(format_2_return)
 
@@ -541,6 +541,8 @@ def visualize_downloaded_intervals(
                                   sc,
                                   final_Par,
                                   final_Mag,
+                                  nn_df,
+                                  rolling_window,
                                   res_rate,
                                   my_dir,
                                   format_2_return ="%Y_%m_%d",
@@ -559,10 +561,10 @@ def visualize_downloaded_intervals(
     # Resample to desired rate
     final_Mag = final_Mag.resample(f'{str(res_rate)}s').mean()
     final_Par = final_Par.resample(f'{str(res_rate)}s').mean()
-
+    nn_df     = nn_df.resample(f'{str(res_rate)}s').mean()
     # Estimate relevant quantitities
-    nn_df       = func.prepare_particle_data_for_visualization( final_Par, final_Mag)
-    nn_df = nn_df.resample(f'{str(res_rate)}s').mean()
+   # nn_df       = calc.prepare_particle_data_for_visualization( final_Par, final_Mag, rolling_window)
+   # nn_df       = nn_df.resample(f'{str(res_rate)}s').mean()
 
     # Choose limiting dates
     start_date_lim  = final_Par.index[0]
@@ -610,6 +612,11 @@ def visualize_downloaded_intervals(
 
     """4th plot"""
     axs[6].plot(final_Par.Dist_au, linewidth=0.8,ls='-', ms=0,color ='black')#,label='$|B|$')
+    ax3 = axs[6].twinx()
+    ax3.plot(final_Par['carr_lon'],linewidth=0.8,ls='-', ms=0,color ='darkred')#,label='$|B|$')
+    #dfts[['Vth']].plot(ax = ax, legend=False, style=['C1'], lw = 0.6, alpha = 0.6)
+    ax3.legend(['$Carr. long ~ [^{\circ}]$'], fontsize='large', frameon=False, bbox_to_anchor=(1.01, 0.6), loc = 2)
+
 
     ## y Axis labels ##
     axs[0].legend([r'$B_{r} ~ [nT]$',r'$B_{t} ~ [nT]$',r'$B_{n} ~ [nT]$',r'$|B| ~ [nT]$'], fontsize='large', frameon=False, bbox_to_anchor=(1.01, 1), loc = 2)
