@@ -409,6 +409,7 @@ def final_func(
                 sc                 , 
                 high_resol_data    ,
                 in_RTN             ,
+
               ):
     # Parker Solar Probe
     if sc==0:
@@ -527,84 +528,88 @@ def final_func(
 
 
 
-def create_dfs(estimate_PSD_V, subtract_rol_mean,dist_df, dfpar, dfmag, f_min_spec, f_max_spec, 
-                start_time, end_time,
-                estimate_PSD   , 
-                sc             , 
-                SCAM           ,
-                in_RTN         ,
-                mag_resolution,
-                gap_time_threshold):
+def create_dfs_SCaM( dfmag               ,
+                     dfpar               ,
+                     dist_df             , 
+                     settings
+                   ):
     
-    settings    = {
-                'particle_mode': 'empirical',
-                'final_freq': '5s',
-                'use_hampel': True,
-                'interpolate_qtn': True,
-                'interpolate_rolling': True,
-                'verbose': False,
-                'must_have_qtn': True
-                } 
-
-
-    """Now calculates quantities related to magnetic field timeseries"""
-    # You have to fix the calc mag diagnostics function to be compatible with the current code ( you can find the function in CalcDiagnostics.Py)
-
     if dfpar is not None:
         if len(dfpar.dropna()) > 0 :
+            
+            diagnostics_PAR  = func.resample_timeseries_estimate_gaps(dfpar, settings['part_resol'], large_gaps=10)
+            diagnostics_MAG  = func.resample_timeseries_estimate_gaps(dfmag, settings['Mag_resol'], large_gaps=10)
+
+            
+            keys_to_keep           = ['Frac_miss', 'Large_gaps', 'Tot_gaps', 'resol']
+            misc = {
+                    'Par'              : func.filter_dict(diagnostics_PAR,  keys_to_keep),
+                    'Mag'              : func.filter_dict(diagnostics_MAG,  keys_to_keep)
+            }
+
             try:
-                #if sc==1:
-                    # Fixes an error related to how Speedas downloads particle data
-                r8      = dfpar.index.unique().get_loc(dfmag.index[0], method='nearest');
-                r8a     = dfpar.index.unique().get_loc(dfmag.index[-1], method='nearest');
-                dfpar   = dfpar[r8:r8a]
+                
+                """ Make sure both correspond to the same interval """ 
+                dfpar                                   = func.use_dates_return_elements_of_df_inbetween(dfmag.index[0], dfmag.index[-1], dfpar) 
 
 
-                try:       
-                    general_dict, mag_dict   = calc_mag_diagnostics(gap_time_threshold, dfpar['Dist_au'], estimate_PSD, dfmag, mag_resolution , sc = 0)
-                except:
-                    traceback.print_exc()          
+                general_dict, mag_dict                  = calc_mag_diagnostics(
+                                                                                          misc['Mag'],
+                                                                                          settings['gap_time_thresh'],
+                                                                                          dist_df,
+                                                                                          settings['est_PSD'],
+                                                                                          dfmag,
+                                                                                          settings['Mag_resol'])
+    
 
-                """Now calculates quantities related to particle timeseries"""  
-                res_particles, sig_c_sig_r_timeseries = calc_particle_diagnostics(estimate_PSD_V, subtract_rol_mean, f_min_spec, f_max_spec, in_RTN, dfmag, dfpar, mag_resolution , spc_resolution = 200, sc = 0, smoothed = True)
-                                                               #f_min_spec, f_max_spec, in_rtn, mag_data, spc_data, mag_resolution, spc_resolution = 200, sc = 0, smoothed = True
-             
+                """Now calculates quantities related to particle timeseries"""
+                res_particles, sig_c_sig_r_timeseries     = calc_particle_diagnostics(
+                                                                                                dfpar, 
+                                                                                                dfmag,
+                                                                                                misc['Par'],
+                                                                                                settings['est_PSD_V'],
+                                                                                                settings['sub_rol_mean'],
+                                                                                                settings['roll_window'],
+                                                                                                settings['f_min_spec'],
+                                                                                                settings['f_max_spec'],
+                                                                                                settings['in_RTN'],
+                                                                                                smoothed = True
+                 )
+
                 # Now save everything in final_dict as a dictionary
                 final_dict = { 
                                "Mag"          : mag_dict,
                                "Par"          : res_particles
                               }
-
+                
                 # also save a general dict with basic info (add what is missing from particletimeseries)
                 general_dict["Fraction_missing_part"] = res_particles["Fraction_missing"]
                 general_dict["Resolution_part"]       = res_particles["resolution"]
 
                 flag_good = 1
 
-
             except:
                 traceback.print_exc()
 
                 flag_good = 0
-                print('No MAG data.')
+                print('No MAG data!')
                 big_gaps, final_dict, general_dict, sig_c_sig_r_timeseries = None, None, None, None
         else:
             final_dict = None
-            print('No particle data.')
+            print('No particle data!')
 
             flag_good = 0
             big_gaps, final_dict, general_dict, sig_c_sig_r_timeseries = None, None, None, None
     else:
         final_dict = None
-        print('No particle data.')
+        traceback.print_exc()
+        print('No particle data!')
 
         flag_good = 0
         big_gaps, final_dict, general_dict, sig_c_sig_r_timeseries = None, None, None, None
 
-
-        
-    return big_gaps, flag_good, final_dict, general_dict, sig_c_sig_r_timeseries
-
+    return  flag_good, final_dict, general_dict, sig_c_sig_r_timeseries,  dist_df
+         
 
 
 
