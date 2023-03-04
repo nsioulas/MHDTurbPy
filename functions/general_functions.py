@@ -72,6 +72,22 @@ def add_time_to_datetime_string(start_time, time_amount, time_unit):
 
 
 
+def count_fits_in_duration(df, wind_size):
+    """
+    This function takes a pandas dataframe with a datetime index and an integer wind_size as input.
+    It calculates the total duration of the dataframe in hours and then finds how many times wind_size can fit in the duration.
+    """
+    
+    # Calculate the total duration of the dataframe in hours
+    total_duration = (df.index[-1] - df.index[0]).total_seconds() / 3600
+    
+    #print(total_duration)
+    
+    # Find how many times wind_size can fit into the duration
+    fits_in_duration = int(total_duration // wind_size)
+    
+    return fits_in_duration
+
 @jit(nopython=True, parallel=True)
 def hampel_filter(input_series, window_size, n_sigmas=3):
     """
@@ -281,11 +297,11 @@ def pdf(val, bins, loglog, density,scott_rule =False):
 
     if loglog ==1:
         binsa = np.logspace(np.log10(min(val)),np.log10(max(val)),bins)
-    elif scott_rule:
-        binsa = scotts_rule_PDF(val)
-        #print(binsa)
     else:
-        binsa = np.linspace((min(val)),(max(val)),bins)
+        if scott_rule:
+            binsa = scotts_rule_PDF(val)
+        else:
+            binsa = np.linspace((min(val)),(max(val)),bins)
 
     if density ==1:
         numout, binsout, patchesout = plt.hist(val,density= True,bins=binsa, alpha = 0)
@@ -533,35 +549,57 @@ def ensure_time_format(start_time, end_time):
         
     return t0.strftime(desired_format), t1.strftime(desired_format)
 
-
+#@njit(nopython=True)
 def binned_quantity(x, y, what, std_or_error_of_mean, mov_aver_window,loglog, return_counts=False):
-    x = np.array(x)
-    y =np.array(y)
-    x = x.astype(float)
-    y =y.astype(float)
-    index =np.array(np.argsort(x).astype(int))
-    #print(index)
-    x = x[index]
-    y = y[index]
-    # print(x)
-    # print(y)
+    """
+    Calculate binned statistics of one variable (y) with respect to another variable (x).
 
-    ind = y>-1e10
+    Parameters
+    ----------
+    x : array_like
+        Input array. This represents the independent variable.
+    y : array_like
+        Input array. This represents the dependent variable.
+    what : str or callable
+        The type of binned statistic to compute. This can be any of the options supported by `scipy.stats.binned_statistic()`.
+    std_or_error_of_mean : int
+        Indicates whether to return the standard deviation (std_or_error_of_mean=1) or the error of the mean (std_or_error_of_mean=0).
+    mov_aver_window : int
+        The number of bins to use for the histogram. If `loglog` is True, this value is used to generate logarithmic bins.
+    loglog : bool
+        If True, logarithmic bins are used instead of linear bins.
+    return_counts : bool, optional
+        If True, also return the number of points in each bin. The default is False.
 
-    x = np.array(x[ind])
-    y =np.array(y[ind])
+    Returns
+    -------
+    x_b : ndarray
+        The centers of the bins.
+    y_b : ndarray
+        The value of the binned statistic.
+    z_b : ndarray
+        The standard deviation or error of the mean of the binned statistic.
+    points : ndarray, optional
+        The number of points in each bin. This is only returned if `return_counts` is True.
+    """
+
+    mask = y > -1e10
+    x    = np.asarray(x[mask], dtype=float)
+    y    = np.asarray(y[mask], dtype=float)
+
+
     if loglog:
-        mov_aver_window = np.logspace(np.log10(np.nanmin(x)),np.log10(np.nanmax(x)), mov_aver_window)
-    y_b, x_b, binnumber     = stats.binned_statistic(x, y, what, bins   = mov_aver_window)  # from scipy stats
+        mov_aver_window     = np.logspace(np.log10(np.nanmin(x)),np.log10(np.nanmax(x)), mov_aver_window)
+
+    y_b, x_b, binnumber     = stats.binned_statistic(x, y, what,    bins   = mov_aver_window) 
     z_b, x_b, binnumber     = stats.binned_statistic(x, y, 'std',   bins  = mov_aver_window)
-    points , x_b, binnumber = stats.binned_statistic(x, y, 'count', bins= mov_aver_window)
-   # percentiles , x_b, binnumber = stats.binned_statistic(x, y, lambda y: np.percentile(y, percentile), bins= mov_aver_window) 
+
 
 
     if std_or_error_of_mean==0:
         z_b =z_b/np.sqrt(points)
     x_b = x_b[:-1] + 0.5*(x_b[1:]-x_b[:-1])
-    #x_b = x_b[1:]
+
     return (x_b, y_b, z_b, points) if return_counts else (x_b, y_b, z_b)
 
 def progress_bar(jj, length):
