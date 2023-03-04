@@ -807,6 +807,10 @@ def estimate_kurtosis_with_rand_samples(hmany_stds, di, vsw, xvals, yvals, nxbin
     return xvalues, kurt, counts, Sf1_f, Sf2_f, Sf3_f, Sf4_f, Sf5_f, Sf6_f
 
 
+def MS_chandran_scaling(max_qorder):
+    f              = lambda x: 1-(0.7)**x
+    xvals          = np.arange(1, max_qorder+1,1)
+    return xvals, f(xvals)
 
 
 def K41_linear_scaling(max_qorder):
@@ -819,3 +823,30 @@ def IK_linear_scaling(max_qorder):
     f              = lambda x: x/4
     xvals          = np.arange(1, max_qorder+1,1)
     return xvals, f(xvals)
+
+def Chandran_scaling(max_qorder):
+    f              = lambda x: (1-(0.691)**(x))
+    xvals          = np.arange(1, max_qorder+1,1)
+    return xvals, f(xvals)
+
+def HB_K41_scaling(max_qorder):
+    f              = lambda x: x/9+1-(1/3)**(x/3)
+    xvals          = np.arange(1, max_qorder+1,1)
+    return xvals, f(xvals)
+
+def GPP_IK_scaling(max_qorder):
+    f              = lambda x: x/8+1-(1/2)**(x/4)
+    xvals          = np.arange(1, max_qorder+1,1)
+    return xvals, f(xvals)
+
+def MS17_flucs(max_qorder):
+    f              = lambda n: n*(1-1/2**(n/2))/(n/2 + 1 - 1/2**(n/2))
+    xvals          = np.arange(1, max_qorder+1,1)
+    return xvals, f(xvals)
+
+def MS17_par(max_qorder):
+    f              = lambda n: 2*(1- 1/2**(n/2))
+    xvals          = np.arange(1, max_qorder+1,1)
+    return xvals, f(xvals)
+
+
