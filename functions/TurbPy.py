@@ -367,7 +367,7 @@ def hampel_filter(input_series, window_size, n_sigmas=3):
 
 
 @njit(nogil=True)
-def norm_factor_Gauss_window(scales, dt, lambdaa):
+def norm_factor_Gauss_window(scales, dt, lambdaa=3):
     
     s             = scales*dt
     numer         = np.arange(-3*s, 3*s, dt)
@@ -807,10 +807,7 @@ def estimate_kurtosis_with_rand_samples(hmany_stds, di, vsw, xvals, yvals, nxbin
     return xvalues, kurt, counts, Sf1_f, Sf2_f, Sf3_f, Sf4_f, Sf5_f, Sf6_f
 
 
-def MS_chandran_scaling(max_qorder):
-    f              = lambda x: 1-(0.7)**x
-    xvals          = np.arange(1, max_qorder+1,1)
-    return xvals, f(xvals)
+
 
 
 def K41_linear_scaling(max_qorder):
@@ -836,6 +833,11 @@ def HB_K41_scaling(max_qorder):
 
 def GPP_IK_scaling(max_qorder):
     f              = lambda x: x/8+1-(1/2)**(x/4)
+    xvals          = np.arange(1, max_qorder+1,1)
+    return xvals, f(xvals)
+
+def MS17_perp(max_qorder):
+    f              = lambda x: 1-(1/np.sqrt(2))**x
     xvals          = np.arange(1, max_qorder+1,1)
     return xvals, f(xvals)
 
