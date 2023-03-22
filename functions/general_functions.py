@@ -586,14 +586,17 @@ def binned_quantity(x, y, what, std_or_error_of_mean, mov_aver_window,loglog, re
     mask = y > -1e10
     x    = np.asarray(x[mask], dtype=float)
     y    = np.asarray(y[mask], dtype=float)
+    print(len(y))
 
 
     if loglog:
         mov_aver_window     = np.logspace(np.log10(np.nanmin(x)),np.log10(np.nanmax(x)), mov_aver_window)
 
-    y_b, x_b, binnumber     = stats.binned_statistic(x, y, what,    bins   = mov_aver_window) 
-    z_b, x_b, binnumber     = stats.binned_statistic(x, y, 'std',   bins  = mov_aver_window)
-
+    y_b, x_b, _     = stats.binned_statistic(x, y, what,    bins   = mov_aver_window) 
+    print(y_b)
+    z_b, _, _       = stats.binned_statistic(x, y, 'std',   bins  = mov_aver_window)
+    if return_counts:
+        points, x_b, _     = stats.binned_statistic(x, y, 'count',   bins  = mov_aver_window)
 
 
     if std_or_error_of_mean==0:
@@ -606,51 +609,59 @@ def progress_bar(jj, length):
     print('Completed', round(100*(jj/length),2))
 
 
-def mean_manual(xpar, ypar,what,std_or_std_mean, nbins, loglog,  upper_percentile=95, remove_upper_percentile= False):
-    xpar = np.array(xpar);     ypar = np.array(ypar)
-    ind  =  (xpar>-1e9) & (ypar>-1e9)
-    
-    xpar = xpar[ind];  ypar = ypar[ind];
+
+@jit(nopython=True, parallel=True)
+
+def mean_manual(xpar, ypar, what, std_or_std_mean, nbins, loglog, upper_percentile=95, remove_upper_percentile=False):
+    xpar = np.array(xpar)
+    ypar = np.array(ypar)
+    ind = (xpar > -1e9) & (ypar > -1e9)
+
+    xpar = xpar[ind]
+    ypar = ypar[ind]
 
     if loglog:
-        bins = np.logspace(np.log10(np.nanmin(xpar)),np.log10(np.nanmax(xpar)), nbins)       
+        bins = np.logspace(np.log10(np.nanmin(xpar)), np.log10(np.nanmax(xpar)), nbins)
     else:
-        bins = np.linspace(np.nanmin(xpar),np.nanmax(xpar), nbins)        
-    res1   = np.digitize(xpar,bins)
+        bins = np.linspace(np.nanmin(xpar), np.nanmax(xpar), nbins)
 
-    unique = np.unique(res1)
-    #print(bins)
+    res1 = np.digitize(xpar, bins)
 
+    bin_counts = np.bincount(res1)
 
-    ypar_mean =[];     ypar_std   = []
-    xpar_mean =[];     ypar_count = []
-    for i in range(len(unique)):
-        xvalues1 = xpar[res1==unique[i]] 
-        yvalues1 = ypar[res1==unique[i]]
+    ypar_mean  = []
+    ypar_std   = []
+    xpar_mean  = []
+    ypar_count = []
+    for i in prange(len(bin_counts)):
+        if bin_counts[i] == 0:
+            continue
+
+        xvalues1 = xpar[res1 == i]
+        yvalues1 = ypar[res1 == i]
 
         if remove_upper_percentile:
             percentile = np.percentile(yvalues1, upper_percentile)
-            xvalues1   = xvalues1[yvalues1<percentile] 
-            yvalues1   = yvalues1[yvalues1<percentile]          
-        if what=='mean':
+            xvalues1 = xvalues1[yvalues1 < percentile]
+            yvalues1 = yvalues1[yvalues1 < percentile]
+
+        if what == 'mean':
             ypar_mean.append(np.nanmean(yvalues1))
-            xpar_mean.append(np.nanmean(xvalues1))    
+            xpar_mean.append(np.nanmean(xvalues1))
         else:
             ypar_mean.append(np.nanmedian(yvalues1))
-            xpar_mean.append(np.nanmedian(xvalues1)) 
+            xpar_mean.append(np.nanmedian(xvalues1))
+
         ypar_std.append(np.nanstd(yvalues1))
-        ypar_count.append(len(yvalues1))
-        
-            
-    if  std_or_std_mean==0:
-        z_b = np.array(ypar_std)/np.sqrt(ypar_count)
+        ypar_count.append(bin_counts[i])
+
+    if std_or_std_mean == 0:
+        z_b = np.array(ypar_std) / np.sqrt(ypar_count)
     else:
         z_b = np.array(ypar_std)
-        
-        
-   # x_b = bins#[:-1] + 0.5*(bins[1:]-bins[:-1]) 
 
-    return np.array(xpar_mean), np.array(ypar_mean), z_b 
+    return np.array(xpar_mean), np.array(ypar_mean), z_b
+
 
 
 def find_fit_semilogy(x, y, x0, xf): 
