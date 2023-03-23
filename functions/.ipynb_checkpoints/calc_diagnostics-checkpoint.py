@@ -57,19 +57,20 @@ def compute_sigma(psd_A, psd_B, f, f_min, f_max):
 def estimate_quants_particle_data(estimate_PSDv, rolling_window, f_min_spec, f_max_spec,  in_rtn, df, mag_resampled, subtract_rol_mean, smoothed = True):
     # Particle data remove nan values
     df_part = df.dropna()
-    
+   
     # Reindex magnetic field data to particle data index
-    dtv                 = (df_part.dropna().index.to_series().diff()/np.timedelta64(1, 's'))[1]
-    dtb                 = (mag_resampled.dropna().index.to_series().diff()/np.timedelta64(1, 's'))[1]
+    dtv                 = func.find_cadence(df_part)
+    dtb                 = func.find_cadence(mag_resampled)
     
     # We need plasma timeseries cadence
     freq_final          = str(int(dtv*1e3))+'ms'
 
     # Combine magnetic field and particle data, resampled to final frequency
-    f_df = mag_resampled.resample(freq_final).mean().join(
-         df_part.resample(freq_final).mean()
-    ).interpolate()
-    
+    if dtv>dtb:
+        mag_resampled = func.newindex(mag_resampled, df_part.index)
+    else:
+        df_part = func.newindex(df_part, mag_resampled.index)
+    f_df          = mag_resampled.join(df_part).interpolate()
 
     # Calculate magnetic field magnitude
     Bx, By, Bz = f_df.values.T[:3]
@@ -87,15 +88,15 @@ def estimate_quants_particle_data(estimate_PSDv, rolling_window, f_min_spec, f_m
     Vth_std                 = np.nanstd(Vth);
     
     #Estimate median solar wind speed  
- 
+
     Vx                       = f_df["Vr"].values if in_rtn else f_df["Vx"].values
     Vy                       = f_df["Vt"].values if in_rtn else f_df["Vy"].values
     Vz                       = f_df["Vn"].values if in_rtn else f_df["Vz"].values
+
     Vsw                      = np.sqrt(Vx**2 + Vy**2 + Vz**2)
+    Vsw[(np.abs(Vsw) > 1e5)] = np.nan
     Vsw_mean                 = np.nanmedian(Vsw)
     Vsw_std                  = np.nanstd(Vsw)
-    Vsw[(np.abs(Vsw) > 1e5)] = np.nan
-
 
     # estimate mean number density
     Np                       = f_df['np'].values 
@@ -104,23 +105,23 @@ def estimate_quants_particle_data(estimate_PSDv, rolling_window, f_min_spec, f_m
         
     # Estimate Ion inertial length di in [Km]
     di                       = 228/np.sqrt(Np)
-    di[np.log10(di) < -3]    = np.nan
+    di[di< 1e-3]             = np.nan
     di_mean                  = np.nanmedian(di) 
     di_std                   = np.nanstd(di);
-    
+
     # Estimate plasma Beta
-    B_mag                    = Bmag * nT2T                              # |B| units:      [T]
-    temp                     = 1./2 * m_p * (Vth*km2m)**2               # in [J] = [kg] * [m]^2 * [s]^-2
-    dens                     = Np/(cm2m**3)                             # number density: [m^-3] 
-    beta                     = (dens*temp)/((B_mag**2)/(2*mu_0))        # plasma beta 
-    beta[beta < 0]           = np.nan
+    B_mag       = Bmag * nT2T                              # |B| units:      [T]
+    temp        = 1./2 * m_p * (Vth*km2m)**2               # in [J] = [kg] * [m]^2 * [s]^-2
+    dens        = Np/(cm2m**3)                             # number density: [m^-3] 
+    beta        = (dens*temp)/((B_mag**2)/(2*mu_0))        # plasma beta 
+    beta[beta < 0] = np.nan
     beta[np.abs(np.log10(beta))>4] = np.nan # delete some weird data
-    beta_mean                      = np.nanmedian(beta); beta_std   = np.nanstd(beta);
+    beta_mean   = np.nanmedian(beta); beta_std   = np.nanstd(beta);
     
     
     # ion gyro radius
-    rho_ci                    = 10.43968491 * Vth/B_mag #in [km]
-    rho_ci[rho_ci < 0]        = np.nan
+    rho_ci = 10.43968491 * Vth/B_mag #in [km]
+    rho_ci[rho_ci < 0] = np.nan
     rho_ci[np.log10(rho_ci) < -3] = np.nan
     rho_ci_mean =np.nanmedian(rho_ci); rho_ci_std =np.nanstd(rho_ci);
  
@@ -427,6 +428,7 @@ def final_func(
                                                                           time_unit          = 'h'
         )
 
+
     # Solar Orbiter
     elif sc ==1:
  
@@ -642,6 +644,7 @@ def prepare_particle_data_for_visualization( df_part, mag_resampled, rolling_win
 
     #Estimate median solar wind speed   
     Vth                     = f_df.Vth.values
+    Vth                     = Vth[~np.isnan(Vth)]
     Vth[Vth < 0]            = np.nan
     Vth_mean                = np.nanmedian(Vth)
     Vth_std                 = np.nanstd(Vth);
@@ -652,6 +655,7 @@ def prepare_particle_data_for_visualization( df_part, mag_resampled, rolling_win
     Vy                       = f_df["Vt"].values if in_rtn else f_df["Vy"].values
     Vz                       = f_df["Vn"].values if in_rtn else f_df["Vz"].values
     Vsw                      = np.sqrt(Vx**2 + Vy**2 + Vz**2)
+    Vsw                      = Vsw[~np.isnan(Vsw)]
     Vsw_mean                 = np.nanmedian(Vsw)
     Vsw_std                  = np.nanstd(Vsw)
     Vsw[(np.abs(Vsw) > 1e5)] = np.nan
@@ -659,12 +663,13 @@ def prepare_particle_data_for_visualization( df_part, mag_resampled, rolling_win
 
     # estimate mean number density
     Np                       = f_df['np'].values 
+    Np                       = Np[~np.isnan(Np)]
     Np_mean                  = np.nanmedian(Np)
     Np_std                   = np.nanstd(Np);
         
     # Estimate Ion inertial length di in [Km]
     di                       = 228/np.sqrt(Np)
-    di[np.log10(di) < -3]    = np.nan
+    di[di< 1e-3]             = np.nan
     di_mean                  = np.nanmedian(di) 
     di_std                   = np.nanstd(di);
     

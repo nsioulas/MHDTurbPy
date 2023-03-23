@@ -412,13 +412,16 @@ def create_particle_dataframe(diagnostics_SPC, diagnostics_SPAN, start_time, end
         part_flag = 'spc'
 
     elif part_instrument == 'span':
+        print(diagnostics_SPAN['resampled_df'])
         freq  = f"{round(diagnostics_SPAN['Init_dt']*1000)}ms"
         dfpar = diagnostics_SPAN['resampled_df']
         part_flag = 'span'
+
     # before encounter 9 (Perihelion: 2021-08-09/19:11) use SPC for solar wind speed
     # at and after encounter 8, mix SPC and SPAN for solar wind speed
     # prioritize QTN for density, and fill with SPC, and with SPAN
     elif part_instrument == '9th_perih_cut':
+
         source_df = dfspc if pd.Timestamp(end_time) < pd.Timestamp('2021-07-15') else dfspan
         diagnostics = diagnostics_SPC if pd.Timestamp(end_time) < pd.Timestamp('2021-07-15') else diagnostics_SPAN
         freq = f"{round(diagnostics['Init_dt'] * 1000)}ms"
@@ -553,6 +556,7 @@ def LoadTimeSeriesPSP(start_time,
 
     
     settings = {**default_settings, **settings}
+    
 
     
     # Ensure the dates have appropriate format
@@ -572,7 +576,7 @@ def LoadTimeSeriesPSP(start_time,
     try:
         # Download Magnetic field data
         dfmag                 = download_MAG_FIELD_PSP(t0, t1, settings['MAG_resol'], credentials, varnames_MAG, download_SCAM=download_SCAM)
-        #print(dfmag)
+
         # Return the originaly requested interval
         try:
             dfmag                 = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfmag)
@@ -583,6 +587,7 @@ def LoadTimeSeriesPSP(start_time,
 
             print(dfmag)
             print('here')
+
          # Identify big gaps in timeseries
         big_gaps              = func.find_big_gaps(dfmag , gap_time_threshold)        
         # Resample the input dataframes
@@ -655,28 +660,16 @@ def LoadTimeSeriesPSP(start_time,
                 ns, _ = func.hampel_filter(dfpar[k].values, 100)
                 dfpar[k] = ns
 
-        # dfs = {
-        #     'dfqtn'            : dfqtn,
-        #     'dfspc'            : dfspc,
-        #     'dfspan'           : dfspan,
-        #     'dfspan_a'         : dfspan_alpha,
-        #     'settings'         : settings,
-        #     'dfpar'            : diagnostics_PAR["resampled_df"],
-        #     'dfmag'            : diagnostics_MAG["resampled_df"],
-        #     'dfephem'          : dfephem,
-        # }
-
-
         keys_to_keep           = ['Frac_miss', 'Large_gaps', 'Tot_gaps', 'resol']
         misc = {
             'SPC'              : func.filter_dict(diagnostics_SPC,  keys_to_keep),
             'SPAN'             : func.filter_dict(diagnostics_SPAN, keys_to_keep),
             'Par'              : func.filter_dict(diagnostics_PAR,  keys_to_keep),
             'Mag'              : func.filter_dict(diagnostics_MAG,  keys_to_keep),
-            'part_flag'        : part_flag,
+            'part_flag'        : part_flag
         }
 
-        return dfmag, dfpar.interpolate(), dfephem, big_gaps, misc
+        return diagnostics_MAG["resampled_df"].interpolate().dropna(), dfpar.interpolate().dropna(), dfephem, big_gaps, misc
     except:
         traceback.print_exc()
 
