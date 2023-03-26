@@ -434,8 +434,7 @@ def estimate_wavelet_coeff(B_df, V_df,  dj , lambdaa=3, pycwt=False):
         db_x, db_y, db_z, freqs, PSD, scales = trace_PSD_cwt_ssqueezepy(Br, Bt, Bn, dt, nv=int(2/dj))   
 
     # Calculate the scales in physical space and units of seconds
-    k                 = 6.0 / (2 * np.pi)
-    phys_space_scales = k / (freqs * dt)
+    phys_space_scales = 1 / (freqs)
 
     for ii in range(len(scales)):
         try:
