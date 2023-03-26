@@ -74,15 +74,16 @@ def trace_PSD_wavelet(x, y, z, dt, dj,  mother_wave='morlet'):
         
     N                                       = len(x)
 
-    db_x, _, freqs, _, _, _ = wavelet.cwt(x, dt, dj, wavelet=mother_morlet)
-    db_y, _, freqs, _, _, _ = wavelet.cwt(y, dt, dj, wavelet=mother_morlet)
-    db_z, _, freqs, _, _, _ = wavelet.cwt(z, dt, dj, wavelet=mother_morlet)
+
+    db_x, sj, freqs, coi, signal_ft, ftfreqs = wavelet.cwt(x, dt, dj, wavelet=mother_morlet)
+    db_y, _, freqs, _, _, _                  = wavelet.cwt(y, dt, dj, wavelet=mother_morlet)
+    db_z, _, freqs, _, _, _                  = wavelet.cwt(z, dt, dj, wavelet=mother_morlet)
      
     # Estimate trace powerspectral density
     PSD = (np.nanmean(np.abs(db_x)**2, axis=1) + np.nanmean(np.abs(db_y)**2, axis=1) + np.nanmean(np.abs(db_z)**2, axis=1)   )*( 2*dt)
     
-    # Also estimate the scales to use later
-    scales = ((1/freqs)/dt)#.astype(int)
+    # Remember!
+    scales = sj
     
     return db_x, db_y, db_z, freqs, PSD, scales
 
@@ -367,10 +368,10 @@ def hampel_filter(input_series, window_size, n_sigmas=3):
 
 
 @njit(nogil=True)
-def norm_factor_Gauss_window(scales, dt, lambdaa=3):
+def norm_factor_Gauss_window(phys_space_scales, scales, dt, lambdaa=3):
     
-    s             = scales*dt
-    numer         = np.arange(-3*s, 3*s, dt)
+    s             = scales
+    numer         = np.arange(-3*phys_space_scales, 3*phys_space_scales, dt)
     multiplic_fac = np.exp(-(numer)**2/(2*(lambdaa**2)*(s**2)))
     norm_factor   = np.sum(multiplic_fac)
     window        = len(multiplic_fac)
@@ -427,14 +428,18 @@ def estimate_wavelet_coeff(B_df, V_df,  dj , lambdaa=3, pycwt=False):
     from scipy import signal
     # Estimate PSDand scale dependent fluctuations
     if pycwt:
-        db_x, db_y, db_z, freqs, PSD, scales = trace_PSD_wavelet(Br, Bt, Bn, dt, dj,  mother_wave='morlet')
+        db_x, db_y, db_z, freqs, PSD,  scales = trace_PSD_wavelet(Br, Bt, Bn, dt, dj,  mother_wave='morlet')
     else:
         # To avoid rewrititing the code (2/dj) is a good compromise (and it doesnt really matter)
         db_x, db_y, db_z, freqs, PSD, scales = trace_PSD_cwt_ssqueezepy(Br, Bt, Bn, dt, nv=int(2/dj))   
 
+    # Calculate the scales in physical space and units of seconds
+    k                 = 6.0 / (2 * np.pi)
+    phys_space_scales = k / (freqs * dt)
+
     for ii in range(len(scales)):
         try:
-            window, multiplic_fac, norm_factor= norm_factor_Gauss_window(scales[ii], dt, lambdaa)
+            window, multiplic_fac, norm_factor= norm_factor_Gauss_window(phys_space_scales[ii], scales[ii], dt, lambdaa)
 
 
             # Estimate scale dependent background magnetic field using a Gaussian averaging window
@@ -461,7 +466,7 @@ def estimate_wavelet_coeff(B_df, V_df,  dj , lambdaa=3, pycwt=False):
         except:
              pass
 
-    return db_x, db_y, db_z, angles, VBangles, freqs, PSD, scales
+    return db_x, db_y, db_z, angles, VBangles, freqs, PSD, phys_space_scales,  scales
 
 
 
@@ -584,8 +589,7 @@ def structure_functions_wavelets(db_x, db_y, db_z, angles,  scales, dt, max_mome
 
     for j in prange(len(tau)):
         
-        dbtot =(db_x[j]*np.conjugate(db_x[j]) + db_y[j]*np.conjugate(db_y[j])  +db_z[j]*np.conjugate(db_z[j]) )**(1/2)
-        
+        dbtot     = (db_x[j]*np.conjugate(db_x[j]) + db_y[j]*np.conjugate(db_y[j])  +db_z[j]*np.conjugate(db_z[j]) )**(1/2)
         index_per = (np.where(angles[j]>per_thresh)[0])
         index_par = (np.where(angles[j]<par_thresh)[0])
 
