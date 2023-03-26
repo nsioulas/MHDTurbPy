@@ -376,6 +376,72 @@ def initializeFigure_1by_2(xlabel, ylabel, scale= 'loglog',width='1col', height=
 
     return fig, axes
 
+def initializeFigure_1by_3(xlabel, ylabel, scale= 'loglog',width='1col', height=None,share_y=False):
+    '''
+    Initialize a single plot for publication.
+     
+    Creates a figure and an axis object that is set to be the 
+    current working axis.
+     
+    @param width: Width of the figure in cm or either '1col' 
+                  (default) or '2col' for single our double 
+                  column usage. Single column equals 8.8cm and
+                  double column 18cm.
+    @type width: float or str (either '1col' or '2col')
+    @param height: Height of the figure either in cm. If None
+                   (default), will be calculated with an 
+                   aspect ratio of 7/10 (~1/1.4).
+    @type height: float or None
+    @return: figure and axis objects.
+    @rtype: tuple (figure, axis)
+     
+    '''
+
+    plt.rc('axes', linewidth=1.2)
+
+    # Prepare figure width and height
+    cm_to_inch = 0.393701 # [inch/cm]
+
+    # Get figure width in inch
+    if width == '1col':
+        width = 12 # width [cm]
+    elif width == '2col':
+        width = 48.0 # width [cm]
+    elif width == '3col':
+        width = 24.0 # width [cm]
+
+    figWidth = width * cm_to_inch # width [inch]
+
+
+    # Get figure height in inch
+    figHeight = figWidth * (3.5/10.) if height is None else height * cm_to_inch
+    fig, axes = plt.subplots(1,3, figsize=(5*figWidth,4*figHeight), gridspec_kw = {'wspace':0.1, 'hspace':0.08},sharex =True, sharey='row',  dpi=300)
+    for i in range(2):
+
+        ax =axes[i]
+
+        ax.tick_params(axis='both', which='minor',left=0,right=0,bottom=0, top=0, direction='out', labelsize='xx-large', pad=2)
+        ax.tick_params(axis='both', which='major',left=1,right=0,bottom=i, top=0, direction='out', labelsize='xx-large', pad=2) 
+
+
+    if scale=='loglog':
+       # ax.loglog(x,y, label =label)
+        ax.set_yscale('log')
+        ax.set_xscale('log')
+    elif scale=='semilogy':
+        ax.set_yscale('log')
+    elif scale=='semilogx':
+        ax.set_xscale('log')
+    else:
+        print('linear')
+
+    # ax.set_ylabel(ylabel)
+    # if i ==1:
+    #     axes[i, k].set_xlabel(xlabel)
+
+
+    return fig, axes
+
 
 
 def initializeFigure_2by_3(xlabel, ylabel, scale= 'loglog',width='1col', height=None,share_y=False):
@@ -548,7 +614,9 @@ def visualize_downloaded_intervals(
                                   format_2_return ="%Y_%m_%d",
                                   size             = 21,
                                   inset_f_size     = 20,
-                                  numb_subplots    = 7
+                                  numb_subplots    = 7,
+                                  join_path_figs   = True,
+                                  save_fig         = True 
 
                                  ):
 
@@ -612,10 +680,13 @@ def visualize_downloaded_intervals(
 
     """4th plot"""
     axs[6].plot(final_Par.Dist_au, linewidth=0.8,ls='-', ms=0,color ='black')#,label='$|B|$')
-    ax3 = axs[6].twinx()
-    ax3.plot(final_Par['carr_lon'],linewidth=0.8,ls='-', ms=0,color ='darkred')#,label='$|B|$')
-    #dfts[['Vth']].plot(ax = ax, legend=False, style=['C1'], lw = 0.6, alpha = 0.6)
-    ax3.legend(['$Carr. long ~ [^{\circ}]$'], fontsize='large', frameon=False, bbox_to_anchor=(1.01, 0.6), loc = 2)
+    try:
+        ax3 = axs[6].twinx()
+        ax3.plot(final_Par['carr_lon'],linewidth=0.8,ls='-', ms=0,color ='darkred')#,label='$|B|$')
+        #dfts[['Vth']].plot(ax = ax, legend=False, style=['C1'], lw = 0.6, alpha = 0.6)
+        ax3.legend(['$Carr. long ~ [^{\circ}]$'], fontsize='large', frameon=False, bbox_to_anchor=(1.01, 0.6), loc = 2)
+    except:
+        pass
 
 
     ## y Axis labels ##
@@ -653,8 +724,11 @@ def visualize_downloaded_intervals(
 
         # Set axis limits
         axs[i].set_xlim([start_date_lim, end_date_lim])
-
-    final_save_path = Path(my_dir).joinpath('figures')
+    if join_path_figs:
+        final_save_path = Path(my_dir).joinpath('figures')
+    else:
+        final_save_path = Path(my_dir)#.joinpath('figures')
     os.makedirs(str(final_save_path), exist_ok=True)
-    fig.savefig(str(final_save_path.joinpath(figure_name)), format='png',dpi=300,bbox_inches='tight')
+    if save_fig:
+        fig.savefig(str(final_save_path.joinpath(figure_name)), format='png',dpi=300,bbox_inches='tight')
     fig.show()
