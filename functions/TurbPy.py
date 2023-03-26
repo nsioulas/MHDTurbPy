@@ -605,7 +605,7 @@ def structure_functions_wavelets(db_x, db_y, db_z, angles,  scales, dt, max_mome
 
 
 #@jit( parallel =True)
-def estimate_PSD_wavelets_all_intervals(db_x, db_y, db_z, angles, freqs,   dt,  per_thresh, par_thresh):
+def estimate_anisotropic_PSD_wavelets(db_x, db_y, db_z, angles, freqs,   dt,  per_thresh, par_thresh):
     """
     Method to calculate the par and perp Power Spectral Density (PSD) of a signal using wavelets 
 
