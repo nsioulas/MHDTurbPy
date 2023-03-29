@@ -77,9 +77,15 @@ def estimate_quants_particle_data(estimate_PSDv, rolling_window, f_min_spec, f_m
     Bmag       = np.sqrt(Bx**2 + By**2 + Bz**2)
 
     if subtract_rol_mean:
-        columns = [['Br', 'Bt', 'Bn'], ['Vr', 'Vt', 'Vn', 'np']]
-        for c in columns:
-            f_df[[f"{col}_mean" for col in c]] = f_df[c].rolling(rolling_window, center=True).mean().interpolate()
+        try:
+            columns = [['Br', 'Bt', 'Bn'], ['Vr', 'Vt', 'Vn', 'np']]
+            for c in columns:
+                f_df[[f"{col}_mean" for col in c]] = f_df[c].rolling(rolling_window, center=True).mean().interpolate()
+        except:
+            columns = [['Bx', 'By', 'Bz'], ['Vx', 'Vy', 'Vz', 'np']]
+            for c in columns:
+                f_df[[f"{col}_mean" for col in c]] = f_df[c].rolling(rolling_window, center=True).mean().interpolate()       
+
 
     #Estimate median solar wind speed   
     Vth                     = f_df.Vth.values
@@ -157,12 +163,19 @@ def estimate_quants_particle_data(estimate_PSDv, rolling_window, f_min_spec, f_m
     VBangle_mean, VBangle_std = np.nanmean(vbang), np.nanstd(vbang)
     
     #Sign of Br forrolling window
-    signB = - np.sign(f_df['Br_mean'])
+    try:
+        signB = - np.sign(f_df['Br_mean'])
+    except:
+        signB = np.abs(- np.sign(f_df['Bx_mean']))
 
     # Estimate fluctuations
     if subtract_rol_mean:
-        dva    = Va_ts  -  f_df[['Br_mean', 'Bt_mean', 'Bn_mean']].values.T * kinet_normal
-        dv     = V_ts   -  f_df[['Vr_mean', 'Vt_mean', 'Vn_mean']].values.T
+        try:
+            dva    = Va_ts  -  f_df[['Br_mean', 'Bt_mean', 'Bn_mean']].values.T * kinet_normal
+            dv     = V_ts   -  f_df[['Vr_mean', 'Vt_mean', 'Vn_mean']].values.T
+        except:
+            dva    = Va_ts  -  f_df[['Bx_mean', 'By_mean', 'Bz_mean']].values.T * kinet_normal
+            dv     = V_ts   -  f_df[['Vx_mean', 'Vy_mean', 'Vz_mean']].values.T
     else:
         dva    = Va_ts  -  np.nanmean(alfv_speed, axis=0)
         dv     = V_ts   -  np.nanmean(sw_speed, axis=0)

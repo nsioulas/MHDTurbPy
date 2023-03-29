@@ -26,7 +26,7 @@ from pytplot import get_data
 
 sys.path.insert(0,'/Users/nokni/work/MHDTurbPy/functions')
 import general_functions as func
-
+from three_D_funcs import *
 
 
 
