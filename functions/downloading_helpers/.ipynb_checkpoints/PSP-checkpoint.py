@@ -396,6 +396,8 @@ def download_ephemeris_PSP(t0, t1, credentials, varnames):
         raise ValueError("Ephemeris could not be loaded!")
 
 def create_particle_dataframe(diagnostics_SPC, diagnostics_SPAN, start_time, end_time, dfspc, dfspan,  dfqtn, settings):
+
+    
     
     # default to method suggested by SWEAP team if particle_mode is not provided
     if settings['particle_mode'] == None:
@@ -403,6 +405,7 @@ def create_particle_dataframe(diagnostics_SPC, diagnostics_SPAN, start_time, end
     else:
         part_instrument = settings['particle_mode']
 
+    
     # Define particle resolution
     part_resolution = settings['part_resol']
 
@@ -421,9 +424,10 @@ def create_particle_dataframe(diagnostics_SPC, diagnostics_SPAN, start_time, end
     # at and after encounter 8, mix SPC and SPAN for solar wind speed
     # prioritize QTN for density, and fill with SPC, and with SPAN
     elif part_instrument == '9th_perih_cut':
-
+        
         source_df = dfspc if pd.Timestamp(end_time) < pd.Timestamp('2021-07-15') else dfspan
         diagnostics = diagnostics_SPC if pd.Timestamp(end_time) < pd.Timestamp('2021-07-15') else diagnostics_SPAN
+        print(source_df)
         freq = f"{round(diagnostics['Init_dt'] * 1000)}ms"
 
         # interpolate QTN to index of either SPC or SPAN and fill nan!

@@ -646,17 +646,35 @@ def visualize_downloaded_intervals(
 
     #Now plot
     """1st plot"""
-    final_Mag['B_RTN'] = np.sqrt(final_Mag.Br**2 + final_Mag.Bt**2 + final_Mag.Bn**2)
+    try:
+        final_Mag['B_RTN'] = np.sqrt(final_Mag.Br**2 + final_Mag.Bt**2 + final_Mag.Bn**2)
 
-    axs[0].plot(final_Mag['Br'],linewidth=0.4,ls='-', ms=0,color ='darkblue')
-    axs[0].plot(final_Mag['Bt'],linewidth=0.4,ls='-', ms=0,color ='darkred')
-    axs[0].plot(final_Mag['Bn'],linewidth=0.4,ls='-', ms=0,color ='darkgreen')
-    axs[0].plot(final_Mag['B_RTN'],linewidth=0.4,ls='-', ms=0,color ='k')
+        axs[0].plot(final_Mag['Br'],linewidth=0.4,ls='-', ms=0,color ='darkblue')
+        axs[0].plot(final_Mag['Bt'],linewidth=0.4,ls='-', ms=0,color ='darkred')
+        axs[0].plot(final_Mag['Bn'],linewidth=0.4,ls='-', ms=0,color ='darkgreen')
+        axs[0].plot(final_Mag['B_RTN'],linewidth=0.4,ls='-', ms=0,color ='k')
+
+        RTN_Flag =1
+
+        """2nd plot"""
+        axs[1].plot(np.sqrt(final_Par.Vr**2 + final_Par.Vt**2 + final_Par.Vn**2),linewidth=0.8,ls='-', ms=0,color ='C0')#,label='$|B|$')
+        ax2 = axs[1].twinx()
+
+    except:
+        final_Mag['B_RTN'] = np.sqrt(final_Mag.Bx**2 + final_Mag.By**2 + final_Mag.Bz**2)
+
+        axs[0].plot(final_Mag['Bx'],linewidth=0.4,ls='-', ms=0,color ='darkblue')
+        axs[0].plot(final_Mag['By'],linewidth=0.4,ls='-', ms=0,color ='darkred')
+        axs[0].plot(final_Mag['Bz'],linewidth=0.4,ls='-', ms=0,color ='darkgreen')
+        axs[0].plot(final_Mag['B_RTN'],linewidth=0.4,ls='-', ms=0,color ='k')
+
+        RTN_Flag =0
+
+        """2nd plot"""
+        axs[1].plot(np.sqrt(final_Par.Vx**2 + final_Par.Vy**2 + final_Par.Vz**2),linewidth=0.8,ls='-', ms=0,color ='C0')#,label='$|B|$')
+        ax2 = axs[1].twinx()   
 
 
-    """2nd plot"""
-    axs[1].plot(np.sqrt(final_Par.Vr**2 + final_Par.Vt**2 + final_Par.Vn**2),linewidth=0.8,ls='-', ms=0,color ='C0')#,label='$|B|$')
-    ax2 = axs[1].twinx()
 
     ax2.plot(final_Par['Vth'],linewidth=0.8,ls='-', ms=0,color ='k')#,label='$|B|$')
     #dfts[['Vth']].plot(ax = ax, legend=False, style=['C1'], lw = 0.6, alpha = 0.6)
@@ -690,7 +708,10 @@ def visualize_downloaded_intervals(
 
 
     ## y Axis labels ##
-    axs[0].legend([r'$B_{r} ~ [nT]$',r'$B_{t} ~ [nT]$',r'$B_{n} ~ [nT]$',r'$|B| ~ [nT]$'], fontsize='large', frameon=False, bbox_to_anchor=(1.01, 1), loc = 2)
+    if RTN_Flag ==1:
+         axs[0].legend([r'$B_{r} ~ [nT]$',r'$B_{t} ~ [nT]$',r'$B_{n} ~ [nT]$',r'$|B| ~ [nT]$'], fontsize='large', frameon=False, bbox_to_anchor=(1.01, 1), loc = 2)
+    else:
+         axs[0].legend([r'$B_{x} ~ [nT]$',r'$B_{y} ~ [nT]$',r'$B_{z} ~ [nT]$',r'$|B| ~ [nT]$'], fontsize='large', frameon=False, bbox_to_anchor=(1.01, 1), loc = 2)
     axs[1].legend(['$V_{sw} ~[km ~s^{-1}$]'], fontsize='large', frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
     axs[2].legend(['$N_{p}~[(cm^{-3}$]'], fontsize='large', frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
     axs[3].legend(['$\sigma_{c}$','$\sigma_{r}$'], fontsize='large', frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
