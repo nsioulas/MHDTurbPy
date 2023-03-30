@@ -14,7 +14,8 @@ import time
 from numba import jit,njit,prange,objmode 
 import traceback
 import ssqueezepy
-
+import numba
+from joblib import Parallel, delayed
 # SPEDAS API
 # make sure to use the local spedas
 import sys
@@ -532,27 +533,122 @@ def estimate_PVI(B_resampled, hmany, di, Vsw,  hours, PVI_vec_or_mod='vec'):
 
 
 
-"""" Define function to estimate the structure functions of a field """
-@jit( parallel =True,  nopython=True)
-def structure_functions(scales, qorder,mat):
-    # Define field components
-    ar = mat.T[0]
-    at = mat.T[1]
-    an = mat.T[2]
+# """" Define function to estimate the structure functions of a field """
+# @jit( parallel =True,  nopython=True)
+# def structure_functions(scales, qorder,mat):
+#     # Define field components
+#     ar = mat.T[0]
+#     at = mat.T[1]
+#     an = mat.T[2]
     
-    # initiate arrays
-    length = np.zeros(len(scales))
-    result = np.zeros((len(scales),len(qorder)))
+#     # initiate arrays
+#     length = np.zeros(len(scales))
+#     result = np.zeros((len(scales),len(qorder)))
     
-    # Estimate sfuncs
-    for k in prange(len(scales)):
-        dB = np.sqrt((ar[scales[k]:]-ar[:-scales[k]])**2 + 
-                     (at[scales[k]:]-at[:-scales[k]])**2 + 
-                     (an[scales[k]:]-an[:-scales[k]])**2)
+#     # Estimate sfuncs
+#     for k in prange(len(scales)):
+#         dB = np.sqrt((ar[scales[k]:]-ar[:-scales[k]])**2 + 
+#                      (at[scales[k]:]-at[:-scales[k]])**2 + 
+#                      (an[scales[k]:]-an[:-scales[k]])**2)
         
-        for i in prange(len(qorder)):   
-            result[k,i] = np.nanmean(np.abs(dB**qorder[i]))
-    return result
+#         for i in prange(len(qorder)):   
+#             result[k,i] = np.nanmean(np.abs(dB**qorder[i]))
+#     return result
+
+
+
+def shifted_df_calcs(B,  lag_coefs, coefs):
+    """
+    Used for 5-point sfuncs
+
+    Parameters:
+    B (pandas.DataFrame) : The input dataframe.
+    lag_coefs (list)     : A list of integers representing the lags.
+    coefs (list)         : A list of coefficients for the calculation.
+
+    Returns:
+    ndarray              : A 2D numpy array representing the result of the calculation.
+    """
+    return pd.DataFrame(np.add.reduce([x*B.shift(y) for x, y in zip(coefs, lag_coefs)]),
+                        index=B.index, columns=B.columns).values
+
+
+def flucts(tau,
+           B,
+           five_points_sfunc=True):
+    """
+    Calculate fluctuations for structure functions.
+
+    Args:
+        tau (int): Time lag.
+        B (pd.Series or np.ndarray): Input field.
+        five_points_sfunc (bool, optional): Estimate 5-point structure functions if True. Defaults to True.
+
+    Returns:
+        dB (np.ndarray): Fluctuations of the input field.
+    """
+
+    # Estimate 5-point Structure functions
+    if five_points_sfunc:
+        # Define coefs for loc fields
+        coefs_loc     = np.array([1, 4, 6, 4, 1]) / 16
+        lag_coefs_loc = np.array([-2 * tau, -tau, 0, tau, 2 * tau]).astype(int)
+
+        # Define coefs for fluctuations
+        coefs_db      = np.array([1, -4, +6, -4, 1]) / np.sqrt(35)
+        lag_coefs_db  = np.array([-2 * tau, -tau, 0, tau, 2 * tau]).astype(int)
+
+        # Compute the fluctuation
+        dB            = shifted_df_calcs(B, lag_coefs_db, coefs_db)
+
+    # Estimate regular 2-point Structure functions
+    else:
+        # Compute the fluctuation
+        dB            = (B.iloc[:-tau].values - B.iloc[tau:].values)
+
+    return dB
+
+
+
+def structure_functions_parallel(B, scales, max_qorder, five_points_sfunc=False, keep_sdk=False, n_jobs=-1):
+    """
+    Estimate the structure functions of a field in parallel.
+
+    Args:
+        B (pd.Series or np.ndarray): Input field.
+        scales (list or np.ndarray): Scales at which to calculate the structure functions.
+        max_qorder (int): Maximum order of the structure functions to be calculated.
+        five_points_sfunc (bool, optional): Estimate 5-point structure functions if True. Defaults to False.
+        keep_sdk (bool, optional): Keep the SDK if True. Defaults to False.
+        n_jobs (int, optional): Number of parallel jobs. Defaults to -1 (use all available cores).
+
+    Returns:
+        sfn (np.ndarray): Estimated structure functions.
+        sdk (np.ndarray): Structure functions' SDK.
+    """
+    #
+    qorders = np.arange(1, max_qorder + 1)
+
+    def _calc_sfn(dB, qorder):
+        return np.sum(np.nanmean(dB ** qorder, axis=0))
+
+    def process_scale(tau):
+        dB  = np.abs(flucts(tau, B, five_points_sfunc=five_points_sfunc))
+        sfn = np.array([_calc_sfn(dB, qorder) for qorder in qorders])
+
+        sdk = sfn.T[3] / np.sum(np.nanmean(dB ** 2, axis=0) ** 2)
+
+        return sfn, sdk
+
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(process_scale)(tau) for tau in scales
+    )
+
+    sfn, sdk = zip(*results)
+
+    return np.array(sfn), np.array(sdk)
+
+
 
 
 @jit( parallel =True)
