@@ -23,6 +23,9 @@ sys.path.insert(0, os.path.join(os.getcwd(), 'pyspedas'))
 import pyspedas
 from pyspedas.utilities import time_string
 from pytplot import get_data
+from joblib import Parallel, delayed
+from scipy.linalg import solve
+from scipy import constants
 
 
 sys.path.insert(0,'/Users/nokni/work/MHDTurbPy/functions')
@@ -84,9 +87,144 @@ def trace_PSD_wavelet(x, y, z, dt, dj,  mother_wave='morlet'):
     PSD = (np.nanmean(np.abs(db_x)**2, axis=1) + np.nanmean(np.abs(db_y)**2, axis=1) + np.nanmean(np.abs(db_z)**2, axis=1)   )*( 2*dt)
     
     # Remember!
-    scales = sj
+    scales = (1/freqs)/dt
+    
     
     return db_x, db_y, db_z, freqs, PSD, scales
+
+
+import numpy as np
+
+
+# First Method:Provided by Trevor Bowen
+def calculate_dhtf(v, b):
+    """
+    Calculate dhtf vector using the given v and b arrays.
+
+    Parameters:
+        v (ndarray): Input array v.
+        b (ndarray): Input array b.
+
+    Returns:
+        ndarray: The calculated dhtf vector.
+    """
+
+    # Calculate dv by subtracting the mean of each column of v from v
+    dvx = v[:, 0] - np.nanmean(v[:, 0])
+    dvy = v[:, 1] - np.nanmean(v[:, 1])
+    dvz = v[:, 2] - np.nanmean(v[:, 2])
+    dv = np.column_stack((dvx, dvy, dvz))
+
+    # Compute cross products of dv and b
+    #cp = np.cross(dv, b)
+    cp        = np.cross(v, b)
+
+    # Compute the dot products of each component of b with itself
+    bx_bx = np.nansum(b[:, 0] * b[:, 0])
+    bx_by = np.nansum(b[:, 0] * b[:, 1])
+    bx_bz = np.nansum(b[:, 0] * b[:, 2])
+    by_by = np.nansum(b[:, 1] * b[:, 1])
+    by_bz = np.nansum(b[:, 1] * b[:, 2])
+    bz_bz = np.nansum(b[:, 2] * b[:, 2])
+
+    # Construct the matrix mat
+    mat = np.array([[by_by + bz_bz, -bx_by, -bx_bz],
+                    [-bx_by, bx_bx + bz_bz, -by_bz],
+                    [-bx_bz, -by_bz, bx_bx + by_by]])
+
+    # Perform singular value decomposition
+    U, S, VT = np.linalg.svd(mat)
+
+    # Calculate result using the singular value decomposition
+    result = np.diag(S) @ VT.T
+    # The @ operator performs matrix multiplication in numpy
+
+    # Calculate the inverse matrix
+    inverse = VT.T @ np.diag(1. / S) @ U.T
+
+    # Calculate the components of vec
+    vecx = np.nansum(cp[:, 2] * b[:, 1]) - np.nansum(cp[:, 1] * b[:, 2])
+    vecy = np.nansum(cp[:, 0] * b[:, 2]) - np.nansum(cp[:, 2] * b[:, 0])
+    vecz = np.nansum(cp[:, 1] * b[:, 0]) - np.nansum(cp[:, 0] * b[:, 1])
+    vec = np.array([vecx, vecy, vecz])
+
+    # Calculate dhtf using the inverse matrix and vec
+    dhtf = inverse @ vec
+
+    return dhtf
+
+# Second method to find the deHoffmann-Teller frame velocity
+def HoffmannTellerizer(v, B):
+    '''
+    Finds the ideal deHoffmann-Teller frame velocity using the linear solution
+    described in Paschmann1998 using the measured plasma velocity and magnetic 
+    field vectors to minimize  E' = -v x B.
+    This analysis must be performed over a discrete timerange, since a single-point 
+    solution would just reduce to v_HT = v.
+    
+    Inputs:
+        v: rank2 [n,3] vector of plasma velocity in km/s
+        B: rank2 [n,3] vector magnetic field
+    Outputs:
+        v_HT: rank1 [3] vector describing deHoffmann-T
+    '''
+    
+    
+    def KBuilderHoffmannTeller(v, B):
+        K = np.zeros((len(v), 3, 3))
+        TEMP_K_0 = np.zeros((3, 3))
+        Bmag_squared = np.linalg.norm(B, axis=1)**2
+
+        K[:, 0, 0] = Bmag_squared * (1 - (B[:, 0]*B[:, 0]) / Bmag_squared)
+        K[:, 1, 1] = Bmag_squared * (1 - (B[:, 1]*B[:, 1]) / Bmag_squared)
+        K[:, 2, 2] = Bmag_squared * (1 - (B[:, 2]*B[:, 2]) / Bmag_squared)
+
+        K[:, 0, 1] = Bmag_squared * (0 - (B[:, 0]*B[:, 1]) / Bmag_squared)
+        K[:, 0, 2] = Bmag_squared * (0 - (B[:, 0]*B[:, 2]) / Bmag_squared)
+        K[:, 1, 2] = Bmag_squared * (0 - (B[:, 1]*B[:, 2]) / Bmag_squared)
+
+        K[:, 1, 0] = K[:, 0, 1]  
+        K[:, 2, 0] = K[:, 0, 2]  
+        K[:, 2, 1] = K[:, 1, 2]  
+
+        TEMP_K_0[0, 0] = np.nanmean(K[:, 0, 0])
+        TEMP_K_0[1, 1] = np.nanmean(K[:, 1, 1])
+        TEMP_K_0[2, 2] = np.nanmean(K[:, 2, 2])
+
+        TEMP_K_0[0, 1] = np.nanmean(K[:, 0, 1])
+        TEMP_K_0[0, 2] = np.nanmean(K[:, 0, 2])
+        TEMP_K_0[1, 2] = np.nanmean(K[:, 1, 2])
+
+        TEMP_K_0[1, 0] = TEMP_K_0[0, 1]  # Woohoo symmetry
+        TEMP_K_0[2, 0] = TEMP_K_0[0, 2]
+        TEMP_K_0[2, 1] = TEMP_K_0[1, 2]
+
+        return K, TEMP_K_0
+
+    K, TEMP_K_0 = KBuilderHoffmannTeller(v, B)
+
+    # Explicitly build matrix from TEMP_K_0 outputs
+    K_0 = np.array([[TEMP_K_0[0, 0], TEMP_K_0[0, 1], TEMP_K_0[0, 2]],
+                    [TEMP_K_0[0, 1], TEMP_K_0[1, 1], TEMP_K_0[1, 2]],
+                    [TEMP_K_0[0, 2], TEMP_K_0[1, 2], TEMP_K_0[2, 2]]])
+
+    K_0_inverse = np.linalg.inv(K_0)
+
+    # K*v
+    Kdotv = np.zeros((len(v), 3))
+    Kdotv[:, 0] = K[:, 0, 0]*v[:, 0] + K[:, 0, 1]*v[:, 1] + K[:, 0, 2]*v[:, 2]
+    Kdotv[:, 1] = K[:, 1, 0]*v[:, 0] + K[:, 1, 1]*v[:, 1] + K[:, 1, 2]*v[:, 2]
+    Kdotv[:, 2] = K[:, 2, 0]*v[:, 0] + K[:, 2, 1]*v[:, 1] + K[:, 2, 2]*v[:, 2]
+
+    # <K*v>
+    Kdotv_average = np.nanmean(Kdotv, axis=0)
+
+    # K_0^-1 * <K*v>
+    v_HT = solve(K_0, Kdotv_average)
+
+    return v_HT
+
+
 
 
 def trace_PSD_cwt_ssqueezepy(x, y, z, dt, nv =16, scales='log-piecewise', wavelet=None, wname=None, l1_norm=False, est_PSD=True):
@@ -120,7 +258,7 @@ def trace_PSD_cwt_ssqueezepy(x, y, z, dt, nv =16, scales='log-piecewise', wavele
         wavelet    = ssqueezepy.Wavelet((wname, {'mu': 13.4}))  
         
     if  scales is  None:
-        scales = 'log-piecewise'
+        scales = 'log'
 
     # Estimate sampling frequency
     fs         = 1/dt
@@ -471,67 +609,221 @@ def estimate_wavelet_coeff(B_df, V_df,  dj , lambdaa=3, pycwt=False):
 
 
 """" Define function to estimate PVI timeseries"""
-def estimate_PVI(B_resampled, hmany, di, Vsw,  hours, PVI_vec_or_mod='vec'):
+# def estimate_PVI(B_resampled, hmany, di, Vsw,  hours, PVI_vec_or_mod='vec'):
 
-    av_hours                           = hours*3600
-    lag                                = (B_resampled.index[1]-B_resampled.index[0])/np.timedelta64(1,'s')
-    av_window                          = int(av_hours/lag)
+#     av_hours                           = hours*3600
+#     lag                                = (B_resampled.index[1]-B_resampled.index[0])/np.timedelta64(1,'s')
+#     av_window                          = int(av_hours/lag)
 
 
 
-    for kk in range(len(hmany)):
-        tau                             = round((hmany[kk]*di)/(Vsw*lag))
+#     for kk in range(len(hmany)):
+#         tau                             = round((hmany[kk]*di)/(Vsw*lag))
 
-        if tau<1:
-            print('The value of hmany you chose is too low. You will have to use higher resol mag data!')
-            while tau<1:
-                hmany[kk] = hmany[kk] + 0.01*hmany[kk]
-                tau       = round((hmany[kk]*di)/(Vsw*lag))
+#         if tau<1:
+#             print('The value of hmany you chose is too low. You will have to use higher resol mag data!')
+#             while tau<1:
+#                 hmany[kk] = hmany[kk] + 0.01*hmany[kk]
+#                 tau       = round((hmany[kk]*di)/(Vsw*lag))
 
-            print('The value was set to the minimum possible, hmany=',hmany[kk]) 
+#             print('The value was set to the minimum possible, hmany=',hmany[kk]) 
 
-        if tau>0:
-            if PVI_vec_or_mod:
-                ### Estimate PVI ###
-                B_resampled['DBtotal']         = np.sqrt((B_resampled.Br.diff(tau))**2 + (B_resampled.Bt.diff(tau))**2 + (B_resampled.Bn.diff(tau))**2)
-                B_resampled['DBtotal_squared'] = B_resampled['DBtotal']**2
-                denominator = np.sqrt(
-                    B_resampled['DBtotal_squared']
-                    .rolling(av_window, center=True)
-                    .mean()
-                )
+#         if tau>0:
+#             if PVI_vec_or_mod:
+#                 ### Estimate PVI ###
+#                 B_resampled['DBtotal']         = np.sqrt((B_resampled.Br.diff(tau))**2 + (B_resampled.Bt.diff(tau))**2 + (B_resampled.Bn.diff(tau))**2)
+#                 B_resampled['DBtotal_squared'] = B_resampled['DBtotal']**2
+#                 denominator = np.sqrt(
+#                     B_resampled['DBtotal_squared']
+#                     .rolling(av_window, center=True)
+#                     .mean()
+#                 )
 
-                PVI_dB                         = pd.DataFrame({     'DateTime' : B_resampled.index,
-                                                                    'PVI'      : B_resampled['DBtotal']/denominator})
-                PVI_dB                         = PVI_dB.set_index('DateTime')
-                B_resampled[f'PVI_{str(hmany[kk])}'] = PVI_dB.values
+#                 PVI_dB                         = pd.DataFrame({     'DateTime' : B_resampled.index,
+#                                                                     'PVI'      : B_resampled['DBtotal']/denominator})
+#                 PVI_dB                         = PVI_dB.set_index('DateTime')
+#                 B_resampled[f'PVI_{str(hmany[kk])}'] = PVI_dB.values
 
-                # Save RAM
-                del  B_resampled['DBtotal_squared'], B_resampled['DBtotal']
-            else:
-                B_resampled['B_modulus']           = np.sqrt((B_resampled.Br)**2 + (B_resampled.Bt)**2 + (B_resampled.Bn)**2)
-                B_resampled['DBtotal']             = B_resampled['B_modulus'].diff(tau)
-                B_resampled['DBtotal_squared']     = B_resampled['DBtotal']**2
+#                 # Save RAM
+#                 del  B_resampled['DBtotal_squared'], B_resampled['DBtotal']
+#             else:
+#                 B_resampled['B_modulus']           = np.sqrt((B_resampled.Br)**2 + (B_resampled.Bt)**2 + (B_resampled.Bn)**2)
+#                 B_resampled['DBtotal']             = B_resampled['B_modulus'].diff(tau)
+#                 B_resampled['DBtotal_squared']     = B_resampled['DBtotal']**2
 
-                denominator = np.sqrt(
-                    B_resampled['DBtotal_squared']
-                    .rolling(av_window, center=True)
-                    .mean()
-                )
+#                 denominator = np.sqrt(
+#                     B_resampled['DBtotal_squared']
+#                     .rolling(av_window, center=True)
+#                     .mean()
+#                 )
 
-                PVI_dB                             = pd.DataFrame({'DateTime': B_resampled.index,
-                                                                        'PVI': B_resampled['DBtotal']/denominator})
-                PVI_dB                             = PVI_dB.set_index('DateTime')
-                B_resampled[f'PVI_mod_{str(hmany[kk])}'] = PVI_dB.values
-                del  B_resampled['DBtotal_squared'], B_resampled['DBtotal'] , B_resampled['B_modulus']
-        elif PVI_vec_or_mod:
-            B_resampled[f'PVI_{str(hmany[kk])}'] = np.nan*B_resampled.Br.values
+#                 PVI_dB                             = pd.DataFrame({'DateTime': B_resampled.index,
+#                                                                         'PVI': B_resampled['DBtotal']/denominator})
+#                 PVI_dB                             = PVI_dB.set_index('DateTime')
+#                 B_resampled[f'PVI_mod_{str(hmany[kk])}'] = PVI_dB.values
+#                 del  B_resampled['DBtotal_squared'], B_resampled['DBtotal'] , B_resampled['B_modulus']
+#         elif PVI_vec_or_mod:
+#             B_resampled[f'PVI_{str(hmany[kk])}'] = np.nan*B_resampled.Br.values
+#         else:
+#             B_resampled[f'PVI_mod_{str(hmany[kk])}'] = np.nan*B_resampled.Br.values
+
+#     return B_resampled
+
+def flucts(tau,
+           B,
+           five_points_sfunc = True,
+           return_dataframe  = False):
+    """
+    Calculate fluctuations for structure functions.
+
+    Args:
+        tau (int): Time lag.
+        B (pd.Series or np.ndarray): Input field.
+        five_points_sfunc (bool, optional): Estimate 5-point structure functions if True. Defaults to True.
+
+    Returns:
+        dB (np.ndarray): Fluctuations of the input field.
+    """
+
+    # Estimate 5-point Structure functions
+    if five_points_sfunc:
+        # Define coefs for loc fields
+        coefs_loc     = np.array([1, 4, 6, 4, 1]) / 16
+        lag_coefs_loc = np.array([-2 * tau, -tau, 0, tau, 2 * tau]).astype(int)
+
+        # Define coefs for fluctuations
+        coefs_db      = np.array([1, -4, +6, -4, 1]) / np.sqrt(35)
+        lag_coefs_db  = np.array([-2 * tau, -tau, 0, tau, 2 * tau]).astype(int)
+
+        # Compute the fluctuation
+        dB            = shifted_df_calcs(B, lag_coefs_db, coefs_db, return_dataframe)
+
+    # Estimate regular 2-point Structure functions
+    else:
+        # Compute the fluctuation
+        if return_dataframe:
+            dB                      = (B.iloc[:-tau].values - B.iloc[tau:].values)
+            dB_shape                = B.shape
+            dB_filled               = pd.DataFrame(np.nan, index=B.index, columns=B.columns)
+            dB_filled.iloc[:-tau,:] = dB
+            dB                      = dB_filled#.iloc[tau:,:]
         else:
-            B_resampled[f'PVI_mod_{str(hmany[kk])}'] = np.nan*B_resampled.Br.values
+            dB                      = (B.iloc[:-tau].values - B.iloc[tau:].values)
+
+    return dB
+
+def estimate_PVI_single_iteration(kk,
+                                  B_resampled,
+                                  hmany,
+                                  taus,
+                                  di,
+                                  Vsw,
+                                  lag,
+                                  av_window,
+                                  five_points_sfunc = True,
+                                  PVI_vec_or_mod    = 'vec',
+                                  use_taus          = False):
+    if use_taus:
+        tau       = taus[kk]
+        hmany[kk] =  taus[kk]*lag*Vsw/di
+    else:
+        tau = round((hmany[kk] * di) / (Vsw * lag))
+
+        if tau < 1:
+            print('The value of hmany you chose is too low. You will have to use higher resol mag data!')
+            while tau < 1:
+                hmany[kk] = hmany[kk] + 0.01 * hmany[kk]
+                tau = round((hmany[kk] * di) / (Vsw * lag))
+                print('The value was set to the minimum possible, hmany=', hmany[kk])
+    
+    ### Estimate PVI ###
+    if tau > 0:
+        if PVI_vec_or_mod:
+            
+            
+            # Estimate increments
+            db =  flucts(tau,
+                         B_resampled,
+                         five_points_sfunc = five_points_sfunc,
+                         return_dataframe  = True)
+
+            B_resampled['DBtotal']         = np.sqrt((db.Br)**2 + (db.Bt)**2 + (db.Bn)**2)
+            B_resampled['DBtotal_squared'] = B_resampled['DBtotal']**2
+            denominator                    = np.sqrt(
+                                                      B_resampled['DBtotal_squared']
+                                                      .rolling(av_window, center=True)
+                                                      .mean(skipna=True))
+
+            PVI_dB = pd.DataFrame({'DateTime': B_resampled.index,
+                                    'PVI': B_resampled['DBtotal'] / denominator})
+            PVI_dB = PVI_dB.set_index('DateTime')
+            B_resampled[f'PVI_{str(kk)}'] = PVI_dB.values
+            del B_resampled['DBtotal_squared'], B_resampled['DBtotal']
+        else:
+            B_resampled['B_modulus']       = np.sqrt((B_resampled.Br)**2 + (B_resampled.Bt)**2 + (B_resampled.Bn)**2)
+            
+            # Estimate increments
+            db =  flucts(tau,
+                         B_resampled['B_modulus'],
+                         five_points_sfunc = five_points_sfunc,
+                         return_dataframe  = True)
+
+            B_resampled['DBtotal']         = np.abs(db['B_modulus'])
+            B_resampled['DBtotal_squared'] = B_resampled['DBtotal']**2
+            denominator = np.sqrt(
+                B_resampled['DBtotal_squared']
+                .rolling(av_window, center=True)
+                .mean(skipna=True)
+            )
+
+            PVI_dB = pd.DataFrame({'DateTime': B_resampled.index,
+                                    'PVI': B_resampled['DBtotal'] / denominator})
+            PVI_dB = PVI_dB.set_index('DateTime')
+            B_resampled[f'PVI_mod_{str(kk)}'] = PVI_dB.values
+            del B_resampled['DBtotal_squared'], B_resampled['DBtotal'], B_resampled['B_modulus']
+    elif PVI_vec_or_mod:
+        B_resampled[f'PVI_{str(kk)}'] = np.nan * B_resampled.Br.values
+    else:
+        B_resampled[f'PVI_mod_{str(kk)}'] = np.nan * B_resampled.Br.values
 
     return B_resampled
 
 
+def estimate_PVI(B_df,
+                 hmany,
+                 taus,
+                 di,
+                 Vsw,
+                 hours,
+                 five_points_sfunc = True,
+                 PVI_vec_or_mod    = 'vec',
+                 use_taus          = False,
+                 n_jobs=-1):
+    
+    B_resampled = B_df.copy()
+    av_hours    = hours * 3600
+    lag         = (B_resampled.index[1] - B_resampled.index[0])/ np.timedelta64(1, 's')
+    av_window   = int(av_hours / lag)
+
+
+    results = Parallel(n_jobs=n_jobs)(delayed(estimate_PVI_single_iteration)(kk,
+                                                                             B_resampled,
+                                                                             hmany,
+                                                                             taus,
+                                                                             di,
+                                                                             Vsw,
+                                                                             lag,
+                                                                             av_window,
+                                                                             five_points_sfunc,
+                                                                             PVI_vec_or_mod,
+                                                                             use_taus) for kk in range(len(hmany)))
+    for kk in range(len(hmany)):
+        if PVI_vec_or_mod:
+            B_resampled[f'PVI_{str(kk)}'] = results[kk][f'PVI_{str(kk)}']
+        else:
+            B_resampled[f'PVI_mod_{str(kk)}'] = results[kk][f'PVI_mod_{str(kk)}']
+
+    return B_resampled
 
 # """" Define function to estimate the structure functions of a field """
 # @jit( parallel =True,  nopython=True)
@@ -557,56 +849,56 @@ def estimate_PVI(B_resampled, hmany, di, Vsw,  hours, PVI_vec_or_mod='vec'):
 
 
 
-def shifted_df_calcs(B,  lag_coefs, coefs):
-    """
-    Used for 5-point sfuncs
+# def shifted_df_calcs(B,  lag_coefs, coefs):
+#     """
+#     Used for 5-point sfuncs
 
-    Parameters:
-    B (pandas.DataFrame) : The input dataframe.
-    lag_coefs (list)     : A list of integers representing the lags.
-    coefs (list)         : A list of coefficients for the calculation.
+#     Parameters:
+#     B (pandas.DataFrame) : The input dataframe.
+#     lag_coefs (list)     : A list of integers representing the lags.
+#     coefs (list)         : A list of coefficients for the calculation.
 
-    Returns:
-    ndarray              : A 2D numpy array representing the result of the calculation.
-    """
-    return pd.DataFrame(np.add.reduce([x*B.shift(y) for x, y in zip(coefs, lag_coefs)]),
-                        index=B.index, columns=B.columns).values
+#     Returns:
+#     ndarray              : A 2D numpy array representing the result of the calculation.
+#     """
+#     return pd.DataFrame(np.add.reduce([x*B.shift(y) for x, y in zip(coefs, lag_coefs)]),
+#                         index=B.index, columns=B.columns).values
 
 
-def flucts(tau,
-           B,
-           five_points_sfunc=True):
-    """
-    Calculate fluctuations for structure functions.
+# def flucts(tau,
+#            B,
+#            five_points_sfunc=True):
+#     """
+#     Calculate fluctuations for structure functions.
 
-    Args:
-        tau (int): Time lag.
-        B (pd.Series or np.ndarray): Input field.
-        five_points_sfunc (bool, optional): Estimate 5-point structure functions if True. Defaults to True.
+#     Args:
+#         tau (int): Time lag.
+#         B (pd.Series or np.ndarray): Input field.
+#         five_points_sfunc (bool, optional): Estimate 5-point structure functions if True. Defaults to True.
 
-    Returns:
-        dB (np.ndarray): Fluctuations of the input field.
-    """
+#     Returns:
+#         dB (np.ndarray): Fluctuations of the input field.
+#     """
 
-    # Estimate 5-point Structure functions
-    if five_points_sfunc:
-        # Define coefs for loc fields
-        coefs_loc     = np.array([1, 4, 6, 4, 1]) / 16
-        lag_coefs_loc = np.array([-2 * tau, -tau, 0, tau, 2 * tau]).astype(int)
+#     # Estimate 5-point Structure functions
+#     if five_points_sfunc:
+#         # Define coefs for loc fields
+#         coefs_loc     = np.array([1, 4, 6, 4, 1]) / 16
+#         lag_coefs_loc = np.array([-2 * tau, -tau, 0, tau, 2 * tau]).astype(int)
 
-        # Define coefs for fluctuations
-        coefs_db      = np.array([1, -4, +6, -4, 1]) / np.sqrt(35)
-        lag_coefs_db  = np.array([-2 * tau, -tau, 0, tau, 2 * tau]).astype(int)
+#         # Define coefs for fluctuations
+#         coefs_db      = np.array([1, -4, +6, -4, 1]) / np.sqrt(35)
+#         lag_coefs_db  = np.array([-2 * tau, -tau, 0, tau, 2 * tau]).astype(int)
 
-        # Compute the fluctuation
-        dB            = shifted_df_calcs(B, lag_coefs_db, coefs_db)
+#         # Compute the fluctuation
+#         dB            = shifted_df_calcs(B, lag_coefs_db, coefs_db)
 
-    # Estimate regular 2-point Structure functions
-    else:
-        # Compute the fluctuation
-        dB            = (B.iloc[:-tau].values - B.iloc[tau:].values)
+#     # Estimate regular 2-point Structure functions
+#     else:
+#         # Compute the fluctuation
+#         dB            = (B.iloc[:-tau].values - B.iloc[tau:].values)
 
-    return dB
+#     return dB
 
 
 

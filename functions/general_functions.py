@@ -20,6 +20,26 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib.gridspec import GridSpec
 
 
+def update_dates_strings(t0, t1, addit_time):
+    from datetime import datetime, timedelta
+    # Convert strings to datetime objects
+    format_str = '%Y-%m-%d %H:%M:%S'
+    dt0 = datetime.strptime(t0, format_str)
+    dt1 = datetime.strptime(t1, format_str)
+
+    # Subtract 20 seconds from the first date
+    new_dt0 = dt0 - timedelta(seconds=addit_time)
+
+    # Add 20 seconds to the second date
+    new_dt1 = dt1 + timedelta(seconds=addit_time)
+
+    # Convert datetime objects back to strings
+    new_t0 = new_dt0.strftime(format_str)
+    new_t1 = new_dt1.strftime(format_str)
+
+    return new_t0, new_t1
+
+
 
 def filter_dict(d, keys_to_keep):
     return dict(filter(lambda item: item[0] in keys_to_keep, d.items()))
@@ -114,7 +134,7 @@ def hampel_filter(input_series, window_size, n_sigmas=3):
     k = 1.4826 # scale factor for Gaussian distribution
     indices = []
     
-    for i in range((window_size),(n - window_size)):
+    for i in prange((window_size),(n - window_size)):
         x0 = np.nanmedian(input_series[(i - window_size):(i + window_size)])
         S0 = k * np.nanmedian(np.abs(input_series[(i - window_size):(i + window_size)] - x0))
         if (np.abs(input_series[i] - x0) > n_sigmas * S0):
@@ -122,6 +142,44 @@ def hampel_filter(input_series, window_size, n_sigmas=3):
             indices.append(i)
     
     return new_series, indices
+
+# from joblib import Parallel, delayed
+
+# def hampel_filter(input_series, window_size, n_sigmas=3, njobs=-1):
+#     """
+#     Method to apply a Hampel filter to a given time series to remove spurious data points.
+#     Parameters
+#     ----------
+#     input_series: numpy array
+#         The time series to be filtered
+#     window_size: int
+#         The size of the window to use in the filtering
+#     n_sigmas: float
+#         The number of standard deviations used to determine if a data point is a spike
+
+#     Returns
+#     -------
+#     new_series: numpy array
+#         The filtered time series
+#     indices: list
+#         A list of the indices of the removed data points
+#     """
+#     n = len(input_series)
+#     new_series = input_series.copy()
+#     k = 1.4826 # scale factor for Gaussian distribution
+#     indices = []
+
+#     def _process_window(i):
+#         x0 = np.nanmedian(input_series[(i - window_size):(i + window_size)])
+#         S0 = k * np.nanmedian(np.abs(input_series[(i - window_size):(i + window_size)] - x0))
+#         if (np.abs(input_series[i] - x0) > n_sigmas * S0):
+#             new_series[i] = x0
+#             indices.append(i)
+
+#     Parallel(n_jobs=njobs)(delayed(_process_window)(i) for i in range(window_size, n - window_size))
+
+#     return new_series, indices
+
 
 
 # solve for a and b
@@ -198,6 +256,45 @@ def curve_fit_log(xdata, ydata) :
     ydatafit_log = np.power(10, linlaw(xdata_log, *popt_log))
     # There is no need to apply fscalex^-1 as original data is already available
     return (popt_log, pcov_log, ydatafit_log)
+
+
+def find_fit(x, y, x0, xf):  
+    x    = np.array(x)
+    y    = np.array(y)
+    ind1 = np.argsort(x)
+     
+    x   = x[ind1]
+    y   = y[ind1]
+    ind = y>-1e15
+
+    x   = x[ind]
+    y   = y[ind]
+    # Apply fit on specified range #
+   # print(len(np.where(x == x.flat[np.abs(x - x0).argmin()])[0]))
+    if  len(np.where(x == x.flat[np.abs(x - x0).argmin()])[0])>-0:
+        s = np.where(x == x.flat[np.abs(x - x0).argmin()])[0][0]
+        e = np.where(x  == x.flat[np.abs(x - xf).argmin()])[0][0]
+        
+        if (len(y[s:e])>1):
+            fit = curve_fit_log(x[s:e],y[s:e])
+            return fit, s, e, x, y
+        else:
+            return [0],0,0,0,[0]
+
+def find_fit_expo(x, y, x0, xf):  
+
+    # Apply fit on specified range #
+   # print(len(np.where(x == x.flat[np.abs(x - x0).argmin()])[0]))
+    if  len(np.where(x == x.flat[np.abs(x - x0).argmin()])[0])>-0:
+        s = np.where(x == x.flat[np.abs(x - x0).argmin()])[0][0]
+        e = np.where(x  == x.flat[np.abs(x - xf).argmin()])[0][0]
+        
+        if (len(y[s:e])>1): #& (np.median(y[s:e])>1e-1):  
+            fit = curve_fit_log_expo(x[s:e],y[s:e])
+            #print(fit)
+            return fit, s, e, x, y
+        else:
+            return [0],0,0,0,[0]
 
 def curve_fit_log_expo(xdata, ydata) : 
     """Fit data to an exponential law with weights according to a log scale"""
@@ -356,7 +453,7 @@ def moving_average(xvals, yvals, window_size):
 
 def plot_plaw(start, end, exponent, c):
     #calculating the points on the line
-    x = np.linspace(start, end, 1000)
+    x = np.logspace(np.log10(start), np.log10(end), 10000)
     
     f = lambda x: c * x ** exponent
     return x, f(x)
@@ -428,44 +525,6 @@ def interp(df, new_index):
     return df_out
 
 
-def find_fit(x, y, x0, xf):  
-    x    = np.array(x)
-    y    = np.array(y)
-    ind1 = np.argsort(x)
-     
-    x   = x[ind1]
-    y   = y[ind1]
-    ind = y>-1e15
-
-    x   = x[ind]
-    y   = y[ind]
-    # Apply fit on specified range #
-   # print(len(np.where(x == x.flat[np.abs(x - x0).argmin()])[0]))
-    if  len(np.where(x == x.flat[np.abs(x - x0).argmin()])[0])>-0:
-        s = np.where(x == x.flat[np.abs(x - x0).argmin()])[0][0]
-        e = np.where(x  == x.flat[np.abs(x - xf).argmin()])[0][0]
-        
-        if (len(y[s:e])>1):
-            fit = curve_fit_log(x[s:e],y[s:e])
-            return fit, s, e, x, y
-        else:
-            return [0],0,0,0,[0]
-
-def find_fit_expo(x, y, x0, xf):  
-
-    # Apply fit on specified range #
-   # print(len(np.where(x == x.flat[np.abs(x - x0).argmin()])[0]))
-    if  len(np.where(x == x.flat[np.abs(x - x0).argmin()])[0])>-0:
-        s = np.where(x == x.flat[np.abs(x - x0).argmin()])[0][0]
-        e = np.where(x  == x.flat[np.abs(x - xf).argmin()])[0][0]
-        
-        if (len(y[s:e])>1): #& (np.median(y[s:e])>1e-1):  
-            fit = curve_fit_log_expo(x[s:e],y[s:e])
-            #print(fit)
-            return fit, s, e, x, y
-        else:
-            return [0],0,0,0,[0]
-
 def use_dates_return_elements_of_df_inbetween(t0, t1, df):
     """
     This function finds the nearest date index of t0 and t1 in the data frame df, and returns the mean of values
@@ -479,6 +538,14 @@ def use_dates_return_elements_of_df_inbetween(t0, t1, df):
     Returns:
     float: The mean of values of df within the range of the nearest indices of t0 and t1.
     """
+    
+    # sort the index in increasing order
+    df = df.sort_index(ascending=True)
+    
+    if type(t0)==str:
+        t0 = pd.to_datetime(t0)
+        t1 = pd.to_datetime(t1)
+    
     r8   = df.index.unique().get_loc(t0, method='nearest');
     r8a  = df.index.unique().get_loc(t1, method='nearest');
     f_df = df[r8:r8a]
@@ -586,17 +653,17 @@ def binned_quantity(x, y, what, std_or_error_of_mean, mov_aver_window,loglog, re
     mask = y > -1e10
     x    = np.asarray(x[mask], dtype=float)
     y    = np.asarray(y[mask], dtype=float)
-    print(len(y))
+    #print(len(y))
 
 
     if loglog:
         mov_aver_window     = np.logspace(np.log10(np.nanmin(x)),np.log10(np.nanmax(x)), mov_aver_window)
 
     y_b, x_b, _     = stats.binned_statistic(x, y, what,    bins   = mov_aver_window) 
-    print(y_b)
+
     z_b, _, _       = stats.binned_statistic(x, y, 'std',   bins  = mov_aver_window)
-    if return_counts:
-        points, x_b, _     = stats.binned_statistic(x, y, 'count',   bins  = mov_aver_window)
+    #if return_counts:
+    points, x_b, _     = stats.binned_statistic(x, y, 'count',   bins  = mov_aver_window)
 
 
     if std_or_error_of_mean==0:
@@ -651,6 +718,7 @@ def mean_manual(xpar, ypar, what, std_or_std_mean, nbins, loglog, upper_percenti
         else:
             ypar_mean.append(np.nanmedian(yvalues1))
             xpar_mean.append(np.nanmedian(xvalues1))
+            
 
         ypar_std.append(np.nanstd(yvalues1))
         ypar_count.append(bin_counts[i])
@@ -680,47 +748,43 @@ def find_fit_semilogy(x, y, x0, xf):
             return [0],0,0,0,[0]
 
 
-def mov_fit_func(xx, yy, w_size,  xmin, xmax, numb_fits, keep_plot):
-    keep_err = []
-    keep_ind = []
-    keep_x =[]
+from joblib import Parallel, delayed
+
+def worker(i, xx, yy, w_size, xmax):
+    x0 = xx[i]
+    xf = w_size * x0
+    if xf < 0.95 * xmax:
+        fit, s, e, x1, y1 = find_fit(xx, yy, x0, xf) 
+        if len(np.shape(x1)) > 0:
+            fit_err = np.sqrt(fit[1][1][1])
+            ind = fit[0][1]
+            x = x1[s]
+            return fit_err, ind, x
+    return None
+
+def mov_fit_func(xx, yy, w_size, xmin, xmax, nfit=0, keep_plot=0):
     xvals =[]
-    yvals =[];
+    yvals =[]
 
-    index1   = np.where(xx>xmin)[0].astype(int)#[0]
+    where_fit = np.where((xx > xmin) & (xx < xmax))[0]
 
-    if index1.size == 0:
+    if where_fit.size == 0:
         return {np.nan}
-    index1     = index1[0]
-    index2     =  np.where(xx<xmax)[0].astype(int)[-1]
 
-    where_fit = np.arange(index1, index2+1, 1)
+    results = Parallel(n_jobs=-1)(delayed(worker)(i, xx, yy, w_size, xmax) for i in where_fit)
 
-    for i in range(index1, len(where_fit)):
-        x0 = xx[int(where_fit[i])]
-        xf = w_size*x0
-        if xf<0.95*xmax:
-            fit, s, e, x1, y1       = find_fit(xx, yy, x0, xf) 
-            if len(np.shape(x1))>0:
+    # filter out None results
+    results = [res for res in results if res is not None]
 
-                keep_err.append(np.sqrt(fit[1][1][1]))
-                keep_ind.append(fit[0][1])
-                #keep_x.append(x1[s])# + np.log10(0.5) * (x1[s] - x1[e])) 
-                keep_x.append(x1[s])# + np.log10(0.5) * (x1[s] - x1[e])) 
-                if keep_plot:
-                    xvals.append(x1[s:e])
-                    yvals.append(2*fit[2])
-    return (
-        {
-            'xvals': keep_x,
-            'plaw': keep_ind,
-            'fit_err': keep_err,
-            "plot_x": xvals,
-            'plot_y': yvals,
-        }
-        if keep_plot
-        else {'xvals': keep_x, 'plaw': keep_ind, 'fit_err': keep_err}
-    )
+    keep_err, keep_ind, keep_x = zip(*results)
+
+    return_dict = {'xvals': keep_x, 'plaw': keep_ind, 'fit_err': keep_err}
+    if keep_plot:
+        # these lists will be empty in this version of code since they are not populated in worker function
+        return_dict.update({"plot_x": xvals, 'plot_y': yvals})
+
+    return return_dict
+
 
 
 def angle_between_vectors(V, B):
@@ -925,6 +989,9 @@ def newindex(df, ix_new, interp_method='linear'):
         df3: [pandas DataFrame] DataFrame interpolated and reindexed to *ixnew*
 
     """
+    
+    # sort the index in increasing order
+    df = df.sort_index(ascending=True)
 
     # create combined index from old and new index arrays
     ix_com = np.unique(np.append(df.index, ix_new))
@@ -1071,7 +1138,7 @@ def find_closest_values_of_2_arrays(a, b):
     return np.column_stack((uni, ret_b))
 
 def find_cadence(df):
-    return (df.dropna().index.to_series().diff()/np.timedelta64(1, 's')).median()
+    return np.nanmedian((df.dropna().index.to_series().diff()/np.timedelta64(1, 's')))
 
 def resample_timeseries_estimate_gaps(df, resolution, large_gaps=10):
     """
@@ -1093,7 +1160,10 @@ def resample_timeseries_estimate_gaps(df, resolution, large_gaps=10):
         
     """
     keys = df.keys()
-    init_dt = find_cadence(df[keys[1]])
+    try:
+        init_dt = find_cadence(df[keys[1]])
+    except:
+        init_dt = find_cadence(df[keys[0]])
     if init_dt > -1e10:
         
         # Make sure that you resample to a resolution that is lower than initial df's resolution
@@ -1107,8 +1177,10 @@ def resample_timeseries_estimate_gaps(df, resolution, large_gaps=10):
         df_resampled       = df.resample(f"{int(resolution)}ms").mean()
         
         # Estimate fraction of missing values within interval #
-        fraction_missing   = 100 * df_resampled[keys[1]].isna().mean()
-        
+        try:
+            fraction_missing   = 100 * df_resampled[keys[1]].isna().mean()
+        except:
+            fraction_missing   = 100 * df_resampled[keys[0]].isna().mean()        
         # Estimate sum of gaps greater than large_gaps seconds
         res = (df_resampled.dropna().index.to_series().diff() / np.timedelta64(1, 's'))
         
