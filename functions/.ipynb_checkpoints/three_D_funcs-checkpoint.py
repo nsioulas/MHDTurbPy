@@ -152,7 +152,7 @@ def est_alignment_angles(
 
 
 
-def shifted_df_calcs(B,  lag_coefs, coefs):
+def shifted_df_calcs(B,  lag_coefs, coefs, return_dataframe=False):
     """
     This function calculates the shifted dataframe.
 
@@ -164,8 +164,12 @@ def shifted_df_calcs(B,  lag_coefs, coefs):
     Returns:
     ndarray              : A 2D numpy array representing the result of the calculation.
     """
-    return pd.DataFrame(np.add.reduce([x*B.shift(y) for x, y in zip(coefs, lag_coefs)]),
-                        index=B.index, columns=B.columns).values
+    if return_dataframe:
+        return pd.DataFrame(np.add.reduce([x*B.shift(y) for x, y in zip(coefs, lag_coefs)]),
+                            index=B.index, columns=B.columns)
+    else:
+        return pd.DataFrame(np.add.reduce([x*B.shift(y) for x, y in zip(coefs, lag_coefs)]),
+                            index=B.index, columns=B.columns).values
 
 
 def fast_unit_vec(a):
