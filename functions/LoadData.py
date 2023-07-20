@@ -11,7 +11,7 @@ import gc
 import time
 from scipy.signal import savgol_filter
 import pandas as pd
-from numba import jit,njit,prange,objmode 
+#from numba import jit,njit,prange,objmode 
 import os
 from pathlib import Path
 from glob import glob
@@ -20,7 +20,7 @@ import warnings
 
 import datetime
 import pytz
-from numba import jit,njit,prange
+#from numba import jit,njit,prange
 
 # SPDF API
 from cdasws import CdasWs
@@ -113,8 +113,14 @@ def LoadTimeSeriesWrapper(
             settings = settings,
             credentials = credentials
             )
+    elif sc == 5:
+        df, misc = LoadTimeSeriesWind(
+            start_time,end_time,
+            settings = settings,
+            credentials = credentials
+            )
     else:
-        raise ValueError("sc=%d not supported!" %(sc))
+        raise ValueError("sc=%d not supporteda!" %(sc))
 
     
     # print settings
@@ -388,13 +394,13 @@ def LoadTimeSeriesPSP(
 
     # default settings
     default_settings = {
-        'particle_mode': 'empirical',
+        'particle_mode': 'keep_all',
         'resolution': 5,
         'use_hampel': False,
         'interpolate_qtn': True,
         'interpolate_rolling': True,
         'verbose': True,
-        'must_have_qtn': True,
+        'must_have_qtn': False,
         'rtn_only': True
     }
 
@@ -453,8 +459,8 @@ def LoadTimeSeriesPSP(
     except:
         print("No QTN Data!")
         dfqtn = None
-        if settings['must_have_qtn']:
-            raise ValueError("Must have QTN! No QTN!")
+        #if settings['must_have_qtn']:
+            #raise ValueError("Must have QTN! No QTN!")
 
     # Magnetic field
     try:
@@ -932,7 +938,9 @@ def LoadTimeSeriesPSP(
 
         # set default
         # default density: QTN
-        dfpar['np'] = dfpar['np_qtn']
+        if len(dfpar['np_qtn'].dropna())>0:
+            dfpar['np'] = dfpar['np_qtn']
+        
 
         # before encounter 9, default set to SPC
         if dfpar.index[-1] < pd.Timestamp('2021-07-01'):
@@ -1030,24 +1038,9 @@ def LoadTimeSeriesPSP(
         'settings': settings,
         'dfpar': dfpar,
         'dfmag': dfmag,
+        'dfe': dfe,
         'df_carr': df_carr
     }
-
-    # if settings['interpolate_rolling']:
-    #     dfts[['Vr0','Vt0','Vn0']] = dfts[['Vr','Vt','Vn']].rolling(rolling_rate).mean().interpolate()
-    #     dfts[['Vx0','Vy0','Vz0']] = dfts[['Vx','Vy','Vz']].rolling(rolling_rate).mean().interpolate()
-    #     dfts[['Br0','Bt0','Bn0']] = dfts[['Br','Bt','Bn']].rolling(rolling_rate).mean().interpolate()
-    #     dfts[['Bx0','By0','Bz0']] = dfts[['Bx','By','Bz']].rolling(rolling_rate).mean().interpolate()
-    # else:
-    #     dfts[['Vr0','Vt0','Vn0']] = dfts[['Vr','Vt','Vn']].rolling(rolling_rate).mean()
-    #     dfts[['Vx0','Vy0','Vz0']] = dfts[['Vx','Vy','Vz']].rolling(rolling_rate).mean()
-    #     dfts[['Br0','Bt0','Bn0']] = dfts[['Br','Bt','Bn']].rolling(rolling_rate).mean()
-    #     dfts[['Bx0','By0','Bz0']] = dfts[['Bx','By','Bz']].rolling(rolling_rate).mean()
-
-    # resample dfmag to create B?0
-    # dfmag = dfmag.resample(freq).mean()
-    # dfmag[['Br0','Bt0','Bn0','Bx0','By0','Bz0']] = dfmag[['Br','Bt','Bn','Bx','By','Bz']].rolling(rolling_rate).mean()
-    # dfpar = dfts[['Vr','Vt','Vn','Vx','Vy','Vz','Vr0','Vt0','Vn0','Vx0','Vy0','Vz0','np','Vth']]
 
     return dfts, misc
 
@@ -1167,8 +1160,7 @@ def LoadTimeSeriesULYSSES(
     return dfts, misc
 
 
-def LoadTimeSeriesWind(
-   start_time, end_time, settings = {}, credentials = None 
+def LoadTimeSeriesWind(start_time, end_time, settings = {}, credentials = None 
 ):
     """ 
     Load Wind Plasma Data 
@@ -1177,11 +1169,19 @@ def LoadTimeSeriesWind(
     """
     
     verbose = settings['verbose']
+    
+    # resolution
+    if 'resolution' in settings.keys():
+        resolution = settings['resolution']
+    else:
+        resolution = 300
+        settings['resolution'] = resolution
+
 
     if verbose:
         print("Loading low-res WIND data from CDAWEB...")
 
-    vars = ['B3GSM','B3F1']
+    vars = ['B3GSE','B3F1']
     time = [start_time.to_pydatetime( ).replace(tzinfo=pytz.UTC), end_time.to_pydatetime( ).replace(tzinfo=pytz.UTC)]
     status, data = cdas.get_data('WI_H0_MFI', vars, time[0], time[1])
 
@@ -1191,19 +1191,64 @@ def LoadTimeSeriesWind(
     dfmag = pd.DataFrame(
         index = data['Epoch3'],
         data = {
-            'Bx': data['B3GSM'][:,0],
-            'By': data['B3GSM'][:,1],
-            'Bz': data['B3GSM'][:,2],
+            'Br': data['B3GSE'][:,0],
+            'Bt': data['B3GSE'][:,1],
+            'Bn': data['B3GSE'][:,2],
             'Btot': data['B3F1']
         }
     )
 
     # fill val = -1e31
-    dfmag[dfmag['Bx'] < -1e30] = np.nan
+    dfmag[dfmag['Br'] < -1e30] = np.nan
 
+
+    vars = ['P_DENS','P_VELS','P_TEMP','TIME']
+    time = [start_time.to_pydatetime( ).replace(tzinfo=pytz.UTC), end_time.to_pydatetime( ).replace(tzinfo=pytz.UTC)]
+    status, data = cdas.get_data('WI_PM_3DP', vars, time[0], time[1])
+
+
+    dfpar = pd.DataFrame(
+        index = data['Epoch'],
+        data = {
+            'Vr': data['P_VELS'][:,0],
+            'Vt': data['P_VELS'][:,1],
+            'Vn': data['P_VELS'][:,2],
+            'np': data['P_DENS'],
+            'Tp': data['P_TEMP']
+        }
+    )
     
+    dfpar[dfpar['Vr'] < -1e30] = np.nan
+    
+    dfpar['Vth'] = 0.128487*np.sqrt(dfpar['Tp']) # vth[km/s] = 0.128487 * √Tp[K]
+    
+    
+    dfdis = pd.DataFrame(
+        index = data['Epoch'][::2],
+        data = {
+            'Dist_au': np.ones(len(data['P_VELS'][:,0][::2])), 
+            'lon'    : np.ones(len(data['P_VELS'][:,0][::2])), 
+            'lat'    : np.ones(len(data['P_VELS'][:,0][::2])), 
+            'RAD_AU' : np.ones(len(data['P_VELS'][:,0][::2]))
+        }
+    
+    
+    )
+    
+    # resample and join
+    dfts = ((dfmag.resample('%ds' %(resolution)).mean())[['Br','Bt','Bn']]).join(
+        (dfpar.resample('%ds' %(resolution)).mean())[['np','Tp','Vr','Vt','Vn','Vth']]
+    ).join(
+        (dfdis.resample('%ds' %(resolution)).interpolate())[['Dist_au','lon','lat']]
+    )
 
 
+    misc = {'settings': settings}
+
+    # set nan (nan = -1e31)
+    dfts[dfts < -1e30] = np.nan
+
+    return dfts, misc
 
 
 # load High-res MAG data
@@ -1240,6 +1285,11 @@ def LoadHighResMagWrapper(
     elif sc == 4:
         dfmag, dfmag1, infos = LoadHighResMagUlysses(
             start_time-pd.Timedelta('10H'), end_time+pd.Timedelta('10H'), verbose)
+    elif sc == 5:
+        print('Loading Wind')
+        dfmag, dfmag1, infos = LoadHighResMagWind(
+            start_time-pd.Timedelta('10H'), end_time+pd.Timedelta('10H'), verbose)
+  
     else:
         raise ValueError("sc = %d not supported!" %(sc))
 
@@ -1292,10 +1342,7 @@ def LoadHighResMagSOLO(
     return dfmag, dfmag1, infos
 
 def LoadHighResMagPSP(
-    start_time, end_time, 
-    verbose = True, credentials = None, resolution = None, 
-    load_4_per_cyc = True, use_spedas = True,
-    load_ephemeris = False
+    start_time, end_time, verbose = True, credentials = None, resolution = None, load_4_per_cyc = True, use_spedas = True,
     ):
     """
     resolution in ms!
@@ -1473,40 +1520,7 @@ def LoadHighResMagPSP(
         }
         print("Final PSP Resolution: %.2f, fraction missing %.2f" %(resolution, np.sum(np.isnan(dfmag1['Bx']))/len(dfmag1)*100))
 
-    if load_ephemeris:
-        print("Loading ephemeris...")
-        fields_vars = pyspedas.psp.fields(
-            trange=[t0, t1], 
-            datatype='ephem_spp_rtn', level='l1', 
-            time_clip=True, 
-            username=credentials['psp']['fields']['username'], 
-            password=credentials['psp']['fields']['password'])
 
-        data = get_data('position')
-        dfe = pd.DataFrame(
-            index = data.times,
-            data = data.y,
-            columns = ['sc_pos_r','sc_pos_t','sc_pos_n']
-        )
-
-        data = get_data('velocity')
-        dfe = dfe.join(
-            pd.DataFrame(
-                index = data.times,
-                data = data.y,
-                columns = ['sc_vel_r','sc_vel_t','sc_vel_n']
-            )
-        )
-
-        dfe.index = time_string.time_datetime(time=dfe.index)
-        dfe.index = dfe.index.tz_localize(None)
-
-        dfe = dfe.resample('1s').interpolate()
-
-        Dist_au = (dfe[['sc_pos_r','sc_pos_t','sc_pos_n']]**2).sum(axis=1).apply(np.sqrt)/au_to_km
-
-        infos['ephemeris'] = dfe
-        infos['Dist_au'] = Dist_au
 
     return dfmag, dfmag1, infos
 
@@ -1625,6 +1639,42 @@ def LoadHighResMagUlysses(
 
     return dfmag, dfmag1, infos
 
+
+def LoadHighResMagWind(start_time, end_time, verbose = True
+):
+    """ 
+    Load Wind Plasma Data 
+    start_time: pd.Timestamp
+    end_time: pd.Timestamp
+    """
+
+    vars = ['B3GSE','B3F1']
+    time = [start_time.to_pydatetime( ).replace(tzinfo=pytz.UTC), end_time.to_pydatetime( ).replace(tzinfo=pytz.UTC)]
+    status, data = cdas.get_data('WI_H0_MFI', vars, time[0], time[1])
+
+    if verbose:
+        print("Done.")
+
+    dfmag = pd.DataFrame({'Epoch':data['Epoch3'],
+            'Br': data['B3GSE'][:,0],
+            'Bt': data['B3GSE'][:,1],
+            'Bn': data['B3GSE'][:,2],
+            'Btot': data['B3F1']
+        }
+    ).set_index('Epoch')
+
+
+    dfmag1 = dfmag.resample('1s').mean()
+
+    if verbose:
+        print("Input tstart = %s, tend = %s" %(time[0], time[1]))
+        print("Returned tstart = %s, tend = %s" %(data['Epoch3'][0], data['Epoch3'][-1]))
+
+    infos = {
+        'resolution': 1
+    }
+
+    return dfmag, dfmag1, infos
 
 def LoadSCAMFromSPEDAS_PSP(start_time, end_time, credentials = None):
     """ 
