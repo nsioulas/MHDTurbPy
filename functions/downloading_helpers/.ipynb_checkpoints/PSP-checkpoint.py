@@ -225,6 +225,9 @@ def download_MAG_FIELD_PSP(t0, t1, mag_resolution, credentials, varnames, downlo
 
 
 def download_SPC_PSP(t0, t1, credentials, varnames):
+    
+    print('Spc Variables', varnames)
+    
     try:
         try:
             username = credentials['psp']['sweap']['username']
@@ -263,6 +266,8 @@ def download_SPC_PSP(t0, t1, credentials, varnames):
 
     
 def download_SPAN_PSP(t0, t1, credentials, varnames, varnames_alpha ):   
+    
+    print('Span Variables', varnames)
     
     try:
         try:
@@ -328,6 +333,8 @@ def download_SPAN_PSP(t0, t1, credentials, varnames, varnames_alpha ):
         return None, None
 
 def download_QTN_PSP(t0, t1, credentials, varnames):
+    
+    print('QTN', varnames)
     try:
         try:
             username = credentials['psp']['fields']['username']
@@ -425,14 +432,14 @@ def create_particle_dataframe(diagnostics_SPC, diagnostics_SPAN, start_time, end
     # prioritize QTN for density, and fill with SPC, and with SPAN
     elif part_instrument == '9th_perih_cut':
         
-        source_df = dfspc if pd.Timestamp(end_time) < pd.Timestamp('2021-07-15') else dfspan
+        source_df   = dfspc if pd.Timestamp(end_time) < pd.Timestamp('2021-07-15') else dfspan
         diagnostics = diagnostics_SPC if pd.Timestamp(end_time) < pd.Timestamp('2021-07-15') else diagnostics_SPAN
-        print(source_df)
+        
         freq = f"{round(diagnostics['Init_dt'] * 1000)}ms"
 
         # interpolate QTN to index of either SPC or SPAN and fill nan!
         try: 
-            
+            print('Used QTN')
             new_dfqtn = func.newindex(dfqtn, source_df.index)
             dfpar     = source_df.join(new_dfqtn['np_qtn'])
             
@@ -440,7 +447,7 @@ def create_particle_dataframe(diagnostics_SPC, diagnostics_SPAN, start_time, end
             #dfpar['np_qtn'].fillna(source_df['np'], inplace=True)
             #dfpar['np_qtn']     = new_dfqtn['np_qtn']
             dfpar[dfpar < -1e5] = np.nan
-            dfpar['np']         = np.nanmean(dfpar[['np', 'np_qtn']], axis=1)
+            dfpar['np']         = dfpar['np_qtn']#np.nanmean(dfpar[['np', 'np_qtn']], axis=1)
             del dfpar['np_qtn'], dfqtn
             
         except:
@@ -509,6 +516,7 @@ def create_particle_dataframe(diagnostics_SPC, diagnostics_SPAN, start_time, end
     except:
         pass
     dfpar[dfpar < -1e5] = np.nan
+    
     return dfpar, part_flag
 
 
@@ -589,8 +597,8 @@ def LoadTimeSeriesPSP(start_time,
             print(type(dfmag.index[0]))
             dfmag                 = func.use_dates_return_elements_of_df_inbetween(pd.to_numeric(ind1), pd.to_numeric(ind2), dfmag)
 
-            print(dfmag)
-            print('here')
+           # print(dfmag)
+           # print('here')
 
          # Identify big gaps in timeseries
         big_gaps              = func.find_big_gaps(dfmag , gap_time_threshold)        
@@ -623,7 +631,9 @@ def LoadTimeSeriesPSP(start_time,
         # Download SPC data
         dfspc                 = download_SPC_PSP(t0, t1, credentials, varnames_SPC)
         
+        #print('Here',dfspc)
         # Return the originaly requested interval
+        print(dfspc)
         dfspc                 = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfspc)
         
          # Resample the input dataframes
