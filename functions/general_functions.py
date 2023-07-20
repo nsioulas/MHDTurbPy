@@ -108,7 +108,7 @@ def count_fits_in_duration(df, wind_size):
     
     return fits_in_duration
 
-@jit(nopython=True, parallel=True)
+#@jit(nopython=True, parallel=True)
 def hampel_filter(input_series, window_size, n_sigmas=3):
     """
     Method to apply a Hampel filter to a given time series to remove spurious data points.
@@ -134,7 +134,7 @@ def hampel_filter(input_series, window_size, n_sigmas=3):
     k = 1.4826 # scale factor for Gaussian distribution
     indices = []
     
-    for i in prange((window_size),(n - window_size)):
+    for i in range((window_size),(n - window_size)):
         x0 = np.nanmedian(input_series[(i - window_size):(i + window_size)])
         S0 = k * np.nanmedian(np.abs(input_series[(i - window_size):(i + window_size)] - x0))
         if (np.abs(input_series[i] - x0) > n_sigmas * S0):
@@ -750,42 +750,85 @@ def find_fit_semilogy(x, y, x0, xf):
 
 from joblib import Parallel, delayed
 
-def worker(i, xx, yy, w_size, xmax):
-    x0 = xx[i]
-    xf = w_size * x0
-    if xf < 0.95 * xmax:
-        fit, s, e, x1, y1 = find_fit(xx, yy, x0, xf) 
-        if len(np.shape(x1)) > 0:
-            fit_err = np.sqrt(fit[1][1][1])
-            ind = fit[0][1]
-            x = x1[s]
-            return fit_err, ind, x
-    return None
 
-def mov_fit_func(xx, yy, w_size, xmin, xmax, nfit=0, keep_plot=0):
+# def worker(i, xx, yy, w_size, xmax):
+#     x0 = xx[i]
+#     xf = w_size * x0
+#     if xf < 0.95 * xmax:
+#         fit, s, e, x1, y1 = find_fit(xx, yy, x0, xf) 
+#         if len(np.shape(x1)) > 0:
+#             fit_err = np.sqrt(fit[1][1][1])
+#             ind = fit[0][1]
+#             x = x1[s]
+#             return fit_err, ind, x
+#     return None
+
+# def mov_fit_func(xx, yy, w_size, xmin, xmax, nfit=0, keep_plot=0):
+#     xvals =[]
+#     yvals =[]
+
+#     where_fit = np.where((xx > xmin) & (xx < xmax))[0]
+
+#     if where_fit.size == 0:
+#         return {np.nan}
+
+#     results = Parallel(n_jobs=-1)(delayed(worker)(i, xx, yy, w_size, xmax) for i in where_fit)
+
+#     # filter out None results
+#     results = [res for res in results if res is not None]
+
+#     keep_err, keep_ind, keep_x = zip(*results)
+
+#     return_dict = {'xvals': keep_x, 'plaw': keep_ind, 'fit_err': keep_err}
+#     if keep_plot:
+#         # these lists will be empty in this version of code since they are not populated in worker function
+#         return_dict.update({"plot_x": xvals, 'plot_y': yvals})
+
+#     return return_dict
+
+def mov_fit_func(xx, yy, w_size,  xmin, xmax, numb_fits, keep_plot):
+    keep_err = []
+    keep_ind = []
+    keep_x =[]
     xvals =[]
     yvals =[]
 
-    where_fit = np.where((xx > xmin) & (xx < xmax))[0]
+    index1   = np.where(xx>xmin)[0].astype(int)#[0]
 
-    if where_fit.size == 0:
+    if index1.size == 0:
         return {np.nan}
 
-    results = Parallel(n_jobs=-1)(delayed(worker)(i, xx, yy, w_size, xmax) for i in where_fit)
 
-    # filter out None results
-    results = [res for res in results if res is not None]
+    index1     = index1[0]
+    index2     =  np.where(xx<xmax)[0].astype(int)[-1]
 
-    keep_err, keep_ind, keep_x = zip(*results)
+    where_fit = np.arange(index1, index2+1, 1)
 
-    return_dict = {'xvals': keep_x, 'plaw': keep_ind, 'fit_err': keep_err}
-    if keep_plot:
-        # these lists will be empty in this version of code since they are not populated in worker function
-        return_dict.update({"plot_x": xvals, 'plot_y': yvals})
+    for i in range(index1, len(where_fit)):
+        x0 = xx[int(where_fit[i])]
+        xf = w_size*x0
+        if xf<0.95*xmax:
+            fit, s, e, x1, y1       = find_fit(xx, yy, x0, xf) 
+            if len(np.shape(x1))>0:
 
-    return return_dict
-
-
+                keep_err.append(np.sqrt(fit[1][1][1]))
+                keep_ind.append(fit[0][1])
+                #keep_x.append(x1[s])# + np.log10(0.5) * (x1[s] - x1[e])) 
+                keep_x.append(x1[s])# + np.log10(0.5) * (x1[s] - x1[e])) 
+                if keep_plot:
+                    xvals.append(x1[s:e])
+                    yvals.append(2*fit[2])
+    return (
+        {
+            'xvals': keep_x,
+            'plaw': keep_ind,
+            'fit_err': keep_err,
+            "plot_x": xvals,
+            'plot_y': yvals,
+        }
+        if keep_plot
+        else {'xvals': keep_x, 'plaw': keep_ind, 'fit_err': keep_err}
+    )
 
 def angle_between_vectors(V, B):
     """
@@ -1138,7 +1181,7 @@ def find_closest_values_of_2_arrays(a, b):
     return np.column_stack((uni, ret_b))
 
 def find_cadence(df):
-    return np.nanmedian((df.dropna().index.to_series().diff()/np.timedelta64(1, 's')))
+    return np.nanmean((df.dropna().index.to_series().diff()/np.timedelta64(1, 's')))
 
 def resample_timeseries_estimate_gaps(df, resolution, large_gaps=10):
     """
@@ -1198,7 +1241,7 @@ def resample_timeseries_estimate_gaps(df, resolution, large_gaps=10):
         resolution = np.nan
     return {
         "Init_dt": init_dt,
-        "resampled_df": df_resampled,
+        "resampled_df": df_resampled.interpolate(),
         "Frac_miss": fraction_missing,
         "Large_gaps": total_large_gaps,
         "Tot_gaps": total_gaps,

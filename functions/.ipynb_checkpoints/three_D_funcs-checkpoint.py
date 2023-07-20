@@ -3,11 +3,12 @@ import pandas as pd
 from numba import jit,njit, prange
 import os
 import sys
+from joblib import Parallel, delayed
 
-os.chdir("/Users/nokni/work/MHDTurbPy/")
+# os.chdir("/Users/nokni/work/MHDTurbPy/")
 
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
-import general_functions as func
+# sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+# import general_functions as func
 
 from scipy import constants
 mu_0            = constants.mu_0  # Vacuum magnetic permeability [N A^-2]
@@ -152,7 +153,7 @@ def est_alignment_angles(
 
 
 
-def shifted_df_calcs(B,  lag_coefs, coefs, return_dataframe=False):
+def shifted_df_calcs(B,  lag_coefs, coefs):
     """
     This function calculates the shifted dataframe.
 
@@ -164,12 +165,8 @@ def shifted_df_calcs(B,  lag_coefs, coefs, return_dataframe=False):
     Returns:
     ndarray              : A 2D numpy array representing the result of the calculation.
     """
-    if return_dataframe:
-        return pd.DataFrame(np.add.reduce([x*B.shift(y) for x, y in zip(coefs, lag_coefs)]),
-                            index=B.index, columns=B.columns)
-    else:
-        return pd.DataFrame(np.add.reduce([x*B.shift(y) for x, y in zip(coefs, lag_coefs)]),
-                            index=B.index, columns=B.columns).values
+    return pd.DataFrame(np.add.reduce([x*B.shift(y) for x, y in zip(coefs, lag_coefs)]),
+                        index=B.index, columns=B.columns).values
 
 
 def fast_unit_vec(a):
@@ -440,6 +437,9 @@ def save_flucs(
     d_Bn    = an[indices]
     ell_fin = ells[indices]
     return d_Br, d_Bt, d_Bn, ell_fin
+
+
+
 
 def estimate_3D_sfuncs(
                        B,
@@ -722,9 +722,9 @@ def estimate_3D_sfuncs(
     except:
         PDFs            = None   
     if estimate_alignment_angle:
-        overall_align_angles ={
-                                'VB' :  {'reg': ub_reg, 'polar':  ub_polar, 'weighted': ub_weighted, 'sig_r_mean': sig_r_mean, 'sig_r_median': sig_r_median},
-                                'Zpm':  {'reg': zpm_reg, 'polar': zpm_polar, 'weighted': zpm_weighted,'sig_c_mean': sig_c_mean, 'sig_c_median': sig_c_median}            
+        overall_align_angles ={ 'l_di' :  l_di,
+                                'VB'   :  {'reg': ub_reg, 'polar':  ub_polar, 'weighted': ub_weighted, 'sig_r_mean': sig_r_mean, 'sig_r_median': sig_r_median},
+                                'Zpm'  :  {'reg': zpm_reg, 'polar': zpm_polar, 'weighted': zpm_weighted,'sig_c_mean': sig_c_mean, 'sig_c_median': sig_c_median}            
                               }
     else:
         overall_align_angles = None
@@ -733,64 +733,3 @@ def estimate_3D_sfuncs(
     return thetas, phis,  flucts, l_di, Sfunctions, PDFs, overall_align_angles
                 
 
-def find_closest_values_in_arrays(arr_list, L_list, limited_window=False, xlims=None):
-    """
-    Find the closest target to a specified value in each of the arrays in `arr_list` by interpolating the values
-    in `L_list`.
-
-    Parameters
-    ----------
-    arr_list : list of arrays
-        List of arrays of target values.
-    L_list : list of arrays or array
-        List of arrays or a single array of the independent variable values.
-    limited_window : bool, optional
-        If True, the results will only be returned if the ell value falls within the `xlims` range.
-        Default is False.
-    xlims : tuple, optional
-        Tuple of lower and upper bounds for ell values. Only used if `limited_window` is True.
-        Default is None.
-
-    Returns
-    -------
-    result_df : pandas DataFrame
-        DataFrame with columns for each array in `arr_list` and the corresponding ell value and target value.
-        If a corresponding value is not found, the value will be set to NaN.
-
-    """
- 
-
-    if type(L_list) != list:
-        L_list = [L_list] * len(arr_list)
-        
-    indices = [np.where(arr > -1e10)[0].astype(int) for arr in arr_list]
-    arr_list = [arr[idx] for arr, idx in zip(arr_list, indices)]
-    L_list = [L[idx] for L, idx in zip(L_list, indices)]
-
-    
-        
-    max_index = np.argmax([arr[0] for arr in arr_list])
-    max_arr = arr_list[max_index]
-    result_dict  = []
-    for i in range(len(max_arr)):
-        closest_indices = [np.argmin(np.abs(max_arr[i] - arr)) for j, arr in enumerate(arr_list)]
-        closest_vals    = [arr[idx] for arr, idx in zip([arr for j, arr in enumerate(arr_list)], closest_indices)]
-        ells = []
-        targets = []
-        for val, arr, L in zip(closest_vals, [arr for j, arr in enumerate(arr_list) ], L_list):
-            idx = closest_indices[closest_vals.index(val)]
-            if idx > 0 and idx < len(arr) - 1:
-                ell = np.interp(val, [arr[idx - 1], arr[idx + 1]], [L[idx - 1], L[idx + 1]])
-                if limited_window and (ell < xlims[0] or ell > xlims[1]):
-                    continue
-                ells.append(ell)
-                target = np.interp(ell, L, arr)
-                targets.append(target)
-                
-        final_dict = {}
-        for jj in range(len(arr_list)):
-            final_dict["ell_"+str(jj)]      = ells[jj] if jj < len(ells) else np.nan
-            final_dict["target"+str(jj)]    = targets[jj] if jj < len(targets) else np.nan
-        result_dict.append(final_dict)
-
-    return pd.DataFrame(result_dict)

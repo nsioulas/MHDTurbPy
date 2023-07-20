@@ -56,7 +56,9 @@ def compute_sigma(psd_A, psd_B, f, f_min, f_max):
 
 def estimate_quants_particle_data(estimate_PSDv, rolling_window, f_min_spec, f_max_spec,  in_rtn, df, mag_resampled, subtract_rol_mean, smoothed = True):
     # Particle data remove nan values
-    df_part = df.dropna()
+
+    df_part = df#.dropna()
+    #print(df)
    
     # Reindex magnetic field data to particle data index
     dtv                 = func.find_cadence(df_part)
@@ -72,21 +74,26 @@ def estimate_quants_particle_data(estimate_PSDv, rolling_window, f_min_spec, f_m
         df_part = func.newindex(df_part, mag_resampled.index)
     f_df          = mag_resampled.join(df_part).interpolate()
 
-    # Calculate magnetic field magnitude
-    Bx, By, Bz = f_df.values.T[:3]
-    Bmag       = np.sqrt(Bx**2 + By**2 + Bz**2)
+
 
     if subtract_rol_mean:
         try:
             columns = [['Br', 'Bt', 'Bn'], ['Vr', 'Vt', 'Vn', 'np']]
             for c in columns:
                 f_df[[f"{col}_mean" for col in c]] = f_df[c].rolling(rolling_window, center=True).mean().interpolate()
+                
+            Bx, By, Bz = f_df['Br'].values, f_df['Bt'].values, f_df['Bn'].values
         except:
             columns = [['Bx', 'By', 'Bz'], ['Vx', 'Vy', 'Vz', 'np']]
             for c in columns:
-                f_df[[f"{col}_mean" for col in c]] = f_df[c].rolling(rolling_window, center=True).mean().interpolate()       
+                f_df[[f"{col}_mean" for col in c]] = f_df[c].rolling(rolling_window, center=True).mean().interpolate()    
+                
+            Bx, By, Bz = f_df['Bx'].values, f_df['By'].values, f_df['Bz'].values
 
 
+    # Calculate magnetic field magnitude
+    Bmag       = np.sqrt(Bx**2 + By**2 + Bz**2)
+    
     #Estimate median solar wind speed   
     Vth                     = f_df.Vth.values
     Vth[Vth < 0]            = np.nan
@@ -146,6 +153,8 @@ def estimate_quants_particle_data(estimate_PSDv, rolling_window, f_min_spec, f_m
 
     # Const to normalize mag field in vel units
     kinet_normal = 1e-15 / np.sqrt(mu0 * f_df['np_mean'].values * m_p)
+    
+          # Va_r = 1e-15* dfts['Br']/np.sqrt(mu0*dfts['np']*m_p)   ### Multuply by 1e-15 to get units of [Km/s]
 
     # Estimate Alfv speed
     Va_ts = np.array([br, bt, bn]) * kinet_normal
@@ -222,8 +231,9 @@ def estimate_quants_particle_data(estimate_PSDv, rolling_window, f_min_spec, f_m
 
     #Estimate  z+, z- PSD
     if estimate_PSDv:
-        f_Zplus, psd_Zplus    = turb.TracePSD(nn_df['Zpr'].values, nn_df['Zpt'].values, nn_df['Zpn'].values, 0,  part_resolution)
-        f_Zminus, psd_Zminus  = turb.TracePSD(nn_df['Zmr'].values, nn_df['Zmt'].values, nn_df['Zmn'].values, 0,  part_resolution)
+        print(dtv)
+        f_Zplus, psd_Zplus    = turb.TracePSD(nn_df['Zpr'].values, nn_df['Zpt'].values, nn_df['Zpn'].values,  dtv)
+        f_Zminus, psd_Zminus  = turb.TracePSD(nn_df['Zmr'].values, nn_df['Zmt'].values, nn_df['Zmn'].values,  dtv)
     else:
         f_Zplus, psd_Zplus    = None, None
         f_Zminus, psd_Zminus  = None, None 
@@ -233,8 +243,8 @@ def estimate_quants_particle_data(estimate_PSDv, rolling_window, f_min_spec, f_m
         f_vv, psd_vv         = None, None
         f_bb, psd_bb         = None, None
     else:
-        f_vv, psd_vv         = turb.TracePSD(nn_df['v_r'].values, nn_df['v_t'].values, nn_df['v_n'].values, 0,  part_resolution)
-        f_bb, psd_bb         = turb.TracePSD(nn_df['va_r'].values, nn_df['va_t'].values, nn_df['va_n'].values, 0,  part_resolution)      
+        f_vv, psd_vv         = turb.TracePSD(nn_df['v_r'].values, nn_df['v_t'].values, nn_df['v_n'].values, dtv)
+        f_bb, psd_bb         = turb.TracePSD(nn_df['va_r'].values, nn_df['va_t'].values, nn_df['va_n'].values, dtv)      
     
 
     # Only keep indices within the range of frequencies specified
@@ -322,11 +332,15 @@ def calc_mag_diagnostics(diagnostics, gap_time_threshold, dist, estimate_SPD, ma
 
 def calc_particle_diagnostics(dfpar, dfmag, misc_par, estimate_PSD_V, subtract_rol_mean, rolling_window,  f_min_spec, f_max_spec, in_rtn, smoothed = True):
 
-
     """Define Span velocity field components"""
     dfpar_interp   = dfpar.interpolate(method='linear').dropna()
-    cols           = ['Vr', 'Vt', 'Vn'] if in_rtn else ['Vx', 'Vy', 'Vz'] 
-    Vx, Vy, Vz     = dfpar_interp[cols].values.T
+    try:
+        cols           = ['Vr', 'Vt', 'Vn'] 
+        Vx, Vy, Vz     = dfpar_interp[cols].values.T
+    except:
+        cols           =['Vx', 'Vy', 'Vz'] 
+        Vx, Vy, Vz     = dfpar_interp[cols].values.T
+        in_rtn         = 0
 
     """Estimate PSD of  Velocity field"""
     f_V, psd_V     = (turb.TracePSD(Vx, Vy, Vz, True , misc_par["resol"]*1e-3) if estimate_PSD_V else (None, None))
@@ -441,7 +455,8 @@ def final_func(
                                                                           time_unit          = 'h'
         )
 
-
+        
+        
     # Solar Orbiter
     elif sc ==1:
  

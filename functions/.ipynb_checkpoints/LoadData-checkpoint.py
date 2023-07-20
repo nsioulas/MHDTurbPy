@@ -17,7 +17,7 @@ from pathlib import Path
 from glob import glob
 from gc import collect
 import warnings
-import sys
+
 import datetime
 import pytz
 from numba import jit,njit,prange
@@ -28,11 +28,24 @@ cdas = CdasWs()
 
 # SPEDAS API
 # make sure to use the local spedas
-sys.path.insert(0, os.path.join(os.getcwd(), 'pyspedas'))
+import sys
+sys.path.insert(0,"../pyspedas")
 import pyspedas
 from pyspedas.utilities import time_string
 from pytplot import get_data
 
+au_to_km = 1.496e8  # Conversion factor
+rsun     = 696340   # Sun radius in units of  [km]
+
+from scipy import constants
+psp_ref_point   =  0.06176464216946593 # in [au]
+mu0             =  constants.mu_0  # Vacuum magnetic permeability [N A^-2]
+mu_0             =  constants.mu_0  # Vacuum magnetic permeability [N A^-2]
+m_p             =  constants.m_p   # Proton mass [kg]
+k          = constants.k                  # Boltzman's constant     [j/K]
+au_to_km   = 1.496e8
+au_to_rsun = 215.032
+T_to_Gauss = 1e4
 
 
 # -----------  Load Data ----------- #
@@ -42,14 +55,19 @@ from pytplot import get_data
 
 def LoadTimeSeriesWrapper(
     sc, start_time, end_time,
-    settings = {}, credentials = None):
+    settings = None, credentials = None):
     """ A wrapper for time series loading """
 
     # change to root dir, mainly for spedas
     if 'rootdir' in settings.keys():
         os.chdir(settings['rootdir'])
+    else:
+        pass
+
     # clean settings
-    if not settings:
+    if settings is not None:
+        pass
+    else:
         settings = {}
 
     # set verbose
@@ -58,12 +76,12 @@ def LoadTimeSeriesWrapper(
     else:
         verbose = True
         settings['verbose'] = verbose
-
+    
     # print settings
     if verbose:
         print("Current Settings...")
         for k, v in settings.items():
-            print(f"{k} : {v}")
+            print("{} : {}".format(k, v))
 
     if sc == 0:
         df, misc = LoadTimeSeriesPSP(
@@ -98,12 +116,12 @@ def LoadTimeSeriesWrapper(
     else:
         raise ValueError("sc=%d not supported!" %(sc))
 
-
+    
     # print settings
     if verbose:
         print("Final Settings...")
         for k, v in settings.items():
-            print(f"{k} : {v}")
+            print("{} : {}".format(k, v))
 
     return df, misc
 
@@ -221,9 +239,10 @@ def LoadTimeSeriesSOLO(start_time, end_time, settings = {}, credentials = None):
 
 
     # check local directory
-    if not os.path.exists("./solar_orbiter_data"):
-        working_dir = os.getcwd()
-        os.makedirs(str(Path(working_dir).joinpath("solar_orbiter_data")), exist_ok=True)
+    if os.path.exists("./solar_orbiter_data"):
+        pass
+    else:
+        raise ValueError("No local data folder is present!")
 
     # resolution
     if 'resolution' in settings.keys():
@@ -231,6 +250,12 @@ def LoadTimeSeriesSOLO(start_time, end_time, settings = {}, credentials = None):
     else:
         resolution = 5
         settings['resolution'] = resolution
+
+    # mag_rtn_only
+    if 'mag_rtn_only' in settings.keys():
+        pass
+    else:
+        settings['mag_rtn_only'] = True
 
     t0 = start_time.strftime("%Y-%m-%d/%H:%M:%S")
     t1 = end_time.strftime("%Y-%m-%d/%H:%M:%S")
@@ -314,15 +339,21 @@ def LoadTimeSeriesSOLO(start_time, end_time, settings = {}, credentials = None):
     )
     dfmag1.columns = ['Br','Bt','Bn']
 
-    names = pyspedas.solo.mag(trange=[t0,t1], datatype='srf-normal', level='l2', time_clip=True)
-    data = get_data(names[0])
-    dfmag2 = pd.DataFrame(
-        index = data[0],
-        data = data[1]
-    )
-    dfmag2.columns = ['Bx','By','Bz']
+    # use only rtn mag
+    if settings['mag_rtn_only']:
+            dfmag = dfmag1
+    else:
+        names = pyspedas.solo.mag(trange=[t0,t1], datatype='srf-normal', level='l2', time_clip=True)
+        data = get_data(names[0])
+        dfmag2 = pd.DataFrame(
+            index = data[0],
+            data = data[1]
+        )
+        dfmag2.columns = ['Bx','By','Bz']
 
-    dfmag = dfmag1.join(dfmag2)
+        dfmag = dfmag1.join(dfmag2)
+
+    
     dfmag.index = time_string.time_datetime(time=dfmag.index)
     dfmag.index = dfmag.index.tz_localize(None)
 
@@ -357,12 +388,14 @@ def LoadTimeSeriesPSP(
 
     # default settings
     default_settings = {
-        'particle_mode'   : 'empirical',
-        'resolution'      : 1,
-        'use_hampel'      : False,
-        'interpolate_qtn' : True,
-        'must_have_qtn'   : False,
-        'rtn_only'        : True
+        'particle_mode': 'empirical',
+        'resolution': 5,
+        'use_hampel': False,
+        'interpolate_qtn': True,
+        'interpolate_rolling': True,
+        'verbose': True,
+        'must_have_qtn': True,
+        'rtn_only': True
     }
 
     for k in default_settings.keys():
@@ -373,8 +406,7 @@ def LoadTimeSeriesPSP(
     if os.path.exists("./psp_data"):
         pass
     else:
-        working_dir = os.getcwd()
-        os.makedirs(str(Path(working_dir).joinpath("psp_data")), exist_ok=True)
+        raise ValueError("No local data folder ./psp_data is present!")
 
     t0 = start_time.strftime("%Y-%m-%d/%H:%M:%S")
     t1 = end_time.strftime("%Y-%m-%d/%H:%M:%S")
@@ -836,6 +868,18 @@ def LoadTimeSeriesPSP(
 
         # use span after 2021-07-15
         dfpar2 = dfspan.loc[ind22,keep_keys].resample(freq).mean()
+        # dfpar2 = dfpar21.copy()
+        # ind21t = dfpar21['Vr'].apply(np.isnan)
+        # ind22t = dfpar22['Vr'].apply(np.isnan)
+        # dfpar2.loc[~ind21t,['MOMENT_FLAG','DENSITY_FLAG']] = 1 # SPC
+        # dfpar2.loc[~ind22t,['MOMENT_FLAG','DENSITY_FLAG']] = 2 # SPAN
+        # fill SPAN empty with SPC
+        # dfpar2.loc[ind21t] = dfpar22.loc[ind21t]
+
+        # # combine qtn
+        # dfpar_qtn = pd.DataFrame(
+        #     index = index
+        # ).join(dfqtn.resample(freq).mean())
         
         # merge qtn and particle data
         dftemp = pd.concat([dfpar1,dfpar2])
@@ -905,6 +949,13 @@ def LoadTimeSeriesPSP(
         raise ValueError("particle mode: %s not supported!" %(parmode))
 
 
+    # if settings['use_hampel'] == True:
+    #     for k in dfpar.columns:
+    #         ns, _ = hampel_filter_forloop_numba(dfpar[k].values, 100)
+    #         dfpar[k] = ns
+
+
+
 
     # create dfts
     dfts = dfmag.resample(freq).mean().join(
@@ -971,20 +1022,34 @@ def LoadTimeSeriesPSP(
 
 
     misc = {
-        'dfqtn'    : dfqtn,
-        'dfspc'    : dfspc,
-        'dfspan'   : dfspan,
-        'dfspan_a' : dfspan_a,
-        'parmode'  : parmode,
-        'settings' : settings,
-        'dfpar'    : dfpar,
-        'dfmag'    : dfmag,
-        'dfe'      : dfe,
-        'df_carr'  : df_carr
+        'dfqtn': dfqtn,
+        'dfspc': dfspc,
+        'dfspan': dfspan,
+        'dfspan_a': dfspan_a,
+        'parmode': parmode,
+        'settings': settings,
+        'dfpar': dfpar,
+        'dfmag': dfmag,
+        'df_carr': df_carr
     }
 
-    return dfts, misc
+    # if settings['interpolate_rolling']:
+    #     dfts[['Vr0','Vt0','Vn0']] = dfts[['Vr','Vt','Vn']].rolling(rolling_rate).mean().interpolate()
+    #     dfts[['Vx0','Vy0','Vz0']] = dfts[['Vx','Vy','Vz']].rolling(rolling_rate).mean().interpolate()
+    #     dfts[['Br0','Bt0','Bn0']] = dfts[['Br','Bt','Bn']].rolling(rolling_rate).mean().interpolate()
+    #     dfts[['Bx0','By0','Bz0']] = dfts[['Bx','By','Bz']].rolling(rolling_rate).mean().interpolate()
+    # else:
+    #     dfts[['Vr0','Vt0','Vn0']] = dfts[['Vr','Vt','Vn']].rolling(rolling_rate).mean()
+    #     dfts[['Vx0','Vy0','Vz0']] = dfts[['Vx','Vy','Vz']].rolling(rolling_rate).mean()
+    #     dfts[['Br0','Bt0','Bn0']] = dfts[['Br','Bt','Bn']].rolling(rolling_rate).mean()
+    #     dfts[['Bx0','By0','Bz0']] = dfts[['Bx','By','Bz']].rolling(rolling_rate).mean()
 
+    # resample dfmag to create B?0
+    # dfmag = dfmag.resample(freq).mean()
+    # dfmag[['Br0','Bt0','Bn0','Bx0','By0','Bz0']] = dfmag[['Br','Bt','Bn','Bx','By','Bz']].rolling(rolling_rate).mean()
+    # dfpar = dfts[['Vr','Vt','Vn','Vx','Vy','Vz','Vr0','Vt0','Vn0','Vx0','Vy0','Vz0','np','Vth']]
+
+    return dfts, misc
 
 
 def LoadTimeSeriesULYSSES(
@@ -996,9 +1061,7 @@ def LoadTimeSeriesULYSSES(
     if os.path.exists("./ulysses_data"):
         pass
     else:
-        working_dir = os.getcwd()
-        os.makedirs(str(Path(working_dir).joinpath("ulysses_data")), exist_ok=True)
-
+        raise ValueError("No local data folder ./ulysses_data present!")
 
     # resolution
     if 'resolution' in settings.keys():
@@ -1229,60 +1292,159 @@ def LoadHighResMagSOLO(
     return dfmag, dfmag1, infos
 
 def LoadHighResMagPSP(
-    start_time, end_time, verbose = True, credentials = None, resolution = None
+    start_time, end_time, 
+    verbose = True, credentials = None, resolution = None, 
+    load_4_per_cyc = True, use_spedas = True,
+    load_ephemeris = False
     ):
     """
     resolution in ms!
     """
+    if load_4_per_cyc:
+        try:
+            if use_spedas:
+                print("Loading mag_rtn_4_per_cycle from SPEDAS")
+                t0 = start_time.strftime("%Y-%m-%d/%H:%M:%S")
+                t1 = end_time.strftime("%Y-%m-%d/%H:%M:%S")
 
-    try:
-        vars = ['psp_fld_l2_mag_SC_4_Sa_per_Cyc']
-        time = [start_time.to_pydatetime( ).replace(tzinfo=pytz.UTC), end_time.to_pydatetime( ).replace(tzinfo=pytz.UTC)]
-        status, data = cdas.get_data('PSP_FLD_L2_MAG_SC_4_SA_PER_CYC', vars, time[0], time[1])
+                names = pyspedas.psp.fields(trange=[t0,t1], 
+                    datatype='mag_rtn_4_per_cycle', level='l2', time_clip=True
+                )
+                data = get_data(names[0])
+                dfmag2 = pd.DataFrame(
+                    index = data[0],
+                    data = data[1]
+                )
+                dfmag2.columns = ['Bx','By','Bz']
 
-        dfmag = pd.DataFrame(
-            index = data['epoch_mag_SC_4_Sa_per_Cyc'],
-            data = {
-                'Bx': data['psp_fld_l2_mag_SC_4_Sa_per_Cyc'][:,0],
-                'By': data['psp_fld_l2_mag_SC_4_Sa_per_Cyc'][:,1],
-                'Bz': data['psp_fld_l2_mag_SC_4_Sa_per_Cyc'][:,2]
-            }
-        )
-        dfmag['Btot'] = np.sqrt(dfmag['Bx']**2+dfmag['By']**2+dfmag['Bz']**2)
+                dfmag = dfmag2
+                dfmag.index = time_string.time_datetime(time=dfmag.index)
+                dfmag.index = dfmag.index.tz_localize(None)
 
-        if verbose:
-            print("Input tstart = %s, tend = %s" %(time[0], time[1]))
-            print("Returned tstart = %s, tend = %s" %(
-                data['epoch_mag_SC_4_Sa_per_Cyc'][0], 
-                data['epoch_mag_SC_4_Sa_per_Cyc'][-1]))
+                dfmag['Btot'] = np.sqrt(dfmag['Bx']**2+dfmag['By']**2+dfmag['Bz']**2)
 
-    except:
-        print("Loading unpublished PSP high-res mag data....")
-        if credentials is None:
-            raise ValueError("No credentials are provided!")
+            else:
+                print("Loading psp_fld_l2_mag_RTN_4_Sa_per_Cyc from SPDF")
+                vars = ['psp_fld_l2_mag_RTN_4_Sa_per_Cyc']
+                time = [start_time.to_pydatetime( ).replace(tzinfo=pytz.UTC), end_time.to_pydatetime( ).replace(tzinfo=pytz.UTC)]
+                status, data = cdas.get_data('PSP_FLD_L2_MAG_RTN_4_SA_PER_CYC', vars, time[0], time[1])
 
-        t0 = start_time.strftime("%Y-%m-%d/%H:%M:%S")
-        t1 = end_time.strftime("%Y-%m-%d/%H:%M:%S")
+                dfmag = pd.DataFrame(
+                    index = data['epoch_mag_RTN_4_Sa_per_Cyc'],
+                    data = {
+                        'Bx': data['psp_fld_l2_mag_RTN_4_Sa_per_Cyc'][:,0],
+                        'By': data['psp_fld_l2_mag_RTN_4_Sa_per_Cyc'][:,1],
+                        'Bz': data['psp_fld_l2_mag_RTN_4_Sa_per_Cyc'][:,2]
+                    }
+                )
+                dfmag['Btot'] = np.sqrt(dfmag['Bx']**2+dfmag['By']**2+dfmag['Bz']**2)
 
-        username = credentials['psp']['fields']['username']
-        password = credentials['psp']['fields']['password']
+                if verbose:
+                    print("Input tstart = %s, tend = %s" %(time[0], time[1]))
+                    print("Returned tstart = %s, tend = %s" %(
+                        data['psp_fld_l2_mag_RTN_4_Sa_per_Cyc'][0], 
+                        data['psp_fld_l2_mag_RTN_4_Sa_per_Cyc'][-1]))
 
-        names = pyspedas.psp.fields(trange=[t0,t1], 
-            datatype='mag_SC_4_Sa_per_Cyc', level='l2', time_clip=True,
-            username=username, password=password
-        )
-        data = get_data(names[0])
-        dfmag2 = pd.DataFrame(
-            index = data[0],
-            data = data[1]
-        )
-        dfmag2.columns = ['Bx','By','Bz']
+        except:
+            print("Loading unpublished PSP high-res mag data....")
+            if credentials is None:
+                raise ValueError("No credentials are provided!")
 
-        dfmag = dfmag2
-        dfmag.index = time_string.time_datetime(time=dfmag.index)
-        dfmag.index = dfmag.index.tz_localize(None)
+            t0 = start_time.strftime("%Y-%m-%d/%H:%M:%S")
+            t1 = end_time.strftime("%Y-%m-%d/%H:%M:%S")
 
-        dfmag['Btot'] = np.sqrt(dfmag['Bx']**2+dfmag['By']**2+dfmag['Bz']**2)
+            username = credentials['psp']['fields']['username']
+            password = credentials['psp']['fields']['password']
+
+            names = pyspedas.psp.fields(trange=[t0,t1], 
+                datatype='mag_RTN_4_Sa_per_Cyc', level='l2', time_clip=True,
+                username=username, password=password
+            )
+            data = get_data(names[0])
+            dfmag2 = pd.DataFrame(
+                index = data[0],
+                data = data[1]
+            )
+            dfmag2.columns = ['Bx','By','Bz']
+
+            dfmag = dfmag2
+            dfmag.index = time_string.time_datetime(time=dfmag.index)
+            dfmag.index = dfmag.index.tz_localize(None)
+
+            dfmag['Btot'] = np.sqrt(dfmag['Bx']**2+dfmag['By']**2+dfmag['Bz']**2)
+
+    else:
+        try:
+            if use_spedas:
+                print("Loading mag_rtn from SPEDAS")
+                t0 = start_time.strftime("%Y-%m-%d/%H:%M:%S")
+                t1 = end_time.strftime("%Y-%m-%d/%H:%M:%S")
+
+                names = pyspedas.psp.fields(trange=[t0,t1], 
+                    datatype='mag_rtn', level='l2', time_clip=True
+                )
+                data = get_data(names[0])
+                dfmag2 = pd.DataFrame(
+                    index = data[0],
+                    data = data[1]
+                )
+                dfmag2.columns = ['Bx','By','Bz']
+
+                dfmag = dfmag2
+                dfmag.index = time_string.time_datetime(time=dfmag.index)
+                dfmag.index = dfmag.index.tz_localize(None)
+
+                dfmag['Btot'] = np.sqrt(dfmag['Bx']**2+dfmag['By']**2+dfmag['Bz']**2)
+
+            else:
+                print("Loading psp_fld_l2_mag_RTN from SPDF")
+                vars = ['psp_fld_l2_mag_RTN']
+                time = [start_time.to_pydatetime( ).replace(tzinfo=pytz.UTC), end_time.to_pydatetime( ).replace(tzinfo=pytz.UTC)]
+                status, data = cdas.get_data('PSP_FLD_L2_MAG_RTN', vars, time[0], time[1])
+
+                dfmag = pd.DataFrame(
+                    index = data['epoch_mag_RTN'],
+                    data = {
+                        'Bx': data['psp_fld_l2_mag_RTN'][:,0],
+                        'By': data['psp_fld_l2_mag_RTN'][:,1],
+                        'Bz': data['psp_fld_l2_mag_RTN'][:,2]
+                    }
+                )
+                dfmag['Btot'] = np.sqrt(dfmag['Bx']**2+dfmag['By']**2+dfmag['Bz']**2)
+
+                if verbose:
+                    print("Input tstart = %s, tend = %s" %(time[0], time[1]))
+                    print("Returned tstart = %s, tend = %s" %(
+                        data['psp_fld_l2_mag_RTN'][0], 
+                        data['psp_fld_l2_mag_RTN'][-1]))
+
+        except:
+            print("Loading unpublished PSP high-res mag data....")
+            if credentials is None:
+                raise ValueError("No credentials are provided!")
+
+            t0 = start_time.strftime("%Y-%m-%d/%H:%M:%S")
+            t1 = end_time.strftime("%Y-%m-%d/%H:%M:%S")
+
+            username = credentials['psp']['fields']['username']
+            password = credentials['psp']['fields']['password']
+
+            names = pyspedas.psp.fields(trange=[t0,t1], 
+                datatype='mag_RTN', level='l2', time_clip=True,
+                username=username, password=password
+            )
+            data = get_data(names[0])
+            dfmag2 = pd.DataFrame(
+                index = data[0],
+                data = data[1]
+            )
+            dfmag2.columns = ['Bx','By','Bz']
+
+            dfmag = dfmag2
+            dfmag.index = time_string.time_datetime(time=dfmag.index)
+            dfmag.index = dfmag.index.tz_localize(None)
+
+            dfmag['Btot'] = np.sqrt(dfmag['Bx']**2+dfmag['By']**2+dfmag['Bz']**2)
 
     if resolution is None:
         dfmag1 = dfmag.resample('100ms').mean()
@@ -1311,7 +1473,40 @@ def LoadHighResMagPSP(
         }
         print("Final PSP Resolution: %.2f, fraction missing %.2f" %(resolution, np.sum(np.isnan(dfmag1['Bx']))/len(dfmag1)*100))
 
+    if load_ephemeris:
+        print("Loading ephemeris...")
+        fields_vars = pyspedas.psp.fields(
+            trange=[t0, t1], 
+            datatype='ephem_spp_rtn', level='l1', 
+            time_clip=True, 
+            username=credentials['psp']['fields']['username'], 
+            password=credentials['psp']['fields']['password'])
 
+        data = get_data('position')
+        dfe = pd.DataFrame(
+            index = data.times,
+            data = data.y,
+            columns = ['sc_pos_r','sc_pos_t','sc_pos_n']
+        )
+
+        data = get_data('velocity')
+        dfe = dfe.join(
+            pd.DataFrame(
+                index = data.times,
+                data = data.y,
+                columns = ['sc_vel_r','sc_vel_t','sc_vel_n']
+            )
+        )
+
+        dfe.index = time_string.time_datetime(time=dfe.index)
+        dfe.index = dfe.index.tz_localize(None)
+
+        dfe = dfe.resample('1s').interpolate()
+
+        Dist_au = (dfe[['sc_pos_r','sc_pos_t','sc_pos_n']]**2).sum(axis=1).apply(np.sqrt)/au_to_km
+
+        infos['ephemeris'] = dfe
+        infos['Dist_au'] = Dist_au
 
     return dfmag, dfmag1, infos
 
@@ -1494,7 +1689,7 @@ def LoadSCAMFromSPEDAS_PSP(start_time, end_time, credentials = None):
 
         try:
             scam_vars = pyspedas.psp.fields(
-                trange=[t0, t1], datatype='merged_scam_wf', level='l3', time_clip=0, downloadonly = False,
+                trange=[t0, t1], datatype='merged_scam_wf', level='l3', time_clip=True, downloadonly = False,
                 username = credentials['username'], password = credentials['password']
             )
         except:
