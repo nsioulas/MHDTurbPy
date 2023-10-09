@@ -316,18 +316,18 @@ def download_SPAN_PSP(t0, t1, credentials, varnames, varnames_alpha ):
         dfspan.index       = dfspan.index.tz_localize(None)
         dfspan.index.name  = 'datetime'
         
-        #SPAN Alphas
-        col_names_alpha = map_col_names_PSP('SPAN-alpha', varnames_alpha)
-        dfs_alpha = [pd.DataFrame(index=get_data(data).times, 
-                            data=get_data(data).y, 
-                            columns=col_names_alpha[i]) for i, data in enumerate(spandata_alpha)]
-        dfspan_alpha = dfs_alpha[0].join(dfs_alpha[1:])
+#         #SPAN Alphas
+#         col_names_alpha = map_col_names_PSP('SPAN-alpha', varnames_alpha)
+#         dfs_alpha = [pd.DataFrame(index=get_data(data).times, 
+#                             data=get_data(data).y, 
+#                             columns=col_names_alpha[i]) for i, data in enumerate(spandata_alpha)]
+#         dfspan_alpha = dfs_alpha[0].join(dfs_alpha[1:])
         
-        # Fix datetime index
-        dfspan_alpha.index       = time_string.time_datetime(time=dfspan_alpha.index)
-        dfspan_alpha.index       = dfspan_alpha.index.tz_localize(None)
-        dfspan_alpha.index.name  = 'datetime'        
-        return dfspan, dfspan_alpha
+#         # Fix datetime index
+#         dfspan_alpha.index       = time_string.time_datetime(time=dfspan_alpha.index)
+#         dfspan_alpha.index       = dfspan_alpha.index.tz_localize(None)
+#         dfspan_alpha.index.name  = 'datetime'        
+        return dfspan#, dfspan_alpha
     except Exception as e:
         print(f'Error occurred while retrieving SPAN data: {e}')
         return None, None
@@ -551,10 +551,11 @@ def LoadTimeSeriesPSP(start_time,
 
     # default settings
     default_settings = {
-        'particle_mode': '9th_perih_cut',
-        'use_hampel'   : False,
-        'part_resol'   : 900,
-        'MAG_resol'    : 1
+        'particle_mode'   : '9th_perih_cut',
+        'apply_hampel'    : True,
+        'hampel_params'   : {'w':100, 'std':3},
+        'part_resol'      : 900,
+        'MAG_resol'       : 1
 
     }
  
@@ -594,11 +595,9 @@ def LoadTimeSeriesPSP(start_time,
             dfmag                 = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfmag)
         except:
             dfmag.index = pd.to_datetime(dfmag.index, format='%Y-%m-%d %H:%M:%S.%f')
-            print(type(dfmag.index[0]))
             dfmag                 = func.use_dates_return_elements_of_df_inbetween(pd.to_numeric(ind1), pd.to_numeric(ind2), dfmag)
 
-           # print(dfmag)
-           # print('here')
+
 
          # Identify big gaps in timeseries
         big_gaps              = func.find_big_gaps(dfmag , gap_time_threshold)        
@@ -614,28 +613,67 @@ def LoadTimeSeriesPSP(start_time,
 
     try:        
         # Download SPAN data
-        dfspan, _  = download_SPAN_PSP(t0, t1, credentials, varnames_SPAN, varnames_SPAN_alpha)
+        dfspan  = download_SPAN_PSP(t0, t1, credentials, varnames_SPAN, varnames_SPAN_alpha)
+        
+            
+        if settings['apply_hampel']:
+            if 'Vr' in dfspan.keys():
+                list_2_hampel = ['Vr','Vt','Vn','np','Vth']
+            else:
+                list_2_hampel = ['Vx','Vy','Vz','np','Vth']
+                
+            ws_hampel  = settings['hampel_params']['w']
+            n_hampel   = settings['hampel_params']['std']
+                
+            for k in list_2_hampel:
+                try:
+                    outliers_indices = func.hampel(dfspan[k], window_size = ws_hampel, n = n_hampel)
+                    # print(outliers_indices)
+                    dfspan.loc[dfspan.index[outliers_indices], k] = np.nan
+                except:
+                     traceback.print_exc()
+            print('Applied hampel filter to SPAN columns :', list_2_hampel, 'Windows size', ws_hampel)
+        
         
         # Return the originaly requested interval
         dfspan                 = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfspan)
-        #dfspan_alpha           = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfspan_alpha)        
-        # Resample the input dataframes
-        diagnostics_SPAN = func.resample_timeseries_estimate_gaps(dfspan, settings['part_resol'] , large_gaps=10)
+        
+        
+        diagnostics_SPAN       = func.resample_timeseries_estimate_gaps(dfspan, settings['part_resol'] , large_gaps=10)
     
     except:
+        
         traceback.print_exc()
         dfspan                = None
-        #dfspan_alpha          = None
+       
         diagnostics_SPAN      = {'Frac_miss':100, 'Large_gaps':100, 'Tot_gaps':100, 'resol':100}
     try:      
         # Download SPC data
         dfspc                 = download_SPC_PSP(t0, t1, credentials, varnames_SPC)
-        
-        #print('Here',dfspc)
+
         # Return the originaly requested interval
-        print(dfspc)
+   
         dfspc                 = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfspc)
-        
+      
+        if settings['apply_hampel']:
+            if 'Vr' in dfspc.keys():
+                list_2_hampel = ['Vr','Vt','Vn','np','Vth']
+            else:
+                list_2_hampel = ['Vx','Vy','Vz','np','Vth']
+                
+            ws_hampel  = settings['hampel_params']['w']
+            n_hampel   = settings['hampel_params']['std']
+                
+            for k in list_2_hampel:
+                try:
+                    outliers_indices = func.hampel(dfspc[k], window_size = ws_hampel, n = n_hampel)
+                    # print(outliers_indices)
+                    dfspc.loc[dfspc.index[outliers_indices], k] = np.nan
+                except:
+                     traceback.print_exc()
+            print('Applied hampel filter to SPC columns :', list_2_hampel)
+                    
+
          # Resample the input dataframes
         diagnostics_SPC       = func.resample_timeseries_estimate_gaps(dfspc , settings['part_resol'] , large_gaps=10)
     except:
@@ -664,15 +702,10 @@ def LoadTimeSeriesPSP(start_time,
     try:
 
         #Create final particle dataframe
-        
+
         dfpar, part_flag = create_particle_dataframe(diagnostics_SPC,diagnostics_SPAN, start_time, end_time, dfspc, dfspan, dfqtn, settings)
         diagnostics_PAR  = func.resample_timeseries_estimate_gaps(dfpar, settings['part_resol'], large_gaps=10)
 
-        # Apply hampel-filter
-        if settings['use_hampel'] == True:
-            for k in dfpar.columns:
-                ns, _ = func.hampel_filter(dfpar[k].values, 100)
-                dfpar[k] = ns
 
         keys_to_keep           = ['Frac_miss', 'Large_gaps', 'Tot_gaps', 'resol']
         misc = {

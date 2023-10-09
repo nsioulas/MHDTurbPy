@@ -30,7 +30,7 @@ import LoadData
 sys.path.insert(1, os.path.join(os.getcwd(), 'functions/downloading_helpers'))
 from  PSP import  LoadTimeSeriesPSP
 from  SOLO import LoadTimeSeriesSOLO
-
+from  WIND import LoadTimeSeriesWIND
 
 from scipy import constants
 mu_0            = constants.mu_0  # Vacuum magnetic permeability [N A^-2]
@@ -71,7 +71,11 @@ def estimate_quants_particle_data(estimate_PSDv, rolling_window, f_min_spec, f_m
     if dtv>dtb:
         mag_resampled = func.newindex(mag_resampled, df_part.index)
     else:
-        df_part = func.newindex(df_part, mag_resampled.index)
+        try:
+            df_part = func.newindex(df_part, mag_resampled.index)
+        except:
+            print('Somthing wrong?')
+            df_part = df_part
     f_df          = mag_resampled.join(df_part).interpolate()
 
 
@@ -437,7 +441,7 @@ def final_func(
                 sc                 , 
                 high_resol_data    ,
                 in_RTN             ,
-
+                three_sec_resol    = True
               ):
     # Parker Solar Probe
     if sc==0:
@@ -483,7 +487,17 @@ def final_func(
         dfpar           =  final_df[['Vr','Vt','Vn','np','Tp','Vth']]
         dist_df         =  final_df[['Dist_au','lon','lat']]
         misc            =  final_dataframe[1]
+        
+    elif sc ==5:
 
+        try:
+            dfmag, dfpar, dfdis, big_gaps, misc =  LoadTimeSeriesWIND(start_time, 
+                                                              end_time, 
+                                                              settings, 
+                                                              three_sec_resol= three_sec_resol
+                                                             ) 
+        except:
+            traceback.print_exc()
 
     if dfpar is not None:
         if len(dfpar.dropna()) > 0 :

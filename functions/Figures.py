@@ -21,7 +21,7 @@ plt.style.use(['science', 'scatter'])
 plt.rcParams['text.usetex'] = True
 
 import sys
-sys.path.insert(0,'/Users/nokni/work/MHDTurbPy/functions')
+
 import general_functions as func
 import calc_diagnostics as calc
 def format_timestamp(timestamp,format_2_return):
@@ -88,12 +88,40 @@ def initializeFigure(xlabel, ylabel, scale= 'loglog',width='1col', height=None):
 
     return fig, ax
 
-def create_colors(hmany):
+def create_colors(hmany, which=None):
+    
+    import colormaps as cmaps
+    
+    
 
-    interval = np.hstack([np.linspace(0, 0.4), np.linspace(0.60, 1)])
-    colors   = plt.cm.RdBu_r(interval)
+    if which is None:
+        interval = np.hstack([np.linspace(0, 0.45), np.linspace(0.55, 1)])
+        colors   = cmaps.w5m4(interval)
+    elif which=='bone':
+        interval = np.hstack([np.linspace(0, 0.45), np.linspace(0.55, 1)])
+        colors   = plt.cm.OrRd(interval)
+        colors   = plt.cm.RdGy_r(interval)
+
+    
+    #colors   = cmaps.vik(interval)
+    #colors   = cmaps.hier2p(interval)
+    
     cmap     = LinearSegmentedColormap.from_list('name', colors)
+    #from matplotlib.colors import LinearSegmentedColormap
+
+#     # Define your custom colors
+#     custom_colors = ['#1D2633', '#232F3E', '#293749', '#304054', '#364A5F', '#3D536B', '#435D76', '#4A6782', '#50718E', '#577B9B', '#5D86A7', '#6390B4', '#699BC0', '#70A6CD', '#76B1DA', '#7CBCE7']
+
+#     #custom_colors = ['#172715', '#192F1D', '#1B3725', '#1D3E2E', '#1E4638', '#204E43', '#23564E', '#275E5A', '#2D6667', '#356D73', '#407480', '#4C7B8C', '#5A8298', '#6A88A4', '#7C8EAF', '#8E93B8']
+#     #custom_colors = ['#131D24', '#1A2830', '#21333D', '#293E49', '#304A57', '#385664', '#406272', '#476E80', '#4F7B8E', '#57899C', '#5E96AB', '#66A4B9', '#6DB2C8', '#75C0D7', '#7CCEE6', '#84DDF6']
+#     #custom_colors = ['#131D24', '#19262E', '#1F2F38', '#253843', '#2B414D', '#314B58', '#385563', '#3E5F6E', '#44697A', '#4B7385', '#517E91', '#57899D', '#5E94A9', '#649FB5', '#6AABC1', '#71B6CE']
+
+#     # Create a custom colormap using the specified colors
+#     cmap = LinearSegmentedColormap.from_list('custom_colormap', custom_colors)
+
     return cmap(np.linspace(0,1,hmany))
+
+
 
 
 
@@ -101,18 +129,14 @@ def heatmap_func(x,  y, z,
                  numb_bins, xlabel, ylabel, colbar_label, min_counts =10, what ='mean', ax_scale ='loglog',
                  min_x= -1e10, min_y= -1e10, min_z= -1e10, 
                  max_x= 1e10, max_y= 1e10, max_z= 1e10,
-                 log_colorbar=True,fig_size =(20,18), f_size =35):
+                 log_colorbar=True,fig_size =(20,18), f_size =35, specify_edges= False, xedges =None, yedges =None,plot_contours=True, estimate_mean_median= True, return_figure =False):
 
-    """Define constants"""
-    au_to_km      = 1.496e8
-    rsun          = 696340 #km
 
-    
     """Quantities we want to plot"""
     xf, yf, zf = np.array(x),  np.array(y), np.array(z)
     
 
-    index             = (xf>min_x)& (yf>min_y) & (zf>min_z) & (xf<max_x)& (yf<max_y) & (zf<max_z)
+    index             = (xf>min_x)& (yf>min_y) & (zf>min_z) & (xf<max_x)& (yf<max_y) & (zf<max_z) & (~np.isinf(x)) & (~np.isinf(y))& (~np.isinf(z))
     yf1               =  yf[index]
     zf1               =  zf[index]
     xf1               =  xf[index]
@@ -121,43 +145,56 @@ def heatmap_func(x,  y, z,
 
     """" Create bins """
     numb_x_bins, numb_y_bins  = numb_bins, numb_bins 
+    
+    if specify_edges:
+        xmin, xmax = xedges[0], xedges[1]
+        ymin, ymax = yedges[0], yedges[1]
+        
+    else:
+        xmin, xmax = np.nanmin(xf1), np.nanmax(xf1)
+        ymin, ymax = np.nanmin(yf1), np.nanmax(yf1)
+        
     if ax_scale=='loglog':
-        xf1_bins                  = np.logspace(np.log10(min(xf1)), np.log10(max(xf1)),numb_x_bins )
-        yf1_bins                  = np.logspace(np.log10(min(yf1)), np.log10(max(yf1)),numb_y_bins )
+        xf1_bins                  = np.logspace(np.log10(xmin), np.log10(xmax),numb_x_bins )
+        yf1_bins                  = np.logspace(np.log10(ymin), np.log10(ymax),numb_y_bins )
     elif ax_scale=='linear':
-        xf1_bins                  = np.linspace((min(xf1)), (max(xf1)),numb_x_bins )
-        yf1_bins                  = np.linspace((min(yf1)), (max(yf1)),numb_y_bins )
+        xf1_bins                  = np.linspace((xmin), (xmax),numb_x_bins )
+        yf1_bins                  = np.linspace((ymin), (ymax),numb_y_bins )
     elif ax_scale=='semilogx':
-        xf1_bins                  = np.linspace((min(xf1)), (max(xf1)),numb_x_bins )
-        yf1_bins                  = np.logspace(np.log10(min(yf1)), np.log10(max(yf1)),numb_y_bins )
+        yf1_bins                  = np.linspace((ymin), (ymax),numb_y_bins )
+        xf1_bins                  = np.logspace(np.log10(xmin), np.log10(xmax),numb_x_bins )
     elif ax_scale=='semilogy':
-        xf1_bins                  = np.logspace(np.log10(min(xf1)), np.log10(max(xf1)),numb_x_bins )
-        yf1_bins                  = np.linspace((min(yf1)), (max(yf1)),numb_y_bins )
+        yf1_bins                  = np.logspace(np.log10(ymin), np.log10(ymax),numb_y_bins )
+        xf1_bins                  = np.linspace((xmin), (xmax),numb_x_bins )
+
+    elif ax_scale == 'symlogy':
+        xf1_bins                  = np.logspace(np.log10(xmin), np.log10(xmax),numb_x_bins )
+        yf1_bins = func.symlogspace(ymin, ymax, numb_y_bins, linthresh=1e-5)
 
 
     """" Estimate mean or median within each bin """
-    means = stats.binned_statistic_2d(xf1,
-                                      yf1,
-                                      values    = zf1,
-                                      statistic = what,
-                                      bins=[xf1_bins,yf1_bins])[0]
+    means   = stats.binned_statistic_2d( x= xf1,
+                                         y= yf1,
+                                         values    = zf1,
+                                         statistic = what,
+                                         bins=[xf1_bins,yf1_bins])[0]
 
     """" Estimate counts within each bin """
-    counts  = stats.binned_statistic_2d(xf1,
-                                      yf1,
-                                      values    = zf1,
-                                      statistic = 'count',
-                                      bins=[xf1_bins,yf1_bins])[0]
+    counts  = stats.binned_statistic_2d(x= xf1,
+                                        y= yf1,
+                                        values    = zf1,
+                                        statistic = 'count',
+                                        bins=[xf1_bins,yf1_bins])[0]
     
     """" Estimate stds within each bin """
-    stds  = stats.binned_statistic_2d(xf1,
-                                      yf1,
-                                      values    = zf1,
-                                      statistic = 'std',
-                                      bins=[xf1_bins,yf1_bins])[0]
+    stds  = stats.binned_statistic_2d(  
+                                        x= xf1,
+                                        y= yf1,
+                                        values    = zf1,
+                                        statistic = 'std',
+                                        bins=[xf1_bins,yf1_bins])[0]
     
-    z         = means
-    rows, cols = np.shape(z)
+    rows, cols = np.shape(means)
 
     
     """ Remove bins with less than min_counts counts """
@@ -167,68 +204,81 @@ def heatmap_func(x,  y, z,
                 means[i,k] = np.nan
 
     ### Create Colormap ### Remove white part of RdBU
+   # interval = np.hstack([np.linspace(0, 0.5), np.linspace(0.5, 1)])
+    #colors   = plt.cm.RdBu_r(interval)
+    
     interval = np.hstack([np.linspace(0, 0.5), np.linspace(0.5, 1)])
-    colors   = plt.cm.RdBu_r(interval)
+    #colors   = plt.cm.OrRd(interval)
+    colors   = plt.cm.RdGy_r(interval)
+    #colors   = plt.cm.Blues(interval)
     cmap     = LinearSegmentedColormap.from_list('name', colors)
     
-
     
-    fig = plt.figure(figsize=fig_size)
-    gs = GridSpec(8, 8)
-
-    ax = fig.add_subplot(gs[0:8, 0:8])
-    # ax_hist_x = fig.add_subplot(gs[0,0:7])
-    # ax_hist_y = fig.add_subplot(gs[1:8, 7])
- 
-
     # On purpose!!!
-    x_centers = yf1_bins
-    y_centers = xf1_bins
+    xvals  = xf1_bins
+    yvals  = yf1_bins
+    zvals  = means.T
+    counts = counts.T
 
-    current_cmap = matplotlib.cm.get_cmap(cmap)
-    current_cmap.set_bad(color='gray')
-
-    colbar_z = z.flatten()
-    colbar_z = colbar_z[colbar_z>0]
-
-#     z = interpolate_replace_nans(z)
+    if return_figure:
     
+        fig = plt.figure(figsize=fig_size)
+        gs = GridSpec(8, 8)
 
-    if log_colorbar:
-        normi    =  pltcolors.LogNorm()
-        c        = ax.pcolormesh(y_centers, x_centers,  z,cmap=cmap, norm = normi)
-    else:
-        c        = ax.pcolormesh(y_centers, x_centers,  z,cmap=cmap)
-    
-    print(np.shape(y_centers))
-
-    
-    cax = fig.add_axes([0.91, 0.125, 0.05, 0.755])
-
-    ax1 = fig.colorbar(c,cmap=cmap, cax=cax, orientation='vertical', pad=4)#,ticks=tick_locations_plot, extend='both')
-
-    ax1.ax.tick_params(which='both',left=0,right=0, labelsize=f_size)
-    ax.tick_params(which='both',left=1,right=0,bottom=1, top=0, direction='out', labelsize=f_size)
-
-
-
-    ax1.ax.set_ylabel(colbar_label,  fontsize =f_size)
-    ax.set_xlabel(xlabel , fontsize =f_size)
-    ax.set_ylabel(ylabel, fontsize =f_size)
-    
-    # Set axis scale
-    if ax_scale=='loglog':
-        ax.set_yscale('log')
-        ax.set_xscale('log')  
-
+        ax = fig.add_subplot(gs[0:8, 0:8])
+        grid_thick = 0.2
+        ax.xaxis.grid(True, "major", linewidth=grid_thick, ls='-')
+        ax.yaxis.grid(True, "major", linewidth=grid_thick, ls='-')
+        ax.yaxis.grid(True, "minor", linewidth=grid_thick, ls='-')
+        ax.xaxis.grid(True, "minor", linewidth=grid_thick, ls='-')
         
-    elif ax_scale=='semilogy':
-        ax.set_yscale('log')
+        current_cmap = matplotlib.cm.get_cmap(cmap)
+        current_cmap.set_bad(color='slategray')
 
-    elif ax_scale=='semilogx':
-        ax.set_xscale('log')  
+        colbar_z = zvals.flatten()
+        colbar_z = colbar_z
 
-    return y_centers, x_centers,  z
+
+        if log_colorbar:
+            normi    =  pltcolors.LogNorm()
+            c        = ax.pcolormesh(xvals, yvals,  zvals,cmap=cmap, norm = normi)
+        else:
+            normi    = None
+            c        = ax.pcolormesh(xvals, yvals,  zvals,cmap=cmap)
+
+
+        cax = fig.add_axes([0.91, 0.125, 0.05, 0.755])
+
+        ax1 = fig.colorbar(c,cmap=cmap, cax=cax, orientation='vertical', pad=4)#,ticks=tick_locations_plot, extend='both')
+
+        ax1.ax.tick_params(which='both',left=0,right=0, labelsize=f_size)
+        ax.tick_params(which='both',left=1,right=0,bottom=1, top=0, direction='out', labelsize=f_size)
+
+
+
+        ax1.ax.set_ylabel(colbar_label,  fontsize =f_size)
+        ax.set_xlabel(xlabel , fontsize =f_size)
+        ax.set_ylabel(ylabel, fontsize =f_size)
+
+        # Set axis scale
+        if ax_scale=='loglog':
+            ax.set_yscale('log')
+            ax.set_xscale('log')  
+
+
+        elif ax_scale=='semilogy':
+            ax.set_yscale('log')
+
+        elif ax_scale=='semilogx':
+            ax.set_xscale('log') 
+        elif ax_scale == 'symlogy':
+            ax.set_xscale('log')
+            ax.set_yscale('symlog')
+
+    if  return_figure:
+        return fig, ax, xvals, yvals,  zvals, cmap, c, normi
+    else:
+        return xvals, yvals,  zvals
 
 
 def initializeFigure_1by_2_noshare_y(xlabel, ylabel, scale= 'loglog',width='1col', height=None,share_y=False):
