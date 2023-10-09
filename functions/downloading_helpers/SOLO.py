@@ -314,9 +314,9 @@ def LoadTimeSeriesSOLO(start_time,
     try:
         dfdis                = download_ephem_SOLO(t0, t1, cdf_lib_path)
 
-        # if dfpar is not None:
-        #     dfdis            = func.newindex(dfdis, dfpar.index)
-        #     dfpar['Dist_au'] = dfdis['Dist_au']
+#         if dfpar is not None:
+#             dfdis            = func.newindex(dfdis, dfpar.index)
+#             dfpar['Dist_au'] = dfdis['Dist_au']
     except:
         dfdis                = None
         traceback.print_exc()

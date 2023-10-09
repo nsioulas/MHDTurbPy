@@ -1648,18 +1648,18 @@ def LoadHighResMagWind(start_time, end_time, verbose = True
     end_time: pd.Timestamp
     """
 
-    vars = ['B3GSE','B3F1']
+    vars = ['BGSE','BF1']
     time = [start_time.to_pydatetime( ).replace(tzinfo=pytz.UTC), end_time.to_pydatetime( ).replace(tzinfo=pytz.UTC)]
-    status, data = cdas.get_data('WI_H0_MFI', vars, time[0], time[1])
+    status, data = cdas.get_data('WI_H2_MFI', vars, time[0], time[1])
 
     if verbose:
         print("Done.")
 
-    dfmag = pd.DataFrame({'Epoch':data['Epoch3'],
-            'Br': data['B3GSE'][:,0],
-            'Bt': data['B3GSE'][:,1],
-            'Bn': data['B3GSE'][:,2],
-            'Btot': data['B3F1']
+    dfmag = pd.DataFrame({'Epoch':data['Epoch'],
+            'Br': data['BGSE'][:,0],
+            'Bt': data['BGSE'][:,1],
+            'Bn': data['BGSE'][:,2],
+            'Btot': data['BF1']
         }
     ).set_index('Epoch')
 
@@ -1668,7 +1668,7 @@ def LoadHighResMagWind(start_time, end_time, verbose = True
 
     if verbose:
         print("Input tstart = %s, tend = %s" %(time[0], time[1]))
-        print("Returned tstart = %s, tend = %s" %(data['Epoch3'][0], data['Epoch3'][-1]))
+        print("Returned tstart = %s, tend = %s" %(data['Epoch'][0], data['Epoch'][-1]))
 
     infos = {
         'resolution': 1
@@ -1779,6 +1779,3 @@ def LoadSCAMFromSPEDAS_PSP(start_time, end_time, credentials = None):
 
         return dfscam
 
-
-
-# obsolete
