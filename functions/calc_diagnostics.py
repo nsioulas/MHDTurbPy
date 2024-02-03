@@ -26,11 +26,9 @@ sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
 import TurbPy as turb
 import general_functions as func
 import LoadData
+import plasma_params as plasma
 
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions/downloading_helpers'))
-from  PSP import  LoadTimeSeriesPSP
-from  SOLO import LoadTimeSeriesSOLO
-from  WIND import LoadTimeSeriesWIND
+
 
 from scipy import constants
 mu_0            = constants.mu_0  # Vacuum magnetic permeability [N A^-2]
@@ -44,769 +42,405 @@ nT2T            = 1e-9
 cm2m            = 1e-2    
 
 
-def compute_sigma(psd_A, psd_B, f, f_min, f_max):
-    from scipy.integrate import trapz
 
-    mask = (f>f_min) & (f<f_max) & (~np.isnan(psd_A)) & (~np.isnan(psd_B))
-    integral_A = trapz(psd_A[mask], f[mask])
-    integral_B = trapz(psd_B[mask], f[mask])
+
+def align_dataframes_based_on_frequency(df_higher_freq, df_lower_freq, settings):
+    """
+    Align two dataframes based on their frequency, upsample lower frequency dataframe if specified.
     
-    return (integral_A - integral_B) / (integral_A + integral_B)
+    Args:
+    - df_higher_freq: DataFrame with higher frequency data.
+    - df_lower_freq: DataFrame with lower frequency data.
+    - settings: Dictionary containing settings including 'upsample_low_freq_ts'.
+    
+    Returns:
+    - Tuple of aligned DataFrames.
+    """
+    if settings.get('upsample_low_freq_ts', False):
+        # Upsample the lower frequency dataframe to match the higher frequency one
+        aligned_lower_freq = func.newindex(df_lower_freq, df_higher_freq.index)
+        return df_higher_freq, aligned_lower_freq
+    else:
+        # Attempt to align the higher frequency dataframe to the lower frequency one
+        try:
+            aligned_higher_freq = func.newindex(df_higher_freq, df_lower_freq.index)
+            return aligned_higher_freq, df_lower_freq
+        except Exception as e:  # Consider specifying the exact exception if known
+            print(f'Error aligning dataframes: {e}')
+            # Optionally, handle the error or return the original dataframes
+            return df_higher_freq, df_lower_freq
+
+def apply_rolling_mean(f_df, settings, coord_type='RTN'):
+    """
+    Apply rolling mean to specified columns based on coordinate type.
+    
+    Parameters:
+    - f_df: DataFrame to process.
+    - settings: Dictionary containing settings like 'rol_window'.
+    - coord_type: Type of coordinates, 'RTN' for R,T,N and 'XYZ' for x,y,z.
+    """
+    # Define columns based on coordinate type
+    if coord_type == 'RTN':
+        columns = [['Br', 'Bt', 'Bn'], ['Vr', 'Vt', 'Vn']]
+    else:  # Assume 'XYZ' if not 'RTN'
+        columns = [['Bx', 'By', 'Bz'], ['Vx', 'Vy', 'Vz']]
+    
+    # Apply rolling mean and interpolate
+    for c in columns:
+        f_df[[f"{col}_mean" for col in c]] = f_df[c].rolling(
+            settings['rol_window'], center=True).mean().interpolate()
+    
+    return f_df
+
+def apply_rolling_mean_and_get_columns(f_df, settings):
+    """Attempt to apply rolling mean with RTN coordinates, fallback to XYZ if fails."""
+    try:
+        f_df = apply_rolling_mean(f_df, settings, 'RTN')
+        columns_b = ["Br", "Bt", "Bn"]
+        columns_v = ["Vr", "Vt", "Vn"]
+    except KeyError:  # Assuming KeyError is the relevant exception if columns are missing
+        f_df = apply_rolling_mean(f_df, settings, 'XYZ')
+        columns_b = ["Bx", "By", "Bz"]
+        columns_v = ["Vx", "Vy", "Vz"]
+    return f_df, columns_b, columns_v
 
 
-def estimate_quants_particle_data(estimate_PSDv, rolling_window, f_min_spec, f_max_spec,  in_rtn, df, mag_resampled, subtract_rol_mean, smoothed = True):
-    # Particle data remove nan values
+def calculate_signB(f_df):
+    """Calculate the sign of B based on available column."""
+    if 'Br_mean' in f_df.columns:
+        return -np.sign(f_df['Br_mean'])
+    elif 'Bx_mean' in f_df.columns:
+        return np.abs(-np.sign(f_df['Bx_mean']))
+    else:
+        raise ValueError("Required column is missing in DataFrame.")
 
-    df_part = df#.dropna()
-    #print(df)
-   
+def calculate_components(dv, dva, signB):
+    """Calculate Zp and Zm components."""
+    
+    # Calculate Zp and Zm components in a vectorized manner
+    Zpr, Zmr           = dv[0] + signB * dva[0], dv[0] - signB * dva[0]
+    Zpt, Zmt           = dv[1] + signB * dva[1], dv[1] - signB * dva[1]
+    Zpn, Zmn           = dv[2] + signB * dva[2], dv[2] - signB * dva[2]
+    
+    return np.array([Zpr, Zpt, Zpn]), np.array([Zmr, Zmt, Zmn])
+
+def calculate_energies_sigmas(Zp, Zm, dv, dva):
+    """Calculate energies and normalized residual energies."""
+    Z_plus_squared  = np.sum(Zp**2, axis=0)
+    Z_minus_squared = np.sum(Zm**2, axis=0)
+    Ek              = np.sum(dv**2, axis=0)
+    Eb              = np.sum(dva**2, axis=0)
+    
+    sigma_r         = (Ek - Eb) / (Ek + Eb)
+    sigma_c         = (Z_plus_squared - Z_minus_squared) / (Z_plus_squared + Z_minus_squared)
+    
+    # Apply threshold
+    sigma_r[np.abs(sigma_r) > 1e5] = np.nan
+    sigma_c[np.abs(sigma_c) > 1e5] = np.nan
+    
+    return sigma_r, sigma_c
+
+
+def estimate_psds(sigs_df, component_keys, dtb, settings):
+    """
+    Estimate the power spectral density (PSD) for given signal components.
+
+    Args:
+    - sigs_df (DataFrame): DataFrame containing signal data.
+    - component_keys (list): List of keys for the components to be processed.
+    - dtb (float): Time step or other relevant parameter for PSD calculation.
+    - settings (dict): Settings dict that includes 'est_PSD_components'.
+
+    Returns:
+    - Tuple containing frequency and PSD values, including components if requested.
+    """
+    values = [sigs_df[key].values for key in component_keys]
+    return turb.TracePSD(*values, dtb, return_components=settings['est_PSD_components'])
+
+def estimate_B_psd_and_smooth(mag_resampled, dtb, settings):
+    """
+    Estimate the Power Spectral Density (PSD) of the magnetic field and optionally smooth it.
+    """
+    # Initialize variables to None in case they are not set due to skipping the estimation
+    psd_B_R, psd_B_T, psd_B_N, f_B, psd_B, f_B_mid, f_B_mean, psd_B_smooth = (None,) * 8
+    
+    if settings['estimate_psd_b']:
+        try:
+            # Estimate PSD of the magnetic field
+            f_B, psd_B, psd_B_R, psd_B_T, psd_B_N = turb.TracePSD(
+                mag_resampled.values.T[0],
+                mag_resampled.values.T[1],
+                mag_resampled.values.T[2],
+                dtb,
+                return_components=settings['est_PSD_components'])
+            
+            # Smooth PSD of the magnetic field if required
+            if settings['smooth_psd']:
+                f_B_mid, f_B_mean, psd_B_smooth = func.smoothing_function(f_B, psd_B, window=2, pad=1)
+                
+        except Exception as e:
+            traceback.print_exc()  # Log the error for debugging
+            # Variables are already initialized to None, so they can be returned as is in case of an error
+    
+    # Return all relevant variables, regardless of whether PSD estimation was performed or not
+    return f_B, psd_B, psd_B_R, psd_B_T, psd_B_N, f_B_mid, f_B_mean, psd_B_smooth
+
+
+
+def calculate_diagnostics(
+                          mag_resampled,
+                          df_part,
+                          dist, 
+                          settings,
+                          diagnostics
+                         ):     
+            
+    """ Interpolate gaps"""  
+    mag_resampled       = mag_resampled.dropna().interpolate()
+    df_part             = df_part.dropna().interpolate()
+    
     # Reindex magnetic field data to particle data index
     dtv                 = func.find_cadence(df_part)
     dtb                 = func.find_cadence(mag_resampled)
-    
-    # We need plasma timeseries cadence
-    freq_final          = str(int(dtv*1e3))+'ms'
 
-    # Combine magnetic field and particle data, resampled to final frequency
-    if dtv>dtb:
-        mag_resampled = func.newindex(mag_resampled, df_part.index)
+    # Estimate the Power Spectral Density (PSD) of the magnetic field and optionally smooth it
+    f_B, psd_B, psd_B_R, psd_B_T, psd_B_N, f_B_mid, f_B_mean, psd_B_smooth = estimate_B_psd_and_smooth(mag_resampled, dtb, settings)
+    
+    # Determine which dataframe has higher frequency based on dtv and dtb comparison
+    if dtv > dtb:
+        mag_resampled, df_part_aligned = align_dataframes_based_on_frequency(mag_resampled, df_part, settings)
     else:
-        try:
-            df_part = func.newindex(df_part, mag_resampled.index)
-        except:
-            print('Somthing wrong?')
-            df_part = df_part
-    f_df          = mag_resampled.join(df_part).interpolate()
+        df_part_aligned, mag_resampled = align_dataframes_based_on_frequency(df_part, mag_resampled, settings)
 
-
-
-    if subtract_rol_mean:
-        try:
-            columns = [['Br', 'Bt', 'Bn'], ['Vr', 'Vt', 'Vn', 'np']]
-            for c in columns:
-                f_df[[f"{col}_mean" for col in c]] = f_df[c].rolling(rolling_window, center=True).mean().interpolate()
-                
-            Bx, By, Bz = f_df['Br'].values, f_df['Bt'].values, f_df['Bn'].values
-        except:
-            columns = [['Bx', 'By', 'Bz'], ['Vx', 'Vy', 'Vz', 'np']]
-            for c in columns:
-                f_df[[f"{col}_mean" for col in c]] = f_df[c].rolling(rolling_window, center=True).mean().interpolate()    
-                
-            Bx, By, Bz = f_df['Bx'].values, f_df['By'].values, f_df['Bz'].values
-
-
-    # Calculate magnetic field magnitude
-    Bmag       = np.sqrt(Bx**2 + By**2 + Bz**2)
+    # Create final dataframe by joining and cleaning up the data
+    f_df = mag_resampled.join(df_part_aligned).dropna().interpolate()
     
-    #Estimate median solar wind speed   
-    Vth                     = f_df.Vth.values
-    Vth[Vth < 0]            = np.nan
-    Vth_mean                = np.nanmedian(Vth)
-    Vth_std                 = np.nanstd(Vth);
-    
-    #Estimate median solar wind speed  
+    if settings.get('rol_mean'):
+        f_df, columns_b, columns_v = apply_rolling_mean_and_get_columns(f_df, settings)
 
-    Vx                       = f_df["Vr"].values if in_rtn else f_df["Vx"].values
-    Vy                       = f_df["Vt"].values if in_rtn else f_df["Vy"].values
-    Vz                       = f_df["Vn"].values if in_rtn else f_df["Vz"].values
-
-    Vsw                      = np.sqrt(Vx**2 + Vy**2 + Vz**2)
-    Vsw[(np.abs(Vsw) > 1e5)] = np.nan
-    Vsw_mean                 = np.nanmedian(Vsw)
-    Vsw_std                  = np.nanstd(Vsw)
-
-    # estimate mean number density
-    Np                       = f_df['np'].values 
-    Np_mean                  = np.nanmedian(Np)
-    Np_std                   = np.nanstd(Np);
+        # Extracting values more cleanly
+        vx, vy, vz      = f_df[columns_v].to_numpy().T
+        bx, by, bz      = f_df[columns_b].to_numpy().T
         
-    # Estimate Ion inertial length di in [Km]
-    di                       = 228/np.sqrt(Np)
-    di[di< 1e-3]             = np.nan
-    di_mean                  = np.nanmedian(di) 
-    di_std                   = np.nanstd(di);
+        # Const to normalize mag field in vel units
+        f_df['np_mean'] = f_df['np'].rolling('10min', center=True).mean().interpolate()
+        kinet_normal    = 1e-15 / np.sqrt(mu0 * f_df['np_mean'].values * m_p)
 
-    # Estimate plasma Beta
-    B_mag       = Bmag * nT2T                              # |B| units:      [T]
-    temp        = 1./2 * m_p * (Vth*km2m)**2               # in [J] = [kg] * [m]^2 * [s]^-2
-    dens        = Np/(cm2m**3)                             # number density: [m^-3] 
-    beta        = (dens*temp)/((B_mag**2)/(2*mu_0))        # plasma beta 
-    beta[beta < 0] = np.nan
-    beta[np.abs(np.log10(beta))>4] = np.nan # delete some weird data
-    beta_mean   = np.nanmedian(beta); beta_std   = np.nanstd(beta);
-    
-    
-    # ion gyro radius
-    rho_ci = 10.43968491 * Vth/B_mag #in [km]
-    rho_ci[rho_ci < 0] = np.nan
-    rho_ci[np.log10(rho_ci) < -3] = np.nan
-    rho_ci_mean =np.nanmedian(rho_ci); rho_ci_std =np.nanstd(rho_ci);
+        # Estimate Alfvén speed and SW speed
+        Va_ts           = np.vstack([bx, by, bz]) * kinet_normal
+        V_ts            = np.vstack([vx, vy, vz])  # Fixed to use vy instead of repeating vx
+
+        # Estimate fluctuations
+        mean_columns_b  = [f"{col}_mean" for col in columns_b]
+        mean_columns_v  = [f"{col}_mean" for col in columns_v]
  
-    ### Define b and v ###
-    if in_rtn:
-        columns_v = ["Vr", "Vt", "Vn"] if "Vr" in f_df.columns else ["Vx", "Vy", "Vz"]
-        columns_b = ["Br", "Bt", "Bn"] if "Br" in f_df.columns else ["Bx", "By", "Bz"]
-    else:
-        columns_v = ["Vx", "Vy", "Vz"]
-        columns_b = ["Bx", "By", "Bz"]
-
-    # Assign values
-    vr, vt, vn = f_df[columns_v].values.T
-    br, bt, bn = f_df[columns_b].values.T
-
-
-    # Const to normalize mag field in vel units
-    kinet_normal = 1e-15 / np.sqrt(mu0 * f_df['np_mean'].values * m_p)
+        dva             = Va_ts - f_df[mean_columns_b].to_numpy().T * kinet_normal
+        dv              = V_ts  - f_df[mean_columns_v].to_numpy().T
     
-          # Va_r = 1e-15* dfts['Br']/np.sqrt(mu0*dfts['np']*m_p)   ### Multuply by 1e-15 to get units of [Km/s]
+    # Calculate magnetic field magnitude and solar wind speed
+    Bmag                = np.sqrt(bx**2 + by**2 + bz**2)
+    Vsw                 = np.sqrt(vx**2 + vy**2 + vz**2)
+    
+    # Estimate Vth
+    Vth, Vth_mean, Vth_median, Vth_std             = plasma.estimate_Vth(f_df.Vth.values)
 
-    # Estimate Alfv speed
-    Va_ts = np.array([br, bt, bn]) * kinet_normal
+    # Estimate Vsw
+    Vsw, Vsw_mean, Vsw_median, Vsw_std             = plasma.estimate_Vsw(Vsw)
+
+    # Estimate Np
+    Np, Np_mean, Np_median, Np_std                 = plasma.estimate_Np(f_df.np.values)
+
+    # Estimate di
+    di, di_mean, di_median, di_std                 = plasma.estimate_di(Np)
+
+    # Estimate beta
+    beta,  temp, beta_mean, beta_median, beta_std  = plasma.estimate_beta(Bmag, Vth, Np)
+
+    # Estimate rho_ci
+    rho_ci, rho_ci_mean, rho_ci_median, rho_ci_std = plasma.estimate_rho_ci(Vth, Bmag)
+
+    # Calculate the Alfvén speed
+    alfv_speed = np.sqrt(np.sum(Va_ts**2, axis=0))
     
-    # Estimate SW speed
-    V_ts = np.array([vr, vt, vn])
-    
-    # Estimate mean values of both for interval
-    alfv_speed, sw_speed = [np.nanmean(x, axis=0) for x in (Va_ts, V_ts)]
+    # Estiamte MA
+    Ma_ts      = Vsw/alfv_speed
     
     # Estimate VB angle
-    vbang = func.angle_between_vectors(Va_ts.T,V_ts.T)
+    vbang      = func.angle_between_vectors(Va_ts.T,V_ts.T)
     
     #End its mean
     VBangle_mean, VBangle_std = np.nanmean(vbang), np.nanstd(vbang)
-    
-    #Sign of Br forrolling window
-    try:
-        signB = - np.sign(f_df['Br_mean'])
-    except:
-        signB = np.abs(- np.sign(f_df['Bx_mean']))
 
-    # Estimate fluctuations
-    if subtract_rol_mean:
-        try:
-            dva    = Va_ts  -  f_df[['Br_mean', 'Bt_mean', 'Bn_mean']].values.T * kinet_normal
-            dv     = V_ts   -  f_df[['Vr_mean', 'Vt_mean', 'Vn_mean']].values.T
-        except:
-            dva    = Va_ts  -  f_df[['Bx_mean', 'By_mean', 'Bz_mean']].values.T * kinet_normal
-            dv     = V_ts   -  f_df[['Vx_mean', 'Vy_mean', 'Vz_mean']].values.T
-    else:
-        dva    = Va_ts  -  np.nanmean(alfv_speed, axis=0)
-        dv     = V_ts   -  np.nanmean(sw_speed, axis=0)
-
-    # Estimate Zp, Zm components  
-    Zpr, Zmr = dv[0] + signB * dva[0], dv[0] - signB * dva[0]
-    Zpt, Zmt = dv[1] + signB * dva[1], dv[1] - signB * dva[1]
-    Zpn, Zmn = dv[2] + signB * dva[2], dv[2] - signB * dva[2]
-    
-    # Estimate energy in Zp, Zm
-    Z_plus_squared     = Zpr**2 + Zpt**2 + Zpn**2
-    Z_minus_squared    = Zmr**2 + Zmt**2 + Zmn**2
-    
-    # Estimate amplitude of fluctuations
-    Z_amplitude        = np.sqrt((Z_plus_squared + Z_minus_squared) / 2)
-    Z_amplitude_mean   = np.nanmedian(Z_amplitude)
-    Z_amplitude_std    = np.nanstd(Z_amplitude)
-
-
-    # Kin, mag energy
-    Ek           = dv[0]**2  + dv[1]**2  + dv[2]**2
-    Eb           = dva[0]**2 + dva[1]**2 + dva[2]**2
-    
-    
-    #Estimate normalized residual energy
-    sigma_r      = (Ek-Eb)/(Ek+Eb);                                                         sigma_r[np.abs(sigma_r) > 1e5] = np.nan;
-    sigma_c      = (Z_plus_squared - Z_minus_squared)/( Z_plus_squared + Z_minus_squared);  sigma_c[np.abs(sigma_c) > 1e5] = np.nan
-    
-    nn_df       = pd.DataFrame({'DateTime': f_df.index.values,
-                                'Zpr'     : Zpr,     'Zpt'  : Zpt,   'Zpn' : Zpn,
-                                'Zmr'     : Zmr,     'Zmt'  : Zmt,   'Zmn' : Zmn, 
-                                'va_r'    : dva[0],  'va_t' : dva[1],'va_n': dva[2],
-                                'v_r'     : dv[0],   'v_t'  : dv[1], 'v_n' : dv[2],
-                                'beta'    : beta,    'np'   : Np,    'Tp'  : temp, 'VB': vbang,
-                                'sigma_c' : sigma_c,              'sigma_r': sigma_r}).set_index('DateTime')
-    nn_df       = nn_df.mask(np.isinf(nn_df)).dropna().interpolate(method='linear')
+    # Estimate sigmas and elssaser variable fluctuations
+    signB            = calculate_signB(f_df)                         # Calculate sign of B
+    Zp, Zm           = calculate_components(dv, dva, signB)          # Calculate Zp and Zm components
+    sigma_r, sigma_c = calculate_energies_sigmas(Zp, Zm, dv, dva)    # Calculate energies and normalized residual energies
 
     
-    # Estimate mean, median,... of  normalized residual energy
-    sigma_r_mean = np.nanmean(sigma_r); sigma_r_median =np.nanmedian(sigma_r); sigma_r_std =np.nanstd(sigma_r);
-    
-    # Estimate mean, median,... of  normalized cross helicity
-    sigma_c_mean = np.nanmean(np.abs(sigma_c)); sigma_c_median = np.nanmedian(np.abs(sigma_c)); sigma_c_std = np.nanstd(np.abs(sigma_c));     sigma_c_median_no_abs  = np.nanmedian(sigma_c);     sigma_c_mean_no_abs    = np.nanmean(sigma_c);   
+    sigs_df              = pd.DataFrame({'DateTime': f_df.index.values,
+                                         'Zpr'      : Zp[0],   'Zpt'  : Zp[1],  'Zpn'    : Zp[2],
+                                         'Zmr'      : Zm[0],   'Zmt'  : Zm[1],  'Zmn'    : Zm[2], 
+                                         'va_r'     : dva[0],  'va_t' : dva[1], 'va_n'   : dva[2],
+                                         'v_r'      : dv[0],   'v_t'  : dv[1],  'v_n'    : dv[2],
+                                         'beta'     : beta,    'np'   : Np,     'Tp'     : temp,
+                                         'VB'       : vbang,   'd_i'  : di,     'Ma'     : Ma_ts,
+                                         'sigma_c'  : sigma_c,                  'sigma_r': sigma_r}).set_index('DateTime')
+    sigs_df              = sigs_df.dropna().interpolate()
 
-    #Estimate  z+, z- PSD
-    if estimate_PSDv:
-        print(dtv)
-        f_Zplus, psd_Zplus    = turb.TracePSD(nn_df['Zpr'].values, nn_df['Zpt'].values, nn_df['Zpn'].values,  dtv)
-        f_Zminus, psd_Zminus  = turb.TracePSD(nn_df['Zmr'].values, nn_df['Zmt'].values, nn_df['Zmn'].values,  dtv)
-    else:
-        f_Zplus, psd_Zplus    = None, None
-        f_Zminus, psd_Zminus  = None, None 
-
-    #Estimate  v,b PSD
-    if estimate_PSDv==0:
-        f_vv, psd_vv         = None, None
-        f_bb, psd_bb         = None, None
-    else:
-        f_vv, psd_vv         = turb.TracePSD(nn_df['v_r'].values, nn_df['v_t'].values, nn_df['v_n'].values, dtv)
-        f_bb, psd_bb         = turb.TracePSD(nn_df['va_r'].values, nn_df['va_t'].values, nn_df['va_n'].values, dtv)      
     
 
-    # Only keep indices within the range of frequencies specified
-    if estimate_PSDv:
-        sigma_c_spec = compute_sigma(psd_Zplus, psd_Zminus, f_Zplus, f_min_spec, f_max_spec)
-        sigma_r_spec = compute_sigma(psd_vv, psd_bb, f_Zplus, f_min_spec, f_max_spec)
-    else:
-    
-        sigma_c_spec    = None
-        sigma_r_spec    = None
+    #Estimate  z+, z-, v, b PSD
+    if settings['estimate_psd_v']:
+        # Define component keys for each signal
+        components = {
+            'zp': ['Zpr', 'Zpt', 'Zpn'],
+            'zm': ['Zmr', 'Zmt', 'Zmn'],
+            'vv': ['v_r', 'v_t', 'v_n'],
+            'bb': ['va_r', 'va_t', 'va_n']
+        }
+
+        # Estimate PSD for each set of components
+        results = {key: estimate_psds(sigs_df, components[key], dtb, settings) for key in components}
+
+        # Unpack results into individual variables
+        f_zp, psd_zp, psd_zp_R, psd_zp_T, psd_zp_N = results['zp']
+        f_zm, psd_zm, psd_zm_R, psd_zm_T, psd_zm_N = results['zm']
+        f_vv, psd_vv, psd_vv_R, psd_vv_T, psd_vv_N = results['vv']
+        f_bb, psd_bb, psd_bb_R, psd_bb_T, psd_bb_N = results['bb']
         
-    #  Estimate normalized cross helicity and normalized residual energy spectraly
-    sigma_c_spec = compute_sigma(psd_Zplus, psd_Zminus, f_Zplus, f_min_spec, f_max_spec) if estimate_PSDv else None
-    sigma_r_spec = compute_sigma(psd_vv, psd_bb, f_Zplus, f_min_spec, f_max_spec) if estimate_PSDv else None
+    else:
+        psd_zp_R, psd_zp_T, psd_zp_N = None, None, None
+        psd_zm_R, psd_zm_T, psd_zm_N = None, None, None
+        psd_bb_R, psd_bb_T, psd_bb_N = None, None, None
+        psd_vv_R, psd_vv_T, psd_vv_N = None, None, None
+        f_zp, psd_zp                 = None, None
+        f_zm, psd_zm                 = None, None 
+        f_vv, psd_vv                 = None, None
+        f_bb, psd_bb                 = None, None
+
+
+    # Also keep a dict containing psd_vv, psd_bb, psd_zp, psd_zm
+    dict_psd = {
+                "f_zpm"     : f_zp,
+                "f_vb"      : f_vv,
+        
+                'psd_v'     : psd_vv,
+                "psd_v_R"   : psd_vv_R,
+                "psd_v_T"   : psd_vv_T,
+                "psd_v_N"   : psd_vv_N,
+        
+                "psd_b"     : psd_bb,
+                "psd_b_R"   : psd_bb_R,
+                "psd_b_T"   : psd_bb_T,
+                "psd_b_N"   : psd_bb_N,
+        
+
+                "psd_zp"    : psd_zp,
+                "psd_zp_R"  : psd_zp_R,
+                "psd_zp_T"  : psd_zp_T,
+                "psd_zp_N"  : psd_zp_N,
+        
+                "psd_zm"    : psd_zm,
+                "psd_zm_R"  : psd_zm_R,
+                "psd_zm_T"  : psd_zm_T,
+                "psd_zm_N"  : psd_zm_N,
+            } if settings['estimate_psd_v'] else {}
     
-    # Also keep a dict containing psd_vv, psd_bb, psd_Zplus, psd_Zminus
-    dict_psd = {"f_vb": f_vv, 'psd_v': psd_vv, "psd_b": psd_bb, "f_zpm":f_Zplus, "psd_zp":psd_Zplus , "psd_zm":psd_Zminus} if estimate_PSDv else {}
-
-  
-    return  dict_psd, nn_df, sw_speed, alfv_speed,  f_Zplus, psd_Zplus, f_Zminus, psd_Zminus, sigma_r_spec, sigma_c_spec, beta_mean, beta_std, Z_amplitude_mean, Z_amplitude_std, sigma_r_mean, sigma_r_median, sigma_r_std, sigma_c_median, sigma_c_mean, sigma_c_median_no_abs, sigma_c_mean_no_abs, sigma_c_std, Vth_mean, Vth_std , Vsw_mean, Vsw_std, Np_mean, Np_std, di_mean, di_std, rho_ci_mean, rho_ci_std, VBangle_mean, VBangle_std
-
-
-
-
-
-def calc_mag_diagnostics(diagnostics, gap_time_threshold, dist, estimate_SPD, mag_data, mag_resolution):
-
-
-    """ Make distance dataframe to begin at the same time as magnetic field timeseries """ 
-    
-    r_psp            = np.nanmean(func.use_dates_return_elements_of_df_inbetween(mag_data.index[0], mag_data.index[-1], dist['Dist_au']))
-
-    """ Interpolate gaps"""  
-    mag_interpolated = mag_data.interpolate(method = 'linear').dropna()
-
-    try:
-        if estimate_SPD:
-            """Estimate PSD of  magnetic field"""
-            f_B, psd_B                         = turb.TracePSD(
-                                                                mag_interpolated.values.T[0],
-                                                                mag_interpolated.values.T[1],
-                                                                mag_interpolated.values.T[2],
-                                                                True,
-                                                                diagnostics["resol"]*1e-3
-            )
-
-            """Smooth PSD of  magnetic field"""    
-            f_B_mid, f_B_mean, psd_B_smooth    =  func.smoothing_function(
-                                                                           f_B, 
-                                                                           psd_B,
-                                                                           window=2,
-                                                                           pad = 1
-            )
-        else:
-            f_B, psd_B                         = None, None  
-            f_B_mid, f_B_mean, psd_B_smooth    = None, None, None 
-
-    except:
-        traceback.print_exc()  
-
-
-    general_dict = {
-            "Start_Time"           :  mag_data.index[0],
-            "End_Time"             :  mag_data.index[-1],  
-            "d"                    :  r_psp,
-            "Fraction_missing_MAG" :  diagnostics["Frac_miss"],
-            "Fract_large_gaps"     :  diagnostics["Large_gaps"],
-            "Resolution_MAG"       :  diagnostics["resol"] 
-                   }
 
     mag_dict = {
-                "B_resampled"      :  mag_interpolated,
-                "PSD_f_orig"       :  psd_B,
-                "f_B_orig"         :  f_B,
-                "PSD_f_smoothed"   :  psd_B_smooth,
-                "f_B_mid"          :  f_B_mid,
-                "f_B_mean"         :  f_B_mean,
-                "Fraction_missing" :  diagnostics["Frac_miss"],
-                "resolution"       :  diagnostics["resol"]
+                        "B_resampled"          :  mag_resampled,
+                        "PSD_f_orig"           :  psd_B,
+                        "PSD_f_orig_R"         :  psd_B_R,
+                        "PSD_f_orig_T"         :  psd_B_T,
+                        "PSD_f_orig_N"         :  psd_B_N,
+                        "f_B_orig"             :  f_B,
+                        "PSD_f_smoothed"       :  psd_B_smooth,
+                        "f_B_mid"              :  f_B_mid,
+                        "f_B_mean"             :  f_B_mean,
+                        "Fraction_missing"     :  diagnostics['Mag']["Frac_miss"],
+                        "resolution"           :  diagnostics['Mag']["resol"]
+        
+
+    }
+    
+    part_dict =  {
+
+                    'dict_psd'          : dict_psd,
+        
+                    'median_sw_speed'   : Vsw_mean,
+                    'mean_sw_speed'     : Vsw_median,
+                    'std_sw_speed'      : Vsw_std,
+        
+                    'median_alfv_speed' : np.nanmedian(alfv_speed),
+                    'mean_alfv_speed'   : np.nanmean(alfv_speed),
+                    'std_alfv_speed'    : np.nanstd(alfv_speed),
+        
+                    'beta_mean'         : beta_mean,
+                    'beta_std'          : beta_std,
+        
+                    'sigma_r_mean'      : np.nanmean(sigma_r),
+                    'sigma_r_median'    : np.nanmedian(sigma_r),
+                    'sigma_r_std'       : np.nanstd(sigma_r),
+        
+                    'sigma_c_median'    : np.nanmedian(np.abs(sigma_c)),
+                    'sigma_c_mean'      : np.nanmean(np.abs(sigma_c)),
+                    'sigma_c_std'       : np.nanstd(np.abs(sigma_c)),
+        
+                    'Vth_mean'          : Vth_mean,
+                    'Vth_std'           : Vth_std,
+        
+                    'Vsw_mean'          : Vsw_mean,
+                    'Vsw_std'           : Vsw_std,
+                    'Np_mean'           : Np_mean,
+                    'Np_std'            : Np_std,
+                    'di_mean'           : di_mean,
+                    'di_std'            : di_std,
+                    'rho_ci_mean'       : rho_ci_mean,
+                    'rho_ci_std'        : rho_ci_std,
+                    'VBangle_mean'      : VBangle_mean,
+                    'VBangle_std'       : VBangle_std
                 }
+
+
+  
+    return mag_dict, part_dict, sigs_df
+
+
+def general_dict_func(diagnostics,
+                 mag_resampled,
+                 df_par,
+                 dist,
+                 ):
     
-    return general_dict, mag_dict
-
-
-
-def calc_particle_diagnostics(dfpar, dfmag, misc_par, estimate_PSD_V, subtract_rol_mean, rolling_window,  f_min_spec, f_max_spec, in_rtn, smoothed = True):
-
-    """Define Span velocity field components"""
-    dfpar_interp   = dfpar.interpolate(method='linear').dropna()
+    
+    """ Make distance dataframe to begin at the same time as magnetic field timeseries """ 
     try:
-        cols           = ['Vr', 'Vt', 'Vn'] 
-        Vx, Vy, Vz     = dfpar_interp[cols].values.T
+        r_psp                = np.nanmean(func.use_dates_return_elements_of_df_inbetween(mag_resampled.index[0], mag_resampled.index[-1], dist['Dist_au']))
     except:
-        cols           =['Vx', 'Vy', 'Vz'] 
-        Vx, Vy, Vz     = dfpar_interp[cols].values.T
-        in_rtn         = 0
-
-    """Estimate PSD of  Velocity field"""
-    f_V, psd_V     = (turb.TracePSD(Vx, Vy, Vz, True , misc_par["resol"]*1e-3) if estimate_PSD_V else (None, None))
-
-    """Estimate derived plasma quantities"""
-    part_quants = estimate_quants_particle_data(estimate_PSD_V, rolling_window, f_min_spec, f_max_spec,  in_rtn,  dfpar_interp, dfmag, subtract_rol_mean, smoothed)
-    dict_psd, nn_df, sw_speed, alfv_speed, f_Zplus, psd_Zplus, f_Zminus, psd_Zminus, sigma_r_spec, sigma_c_spec, beta_mean, beta_std, Z_amplitude_mean, Z_amplitude_std, sigma_r_mean, sigma_r_median, sigma_r_std, sigma_c_median, sigma_c_mean, sigma_c_median_no_abs, sigma_c_mean_no_abs, sigma_c_std, Vth_mean, Vth_std , Vsw_mean, Vsw_std, Np_mean, Np_std, di_mean, di_std, rho_ci_mean, rho_ci_std, VBangle_mean, VBangle_std = part_quants  
-    
-
-    partdict = { 
-                 "V_resampled"           : dfpar_interp.interpolate(),        # dataframe containing all particle data
-                 "dict_psd"              : dict_psd,            # dictionary containing psd's of Zp, Zm, V, B
-                 "f_V"                   : f_V,             # array containing spacecraft frequency for power spectrum
-                 "psd_V"                 : psd_V,           # power spectrum  V field
-                 "Va"                    : alfv_speed,          # alfven speed 
-                 "Sw_speed"              : sw_speed,            # solar wind speed
-                 "f_Zplus"               : f_Zplus,             # array containing spacecraft frequency for z+ power spectrum
-                 "PSD_Zplus"             : psd_Zplus,           # power spectrum of z+
-                 "f_Zminus"              : f_Zminus,            #  array containing spacecraft frequency for z- power spectrum
-                 "PSD_Zminus"            : psd_Zminus,          # power spectrum of z-
-                 'di_mean'               : di_mean,         # mean value of ion inertial lenght for the interval
-                 'di_std'                : di_std,          # standard deviation of -//-
-                 'rho_ci_mean'           : rho_ci_mean,     # mean ion gyroradius
-                 'rho_ci_std'            : rho_ci_std,      # std ion gyroradius
-                 'sigma_c_mean'          : sigma_c_mean,    # normalized cross-helicity mean 
-                 'sigma_c_std'           : sigma_c_std,     # std cross helicity
-                 'sigma_c_median'        : sigma_c_median, 
-                 'sigma_c_mean_no_abs'   : sigma_c_mean_no_abs,
-                 'sigma_c_median_no_abs' : sigma_c_median_no_abs, 
-                 'sigma_r_median'        : sigma_r_median,  # normalized residual energy
-                 'sigma_c_spec'          : sigma_c_spec,
-                 'sigma_r_spec'          : sigma_r_spec,
-                 'sigma_r_mean'          : sigma_r_mean,
-                 'sigma_r_std'           : sigma_r_std,
-                 'Vsw_mean'              : Vsw_mean,         # bulk solar wind speed
-                 'Vsw_std'               : Vsw_std,
-                 'VBangle_mean'          : VBangle_mean,     # angle between backround magnetic field and solar wind flow
-                 'VBangle_std'           : VBangle_std,
-                 'beta_mean'             : beta_mean,        # plasma b parameter
-                 'beta_std'              : beta_std,
-                 'Vth_mean'              : Vth_mean,         # thermal velocity of ions
-                 'Vth_std'               : Vth_std,
-                 'Np_mean'               : Np_mean,          # number density of ions
-                 'Np_std'                : Np_std,
-                 'Z_mean'                : Z_amplitude_mean, # amplitude of fluctuations
-                 'Z_std'                 : Z_amplitude_std,
-                 "Fraction_missing"      : misc_par["Frac_miss"], # fraction of timeseries Nan
-                 "Fract_large_gaps"      : misc_par["Large_gaps"],
-                 "resolution"            : misc_par["resol"]        # resolution of timeseries
-              }
-                                                    
-    return partdict, nn_df
-
-def set_up_main_loop(final_path, only_one_interval, t0, t1, step, duration):
-
-    # Define lists with dates
-    tstarts = []
-    tends   = []
-    if only_one_interval:
-        tstarts.append(t0)
-        tends.append(t1)
-        
-    else:
-        i1 = 0
-        while True:
-            tstart  = t0+i1*pd.Timedelta(step)
-            tend    = tstart + pd.Timedelta(duration)
-            if tend > t1:
-                break
-            tstarts.append(tstart)
-            tends.append(tend)
-            i1 += 1
-
-
-    path0 = Path(final_path)
-    tfmt  = "%Y-%m-%d_%H-%M-%S"
-    return tstarts, tends, tfmt, path0 
-
-def final_func( 
-                start_time         , 
-                end_time           , 
-                addit_time_around  ,
-                settings           , 
-                vars_2_downnload   ,
-                cdf_lib_path       ,
-                credentials        ,
-                gap_time_threshold ,
-                estimate_PSD_V     ,
-                subtract_rol_mean  ,
-                rolling_window     ,
-                f_min_spec         ,
-                f_max_spec         ,  
-                estimate_PSD       , 
-                sc                 , 
-                high_resol_data    ,
-                in_RTN             ,
-                three_sec_resol    = True
-              ):
-    # Parker Solar Probe
-    if sc==0:
-        
-        dfmag, dfpar, dfdis, big_gaps, misc          = LoadTimeSeriesPSP(
-                                                                          start_time, 
-                                                                          end_time, 
-                                                                          settings, 
-                                                                          vars_2_downnload,
-                                                                          cdf_lib_path,
-                                                                          credentials        = credentials,
-                                                                          download_SCAM      = high_resol_data,
-                                                                          gap_time_threshold = gap_time_threshold,
-                                                                          time_amount        = addit_time_around,
-                                                                          time_unit          = 'h'
-        )
-
-        
-        
-    # Solar Orbiter
-    elif sc ==1:
- 
-        dfmag, dfpar, dfdis, big_gaps, misc           =  LoadTimeSeriesSOLO(
-                                                                          start_time, 
-                                                                          end_time, 
-                                                                          settings, 
-                                                                          vars_2_downnload,
-                                                                          cdf_lib_path,
-                                                                          credentials        = credentials,
-                                                                          download_SCAM      = high_resol_data,
-                                                                          gap_time_threshold = gap_time_threshold,
-                                                                          time_amount        = addit_time_around,
-                                                                          time_unit          = 'h'
-        )
-    elif sc ==3:
-        # print('HELIOS')
-        final_dataframe = LoadData.LoadTimeSeriesWrapper(
-        sc, start_time, end_time,
-        settings = {}, credentials = None)
-       
-        final_dataframe =  final_dataframe[0]
-        dfmag           =  final_df[['Br','Bt','Bn','Bx','By','Bz']]
-        dfpar           =  final_df[['Vr','Vt','Vn','np','Tp','Vth']]
-        dist_df         =  final_df[['Dist_au','lon','lat']]
-        misc            =  final_dataframe[1]
-        
-    elif sc ==5:
-
         try:
-            dfmag, dfpar, dfdis, big_gaps, misc =  LoadTimeSeriesWIND(start_time, 
-                                                              end_time, 
-                                                              settings, 
-                                                              three_sec_resol= three_sec_resol
-                                                             ) 
+            r_psp            = np.nanmean(func.use_dates_return_elements_of_df_inbetween(mag_resampled.index[0], mag_resampled.index[-1], df_par['Dist_au']))
         except:
             traceback.print_exc()
 
-    if dfpar is not None:
-        if len(dfpar.dropna()) > 0 :
-            try:
-                
-                """ Make sure both correspond to the same interval """ 
-                dfpar                                             = func.use_dates_return_elements_of_df_inbetween(dfmag.index[0], dfmag.index[-1], dfpar) 
-
-                try:
-                    general_dict, mag_dict                        = calc_mag_diagnostics(
-                                                                                          misc['Mag'],
-                                                                                          gap_time_threshold,
-                                                                                          dfdis,
-                                                                                          estimate_PSD,
-                                                                                          dfmag,
-                                                                                          settings['MAG_resol'])
-  
-                except:
-                    traceback.print_exc()   
-
-                """Now calculates quantities related to particle timeseries"""
-          
-                res_particles, sig_c_sig_r_timeseries              = calc_particle_diagnostics(
-                                                                                                dfpar, 
-                                                                                                dfmag,
-                                                                                                misc['Par'],
-                                                                                                estimate_PSD_V,
-                                                                                                subtract_rol_mean,
-                                                                                                rolling_window,
-                                                                                                f_min_spec,
-                                                                                                f_max_spec,
-                                                                                                in_RTN,
-                                                                                                smoothed = True
-                 )
-
-                # Now save everything in final_dict as a dictionary
-                final_dict = { 
-                               "Mag"          : mag_dict,
-                               "Par"          : res_particles
-                              }
-                
-                # also save a general dict with basic info (add what is missing from particletimeseries)
-                general_dict["Fraction_missing_part"] = res_particles["Fraction_missing"]
-                general_dict["Resolution_part"]       = res_particles["resolution"]
-
-                flag_good = 1
-
-            except:
-                traceback.print_exc()
-
-                flag_good = 0
-                print('No MAG data!')
-                big_gaps, final_dict, general_dict, sig_c_sig_r_timeseries = None, None, None, None
-        else:
-            final_dict = None
-            print('No particle data!')
-
-            flag_good = 0
-            big_gaps, final_dict, general_dict, sig_c_sig_r_timeseries = None, None, None, None
-    else:
-        final_dict = None
-        traceback.print_exc()
-        print('No particle data!')
-
-        flag_good = 0
-        big_gaps, final_dict, general_dict, sig_c_sig_r_timeseries = None, None, None, None
-
-    return big_gaps, flag_good, final_dict, general_dict, sig_c_sig_r_timeseries,  dfdis
-    
-
-
-
-
-
-def create_dfs_SCaM( dfmag               ,
-                     dfpar               ,
-                     dist_df             , 
-                     settings
-                   ):
-    
-    if dfpar is not None:
-        if len(dfpar.dropna()) > 0 :
-            
-            diagnostics_PAR  = func.resample_timeseries_estimate_gaps(dfpar, settings['part_resol'], large_gaps=10)
-            diagnostics_MAG  = func.resample_timeseries_estimate_gaps(dfmag, settings['Mag_resol'], large_gaps=10)
-
-            
-            keys_to_keep           = ['Frac_miss', 'Large_gaps', 'Tot_gaps', 'resol']
-            misc = {
-                    'Par'              : func.filter_dict(diagnostics_PAR,  keys_to_keep),
-                    'Mag'              : func.filter_dict(diagnostics_MAG,  keys_to_keep)
-            }
-
-            try:
-                
-                """ Make sure both correspond to the same interval """ 
-                dfpar                                   = func.use_dates_return_elements_of_df_inbetween(dfmag.index[0], dfmag.index[-1], dfpar) 
-
-
-                general_dict, mag_dict                  = calc_mag_diagnostics(
-                                                                                          misc['Mag'],
-                                                                                          settings['gap_time_thresh'],
-                                                                                          dist_df,
-                                                                                          settings['est_PSD'],
-                                                                                          dfmag,
-                                                                                          settings['Mag_resol'])
-    
-
-                """Now calculates quantities related to particle timeseries"""
-                res_particles, sig_c_sig_r_timeseries     = calc_particle_diagnostics(
-                                                                                                dfpar, 
-                                                                                                dfmag,
-                                                                                                misc['Par'],
-                                                                                                settings['est_PSD_V'],
-                                                                                                settings['sub_rol_mean'],
-                                                                                                settings['roll_window'],
-                                                                                                settings['f_min_spec'],
-                                                                                                settings['f_max_spec'],
-                                                                                                settings['in_RTN'],
-                                                                                                smoothed = True
-                 )
-
-                # Now save everything in final_dict as a dictionary
-                final_dict = { 
-                               "Mag"          : mag_dict,
-                               "Par"          : res_particles
-                              }
-                
-                # also save a general dict with basic info (add what is missing from particletimeseries)
-                general_dict["Fraction_missing_part"] = res_particles["Fraction_missing"]
-                general_dict["Resolution_part"]       = res_particles["resolution"]
-
-                flag_good = 1
-
-            except:
-                traceback.print_exc()
-
-                flag_good = 0
-                print('No MAG data!')
-                big_gaps, final_dict, general_dict, sig_c_sig_r_timeseries = None, None, None, None
-        else:
-            final_dict = None
-            print('No particle data!')
-
-            flag_good = 0
-            big_gaps, final_dict, general_dict, sig_c_sig_r_timeseries = None, None, None, None
-    else:
-        final_dict = None
-        traceback.print_exc()
-        print('No particle data!')
-
-        flag_good = 0
-        big_gaps, final_dict, general_dict, sig_c_sig_r_timeseries = None, None, None, None
-
-    return  flag_good, final_dict, general_dict, sig_c_sig_r_timeseries,  dist_df
-         
-
-
-
-def prepare_particle_data_for_visualization( df_part, mag_resampled, rolling_window,  subtract_rol_mean=True, smoothed = True, in_rtn=True):
-
-    # Particle data remove nan values
-    df_part = df_part.dropna()
-    
-    # Reindex magnetic field data to particle data index
-    dtv                 = (df_part.dropna().index.to_series().diff()/np.timedelta64(1, 's'))[1]
-    dtb                 = (mag_resampled.dropna().index.to_series().diff()/np.timedelta64(1, 's'))[1]
-    
-    # We need plasma timeseries cadence
-    freq_final          = str(int(dtv*1e3))+'ms'
-
-
-    # Combine magnetic field and particle data, resampled to final frequency
-    f_df = mag_resampled.resample(freq_final).mean().join(
-         df_part.resample(freq_final).mean().interpolate()
-    )
-
-    # Calculate magnetic field magnitude
-    Bx, By, Bz = f_df.values.T[:3]
-    Bmag       = np.sqrt(Bx**2 + By**2 + Bz**2)
-
-    if subtract_rol_mean:
-        columns = [['Br', 'Bt', 'Bn'], ['Vr', 'Vt', 'Vn', 'np']]
-        for c in columns:
-            f_df[[f"{col}_mean" for col in c]] = f_df[c].rolling(rolling_window, center=True).mean().interpolate()
-
-    #Estimate median solar wind speed   
-    Vth                     = f_df.Vth.values
-    Vth                     = Vth[~np.isnan(Vth)]
-    Vth[Vth < 0]            = np.nan
-    Vth_mean                = np.nanmedian(Vth)
-    Vth_std                 = np.nanstd(Vth);
-    
-    #Estimate median solar wind speed  
- 
-    Vx                       = f_df["Vr"].values if in_rtn else f_df["Vx"].values
-    Vy                       = f_df["Vt"].values if in_rtn else f_df["Vy"].values
-    Vz                       = f_df["Vn"].values if in_rtn else f_df["Vz"].values
-    Vsw                      = np.sqrt(Vx**2 + Vy**2 + Vz**2)
-    Vsw                      = Vsw[~np.isnan(Vsw)]
-    Vsw_mean                 = np.nanmedian(Vsw)
-    Vsw_std                  = np.nanstd(Vsw)
-    Vsw[(np.abs(Vsw) > 1e5)] = np.nan
-
-
-    # estimate mean number density
-    Np                       = f_df['np'].values 
-    Np                       = Np[~np.isnan(Np)]
-    Np_mean                  = np.nanmedian(Np)
-    Np_std                   = np.nanstd(Np);
+    if not 'qtn_flag' in diagnostics:
+        diagnostics['qtn_flag'] = None
         
-    # Estimate Ion inertial length di in [Km]
-    di                       = 228/np.sqrt(Np)
-    di[di< 1e-3]             = np.nan
-    di_mean                  = np.nanmedian(di) 
-    di_std                   = np.nanstd(di);
-    
-    # Estimate plasma Beta
-    B_mag       = Bmag * nT2T                              # |B| units:      [T]
-    temp        = 1./2 * m_p * (Vth*km2m)**2               # in [J] = [kg] * [m]^2 * [s]^-2
-    dens        = Np/(cm2m**3)                             # number density: [m^-3] 
-    beta        = (dens*temp)/((B_mag**2)/(2*mu_0))        # plasma beta 
-    beta[beta < 0] = np.nan
-    beta[np.abs(np.log10(beta))>4] = np.nan # delete some weird data
-    beta_mean   = np.nanmedian(beta); beta_std   = np.nanstd(beta);
-    
-    
-    # ion gyro radius
-    rho_ci = 10.43968491 * Vth/B_mag #in [km]
-    rho_ci[rho_ci < 0] = np.nan
-    rho_ci[np.log10(rho_ci) < -3] = np.nan
-    rho_ci_mean =np.nanmedian(rho_ci); rho_ci_std =np.nanstd(rho_ci);
- 
-    ### Define b and v ###
-    if in_rtn:
-        columns_v = ["Vr", "Vt", "Vn"] if "Vr" in f_df.columns else ["Vx", "Vy", "Vz"]
-        columns_b = ["Br", "Bt", "Bn"] if "Br" in f_df.columns else ["Bx", "By", "Bz"]
-    else:
-        columns_v = ["Vx", "Vy", "Vz"]
-        columns_b = ["Bx", "By", "Bz"]
-
-    # Assign values
-    vr, vt, vn = f_df[columns_v].values.T
-    br, bt, bn = f_df[columns_b].values.T
-
-
-    # Const to normalize mag field in vel units
-    kinet_normal = 1e-15 / np.sqrt(mu0 * f_df['np_mean'].values * m_p)
-
-    # Estimate Alfv speed
-    Va_ts = np.array([br, bt, bn]) * kinet_normal
-    
-    # Estimate SW speed
-    V_ts = np.array([vr, vt, vn])
-    
-    # Estimate mean values of both for interval
-    alfv_speed, sw_speed = [np.nanmean(x, axis=0) for x in (Va_ts, V_ts)]
-    
-    # Estimate VB angle
-    vbang = func.angle_between_vectors(Va_ts.T,V_ts.T)
-    
-    #End its mean
-    VBangle_mean, VBangle_std = np.nanmean(vbang ), np.nanstd(vbang)
-    
-    #Sign of Br forrolling window
-    signB = - np.sign(f_df['Br_mean'])
-
-    # Estimate fluctuations
-    if subtract_rol_mean:
-        dva    = Va_ts  -  f_df[['Br_mean', 'Bt_mean', 'Bn_mean']].values.T *kinet_normal
-        dv     = V_ts   -  f_df[['Vr_mean', 'Vt_mean', 'Vn_mean']].values.T
-    else:
-        dva    = Va_ts  -  np.nanmean(alfv_speed, axis=0)
-        dv     = V_ts   -  np.nanmean(sw_speed, axis=0)
-
-    # Estimate Zp, Zm components  
-    Zpr, Zmr = dv[0] + signB * dva[0], dv[0] - signB * dva[0]
-    Zpt, Zmt = dv[1] + signB * dva[1], dv[1] - signB * dva[1]
-    Zpn, Zmn = dv[2] + signB * dva[2], dv[2] - signB * dva[2]
-    
-    # Estimate energy in Zp, Zm
-    Z_plus_squared     = Zpr**2 + Zpt**2 + Zpn**2
-    Z_minus_squared    = Zmr**2 + Zmt**2 + Zmn**2
-    
-    # Estimate amplitude of fluctuations
-    Z_amplitude        = np.sqrt((Z_plus_squared + Z_minus_squared) / 2)
-    Z_amplitude_mean   = np.nanmedian(Z_amplitude)
-    Z_amplitude_std    = np.nanstd(Z_amplitude)
-
-
-    # Kin, mag energy
-    Ek           =  dv[0]**2  + dv[1]**2  + dv[2]**2
-    Eb           =  dva[0]**2 + dva[1]**2 + dva[2]**2
-    
-    
-    #Estimate normalized residual energy
-    sigma_r      = (Ek-Eb)/(Ek+Eb);                                                         sigma_r[np.abs(sigma_r) > 1e5] = np.nan;
-    sigma_c      = (Z_plus_squared - Z_minus_squared)/( Z_plus_squared + Z_minus_squared);  sigma_c[np.abs(sigma_c) > 1e5] = np.nan
-
-
-    #Save in DF format to estimate spectraly
-    nn_df       = pd.DataFrame({'DateTime': f_df.index.values,
-                                'Zpr'     : Zpr,     'Zpt'  : Zpt,   'Zpn' : Zpn,
-                                'Zmr'     : Zmr,     'Zmt'  : Zmt,   'Zmn' : Zmn, 
-                                'va_r'    : dva[0],  'va_t' : dva[1],'va_n': dva[2],
-                                'v_r'     : dv[0],   'v_t'  : dv[1], 'v_n' : dv[2],
-                                'beta'    : beta,    'np'   : Np,    'Tp'  : temp, 'VB': vbang,
-                                'sigma_c' : sigma_c,              'sigma_r': sigma_r}).set_index('DateTime')
-    nn_df       = nn_df.mask(np.isinf(nn_df)).interpolate(method='linear').dropna()
+    if not 'part_flag' in diagnostics:
+        diagnostics['part_flag'] = None
+        
+    general_dict = {
+                        "Start_Time"           :  mag_resampled.index[0],
+                        "End_Time"             :  mag_resampled.index[-1],  
+                        "d"                    :  r_psp,
+                        "Fraction_missing_MAG" :  diagnostics['Mag']["Frac_miss"],
+                        "Fract_large_gaps"     :  diagnostics['Mag']["Large_gaps"],
+                        "Resolution_MAG"       :  diagnostics['Mag']["resol"],
+                        'part_flag'            :  diagnostics['part_flag'],
+                        'qtn_flag'             :  diagnostics['qtn_flag']
+    }
 
     
-    return   nn_df
+    return    general_dict 
+
+
+

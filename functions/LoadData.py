@@ -144,7 +144,7 @@ def LoadTimeSeriesHelios1(
     verbose = settings['verbose']
 
     if verbose:
-        print("Loading Helios-1 data from CDAWEB...")
+        print("Loading Helios-A data from CDAWEB...")
 
     vars = ['R_Helio','ESS_Ang','clong','clat','HGIlong','B_R','B_T','B_N','Vp_R','Vp_T','Vp_N','crot','Np','Vp','Tp','V_Azimuth','V_Elev','B_x','B_y','B_z','stdev_B_x','stdev_B_y','stdev_B_z','N_a','V_a','T_a','Np2','Vp2']
     time = [start_time.to_pydatetime( ).replace(tzinfo=pytz.UTC), end_time.to_pydatetime( ).replace(tzinfo=pytz.UTC)]
@@ -198,7 +198,7 @@ def LoadTimeSeriesHelios2(
     verbose = settings['verbose']
 
     if verbose:
-        print("Loading Helios-2 data from CDAWEB...")
+        print("Loading Helios-B data from CDAWEB...")
 
     vars = ['R_Helio','ESS_Ang','clong','clat','HGIlong','B_R','B_T','B_N','Vp_R','Vp_T','Vp_N','crot','Np','Vp','Tp','V_Azimuth','V_Elev','B_x','B_y','B_z','stdev_B_x','stdev_B_y','stdev_B_z','N_a','V_a','T_a','Np2','Vp2']
     time = [start_time.to_pydatetime( ).replace(tzinfo=pytz.UTC), end_time.to_pydatetime( ).replace(tzinfo=pytz.UTC)]
