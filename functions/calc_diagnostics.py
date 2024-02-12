@@ -408,10 +408,16 @@ def calculate_diagnostics(
 
     
     # Estimate the Power Spectral Density (PSD) of the magnetic field and optionally smooth it
-    mag_dict = estimate_magnetic_field_psd(df_mag, mag_resampled,  dtb, settings, diagnostics)
+    mag_dict = estimate_magnetic_field_psd(df_mag,
+                                           mag_resampled,
+                                           dtb,
+                                           settings,
+                                           diagnostics)
 
     # Also keep a dict containing psd_vv, psd_bb, psd_zp, psd_zm
-    dict_psd, _ = estimate_psd_dict(settings, sigs_df, dtb)
+    dict_psd, _ = estimate_psd_dict(settings,
+                                    sigs_df,
+                                    func.find_cadence(sigs_df))
 
     del sigs_df['Zpr'], sigs_df['Zpt'], sigs_df['Zpn']
     del sigs_df['Zmr'], sigs_df['Zmt'], sigs_df['Zmn']
