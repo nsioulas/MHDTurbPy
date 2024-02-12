@@ -1,0 +1,1 @@
+NumbaQuadpack @ git+https://github.com/Nicholaswogan/NumbaQuadpack.git@9fa67a4a952860042177a3dba61e7102799671b3

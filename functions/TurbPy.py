@@ -1,8 +1,8 @@
 ###########################################################################
 #                                                                         #
-#    Copyright 2024 Nikos Sioulas                                    #
+#    Copyright 2024 Nikos Sioulas                                         #
 #    UCLA                                                                 #
-#    GR A1 435, Station 2, CH-1015 Lausanne, Switzerland                  #
+#                                                                         #
 #    nsioulas@g.uca.edu                                                   #
 #                                                                         #
 #    This file is part of MHDTurbPy toolbox.                              #
@@ -708,7 +708,9 @@ def TracePSD(x,
              z,
              dt,
              remove_mean       = False,
-             return_components = False):
+             return_components = False,
+             return_mod        = False,
+            ):
     """ 
     Estimate Fourier Power Spectral Density (PSD).
 
@@ -722,6 +724,10 @@ def TracePSD(x,
             freqs (np.ndarray): Array of frequencies.
             B_pow (np.ndarray): Power spectral density estimates.
     """
+    
+    freqs, p_Trace, p_X, p_Y, p_Z, p_mod = (None,) * 6
+    
+    
     if not isinstance(x, np.ndarray):
         x = x.values
         y = y.values
@@ -733,9 +739,16 @@ def TracePSD(x,
         z = z - np.nanmean(z)
 
     N      = len(x)
+    
+    if return_mod:
+        mod     = np.sqrt(x**2 + y**2 + z**2)
+        p_Mod   = 2 * (np.abs(np.fft.rfft(mod)) ** 2)/ N * dt
+
     xf     = np.fft.rfft(x)
     yf     = np.fft.rfft(y)
     zf     = np.fft.rfft(z)
+    
+    
 
     p_X     = 2 * (np.abs(xf) ** 2)/ N * dt
     p_Y     = 2 * (np.abs(yf) ** 2)/ N * dt
@@ -747,11 +760,12 @@ def TracePSD(x,
     freqs    = freqs[freqs > 0]
     idx      = np.argsort(freqs)
 
-    if return_components:
-        return freqs[idx], p_Trace[idx], p_X[idx], p_Y[idx], p_Z[idx]
-              
+    if return_mod:
+        return freqs[idx], p_Trace[idx], p_X[idx], p_Y[idx], p_Z[idx], p_Mod[idx]
     else:
-        return freqs[idx], p_Trace[idx], None, None, None
+        return freqs[idx], p_Trace[idx], p_X[idx], p_Y[idx], p_Z[idx], None        
+              
+
 
 
 
@@ -1672,6 +1686,7 @@ def estimate_PVI_single_iteration(kk,
     else:
         tau = round((hmany[kk] * di) / (Vsw * lag))
 
+        print(tau)
         if tau < 1:
             print('The value of hmany you chose is too low. You will have to use higher resol mag data!')
             while tau < 1:

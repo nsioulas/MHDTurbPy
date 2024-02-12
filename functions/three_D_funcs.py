@@ -255,9 +255,6 @@ def local_structure_function(
         dzp_perp = du_perp + signBx[:, None] * dva_perp
         dzm_perp = du_perp - signBx[:, None] * dva_perp
 
-            
-
-
         if turb_amp_analysis:
             
             keep_turb_amp = {

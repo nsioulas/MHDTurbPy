@@ -36,7 +36,8 @@ def download_file(url=None,
                   password=None,
                   verify=False,
                   session=None,
-                  basic_auth=False):
+                  basic_auth=False
+                  ):
     """
     Download a file and return its local path; this function is primarily meant to be called by the download function
     
@@ -92,7 +93,7 @@ def download_file(url=None,
 
     # the file hasn't changed
     if fsrc.status_code == 304:
-        logging.info('File is current: ' + filename)
+        #logging.info('File is current: ' + filename)
         fsrc.close()
         return filename
 
@@ -109,7 +110,8 @@ def download_file(url=None,
         return None
 
     if fsrc.status_code == 200:
-        logging.info('Downloading ' + url + ' to ' + filename)
+        print('ok')
+        #logging.info('Downloading ' + url + ' to ' + filename)
     else:
         logging.error(fsrc.reason)
         fsrc.close()
@@ -131,7 +133,7 @@ def download_file(url=None,
     ftmp.close()
     os.unlink(ftmp.name)  # delete the temporary file
     
-    logging.info('Download complete: ' + filename)
+    #logging.info('Download complete: ' + filename)
 
     return filename
 
@@ -257,27 +259,24 @@ def download(remote_path='',
 
         short_path = local_file[:1+local_file.rfind("/")]
 
-        if not no_download:
+        if no_download is False:
             # expand the wildcards in the url
             if '?' in url or '*' in url or regex and no_download is False:
                 if index_table.get(url_base) is not None:
                     links = index_table[url_base]
                 else:
-                    logging.info('Downloading remote index: ' + url_base)
+                    #logging.info('Downloading remote index: ' + url_base)
 
                     # we'll need to parse the HTML index file for the file list
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore", category=ResourceWarning)
-                        try:
-                            if not basic_auth:
-                                html_index = session.get(url_base, verify=verify, headers=headers)
-                            else:
-                                html_index = session.get(url_base, verify=verify, headers=headers, auth=(username, password))
-                        except requests.exceptions.ConnectionError:
-                            continue
+                        if not basic_auth:
+                            html_index = session.get(url_base, verify=verify, headers=headers)
+                        else:
+                            html_index = session.get(url_base, verify=verify, headers=headers, auth=(username, password))
 
                     if html_index.status_code == 404:
-                        logging.error('Remote index not found: ' + url_base)
+                        #logging.error('Remote index not found: ' + url_base)
                         continue
 
                     if html_index.status_code == 401 or html_index.status_code == 403:
@@ -320,7 +319,6 @@ def download(remote_path='',
                             out.append(file)
                 session.close()
                 continue
-
             resp_data = download_file(url=url, filename=filename, username=username, password=password, verify=verify,
                                       headers=headers, session=session, basic_auth=basic_auth)
         
@@ -331,7 +329,7 @@ def download(remote_path='',
                 out.append(file)
         else:
             # download wasn't successful, search for local files
-            logging.info('Searching for local files...')
+            #logging.info('Searching for local files...')
                 
             if local_path == '':
                 local_path_to_search = str(Path('.').resolve())

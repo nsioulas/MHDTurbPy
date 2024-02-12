@@ -15,8 +15,28 @@ import matplotlib.dates as mdates
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 
-#Important!! Make sure your current directory is the MHDTurbPy folder!
-os.chdir("/Users/nokni/work/MHDTurbPy/")
+
+BG_WHITE = '\033[47m'
+RESET    = '\033[0m'  # Reset the color
+BG_RED = '\033[41m'
+BG_GREEN = '\033[42m'
+BG_YELLOW = '\033[43m'
+BG_BLUE = '\033[44m'
+BG_MAGENTA = '\033[45m'
+BG_CYAN = '\033[46m'
+
+import logging
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',  # Include timestamp, log level, and message
+    datefmt='%Y-%m-%d %H:%M:%S',  # Format for the timestamp
+)
+
+# Setup basic configuration for logging
+logging.basicConfig(level=logging.INFO)
+
+
 
 
 # Make sure to use the local spedas
@@ -178,79 +198,11 @@ def download_MAG_SOLO(t0, t1, mag_resolution, varnames):
 
         return dfmag, mag_flag
     except Exception as e:
-        print(f'Error occurred while retrieving MAG data: {e}')
+        logging.exception("An error occurred: %s", e)
         return None
 
 
 
-# def download_MAG_SOLO(t0, t1, mag_resolution,  varnames):
-#     # Just to make sure!
-
-#     try:
-#         dfmag = pd.DataFrame()
-#         for varname in varnames: 
-#             if varname == 'B_RTN':
-#                 if mag_resolution > 230:
-#                     datatype = 'rtn-normal' 
-#                     mag_flag ='Regular'
-#                     print('Using normal-resol data!')
-                    
-#                 else:
-#                     datatype = 'rtn-burst'
-#             else:
-#                 datatype = 'srf-normal' if mag_resolution > 230 else 'srf-burst'
-                
-#             MAGdata = pyspedas.solo.mag(trange=[t0, t1], datatype=datatype, level='l2', time_clip=True)
-#             col_names = map_col_names_SOLO('MAG', [datatype])
-#             #print(col_names)
-            
-
-#             dfs = [pd.DataFrame(index=get_data(data).times, data=get_data(data).y, columns=col_names[i]) 
-#                    for i, data in enumerate([MAGdata[0]])]
-#             df = dfs[0].join(dfs[1:])
-#             dfmag = dfmag.join(df, how='outer')
-        
-#         dfmag.index = time_string.time_datetime(time=dfmag.index)
-#         dfmag.index = dfmag.index.tz_localize(None)
-        
-#         # In case there is too little burst data!
-#         from dateutil import parser
-#         int_dur    = (parser.parse(t1) - parser.parse(t0)).total_seconds() / 3600
-#         deviation  = abs((dfmag.index[-1] - parser.parse(t1)) / np.timedelta64(1, 'h')) + abs((dfmag.index[0] - parser.parse(t0)) / np.timedelta64(1, 'h'))
-        
-        
-#         if deviation >= 0.1 * int_dur:
-#             print('Too little burst data!')
-#             dfmag = pd.DataFrame()
-#             for varname in varnames:
-#                 if varname == 'B_RTN':
-#                     datatype = 'rtn-normal'
-#                 else:
-#                     datatype = 'srf-normal'
-            
-#                 MAGdata = pyspedas.solo.mag(trange=[t0, t1], datatype=datatype, level='l2', time_clip=True)
-#                 col_names = map_col_names_SOLO('MAG', [datatype])
-
-
-#                 dfs = [pd.DataFrame(index=get_data(data).times, data=get_data(data).y, columns=col_names[i]) 
-#                    for i, data in enumerate([MAGdata[0]])]
-#                 df = dfs[0].join(dfs[1:])
-#                 dfmag = dfmag.join(df, how='outer')
-        
-#             dfmag.index = time_string.time_datetime(time=dfmag.index)
-#             dfmag.index = dfmag.index.tz_localize(None)
-#             mag_flag ='Regular'
-#         else:
-#             if mag_flag != 'Regular':
-#                 print('Ok, We have enough burst mag data')
-#                 mag_flag ='Burst'
-
-#         return dfmag, mag_flag
-#     except Exception as e:
-#         print(f'Error occurred while retrieving MAG data: {e}')
-#         return None
-
-    
 def download_ephem_SOLO(t0, t1, cdf_lib_path):
     
     # Set enivronemnt 
@@ -296,6 +248,9 @@ def download_SWA_SOLO(t0, t1, varnames):
         print(f'Error occurred while retrieving SWA data: {e}')
         return None, None
     
+    
+    
+    
 def download_RPW_SOLO(t0, 
                       t1, 
                       varnames):   
@@ -311,7 +266,7 @@ def download_RPW_SOLO(t0,
         MAGdata = pyspedas.solo.mag(trange=[t0, t1], datatype=datatype, level='l2', time_clip=True)
         
         col_names = map_col_names_SOLO('RPW', [datatype])
-        print(col_names)
+
     try:
         rpwdata = pyspedas.solo.rpw(trange=[t0, t1], level='l3', varnames = varname, datatype=datatype)
 
@@ -331,9 +286,9 @@ def download_RPW_SOLO(t0,
 
       
         return dfrpw
+    
     except Exception as e:
-        traceback.print_exc()
-        print(f'Error occurred while retrieving rpw data: {e}')
+        logging.exception("An error occurred: %s", e)
         return None, None
     
 
@@ -347,6 +302,8 @@ def LoadTimeSeriesSOLO(start_time,
                       time_unit       = 'H'
                      ):
 
+    os.chdir(settings['Data_path'])
+    
     # check local directory
     if os.path.exists("./solar_orbiter_data"):
         pass
@@ -382,11 +339,14 @@ def LoadTimeSeriesSOLO(start_time,
 
         # Load rpw data
         try:
-            print(varnames_RPW)
             dfrpw = download_RPW_SOLO(t0, t1, varnames_RPW)
 
             # Return the originaly requested interval
             dfrpw = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfrpw)
+            
+            # Identify big gaps in timeseries
+            big_gaps_qtn = func.find_big_gaps(dfrpw, settings['Big_Gaps']['QTN_big_gaps'])
+
 
             # Resample the input dataframes
             diagnostics_RPW = func.resample_timeseries_estimate_gaps(dfrpw, settings['part_resol'], large_gaps=10)
@@ -417,7 +377,8 @@ def LoadTimeSeriesSOLO(start_time,
                 # Return the originaly requested interval
                 dfpar = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfpar)
                 
-                
+                # Identify big gaps in timeseries
+                big_gaps_par = func.find_big_gaps(dfpar, settings['Big_Gaps']['Par_big_gaps'])
 
                 # Resample the input dataframes
                 diagnostics_PAR  = func.resample_timeseries_estimate_gaps(dfpar, settings['part_resol'], large_gaps=10)
@@ -441,13 +402,14 @@ def LoadTimeSeriesSOLO(start_time,
                     dfpar['np']    = dfrpw['np_qtn']
 
                     qtn_flag    = 'QTN'
-                except:
-                    traceback.print_exc()
+                except Exception as e:
+                    logging.exception("No qtn data because: %s", e)
                     qtn_flag    = 'No_QTN'
-                    print('No qtn data!')
-            except:
+
+            except Exception as e:
+                logging.exception("No qtn data because: %s", e)
                 dfpar                = None
-                traceback.print_exc()
+
 
                 diagnostics_PAR      = {'Frac_miss':100, 'Large_gaps':100, 'Tot_gaps':100, 'resol':100}
                 pass
@@ -462,7 +424,7 @@ def LoadTimeSeriesSOLO(start_time,
                     dfmag                 = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfmag)
 
                     # Identify big gaps in timeseries
-                    big_gaps              = func.find_big_gaps(dfmag, settings['gap_time_threshold'])
+                    big_gaps              = func.find_big_gaps(dfmag, settings['Big_Gaps']['Mag_big_gaps'])
 
                     # Resample the input dataframes
                     diagnostics_MAG       = func.resample_timeseries_estimate_gaps(dfmag , settings['MAG_resol']  , large_gaps=10)
@@ -481,18 +443,14 @@ def LoadTimeSeriesSOLO(start_time,
                     #t0a = func.add_time_to_datetime_string(t0i, -30, 'H')
                     #t1a = func.add_time_to_datetime_string(t1i,  30, 'H')
                     
-                    fname = '/Volumes/Elements-2/nsioulas/sc_data/solar_orbiter_data/distance/solo_dist.pkl'
+                    fname = '/Volumes/Zesen-4TB/solar_orbiter_data/distance/solo_dist.pkl'
                     dfdis = pd.read_pickle(fname)
                     dfdis = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfdis)
 
-                    
-                    #dfdis                = download_ephem_SOLO(t0, t1, cdf_lib_path)
-                    #dfdis                = dfdis.resample('1H').asfreq().interpolate(method='linear')
-                    #print(dfdis)
 
-                except:
+                except Exception as e:
                     dfdis                = None
-                    traceback.print_exc()
+                    logging.exception("No qtn data because: %s", e)
                     pass
 
 
@@ -506,9 +464,10 @@ def LoadTimeSeriesSOLO(start_time,
 
                 }
             else:
-                dfmag, mag_flag, dfpar, dfdis, big_gaps, misc = None, None, None, None, None, None
+                dfmag, mag_flag, dfpar, dfdis, big_gaps, big_gaps_qtn,  big_gaps_par, misc = None, None, None, None, None, None, None, None
+                
 
-            return diagnostics_MAG["resampled_df"], mag_flag , diagnostics_PAR["resampled_df"], dfdis, big_gaps, misc
+            return diagnostics_MAG["resampled_df"], mag_flag , diagnostics_PAR["resampled_df"], dfdis, big_gaps,big_gaps_qtn,  big_gaps_par, misc
         else: 
             print('No qtn data, and thus we wont consider the interval as specified in settings')
 

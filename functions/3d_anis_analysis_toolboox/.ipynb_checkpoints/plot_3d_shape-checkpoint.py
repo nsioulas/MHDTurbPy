@@ -38,8 +38,6 @@ sys.path.insert(1, os.path.join(os.getcwd(), 'functions','3d_anis_analysis_toolb
 import collect_wave_coeffs 
 
 
-os.path.join(os.getcwd(), 'functions','downloading_helpers' )
-from PSP import  download_ephemeris_PSP
 
 
 

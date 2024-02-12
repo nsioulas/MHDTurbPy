@@ -14,16 +14,37 @@ from time import sleep
 import matplotlib.dates as mdates
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
+BG_WHITE = '\033[47m'
+RESET    = '\033[0m'  # Reset the color
+BG_RED = '\033[41m'
+BG_GREEN = '\033[42m'
+BG_YELLOW = '\033[43m'
+BG_BLUE = '\033[44m'
+BG_MAGENTA = '\033[45m'
+BG_CYAN = '\033[46m'
 
-#Important!! Make sure your current directory is the MHDTurbPy folder!
-os.chdir("/Users/nokni/work/MHDTurbPy/")
+import logging
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',  # Include timestamp, log level, and message
+    datefmt='%Y-%m-%d %H:%M:%S',  # Format for the timestamp
+)
+
+# Setup basic configuration for logging
+logging.basicConfig(level=logging.INFO)
 
 
-# Make sure to use the local spedas
-sys.path.insert(0, os.path.join(os.getcwd(), 'pyspedas'))
+# Add the directory containing the local PySPEDAS to the front of sys.path
+sys.path.insert(0, "/pyspedas")
+
+# Now, import PySPEDAS and other modules
 import pyspedas
 from pyspedas.utilities import time_string
 from pytplot import get_data
+
+# Optionally, print the path of the PySPEDAS module to confirm its source
+print(pyspedas.__file__)
 
 
 """ Import manual functions """
@@ -61,7 +82,7 @@ def default_variables_to_download_PSP(vars_2_downnload):
         varnames_SPAN          = vars_2_downnload['span']        
     
     if vars_2_downnload['spc'] is None:
-        varnames_SPC          = ['np_moment','wp_moment','vp_moment_RTN','sc_pos_HCI','carr_longitude','na_fit']
+        varnames_SPC          = ['np_moment','wp_moment','vp_moment_RTN', 'sc_pos_HCI','carr_longitude','na_fit']
     else:
         varnames_SPC          = vars_2_downnload['spc']   
         
@@ -118,7 +139,7 @@ def map_col_names_PSP(instrument, varnames):
         'VEL_RTN_SUN'     : ['Vr', 'Vt', 'Vn'],
         'TEMP'            : ['TEMP'],
         'SUN_DIST'        : ['Dist_au'],
-         'SC_VEL_RTN_SUN' : ['sc_vel_r','sc_vel_t','sc_vel_n']
+        'SC_VEL_RTN_SUN'  : ['sc_vel_r','sc_vel_t','sc_vel_n']
 
     }
     # Mapping between variable names and column names for SPAN
@@ -149,17 +170,22 @@ def map_col_names_PSP(instrument, varnames):
     
     
 
-def download_MAG_FIELD_PSP(t0, t1, mag_resolution, credentials, varnames, download_SCAM=False):
+def download_MAG_FIELD_PSP(t0, t1, mag_resolution, credentials, varnames):
     try:
         for j, varname in enumerate(varnames): 
 
             try:
+                
+                
+                print('Using private mag data')
                 if varname == 'B_RTN':
+                    print('Using RTN frame mag data.')
                     if mag_resolution> 230:               # It's better to use lower resol if you want to resample to SPC, SPAN cadence. 
                         datatype = 'mag_RTN_4_Sa_per_Cyc'
                     else:
                         datatype = 'mag_RTN'
                 else:
+                    print('Using SC frame mag data.')
                     if mag_resolution> 230:
                         datatype = 'mag_SC_4_Sa_per_Cyc'
                     else:
@@ -169,18 +195,28 @@ def download_MAG_FIELD_PSP(t0, t1, mag_resolution, credentials, varnames, downlo
                 password = credentials['psp']['fields']['password']
                 MAGdata = pyspedas.psp.fields(trange=[t0, t1], datatype=datatype, level='l2', 
                                               time_clip=True, username=username, password=password)
+                
+
+               
             except:
+                traceback.print_exc()
+                print('Using public mag data')
+                
                 if varname == 'B_RTN':
+                    print('Using RTN frame mag data.')
                     if mag_resolution> 230:
                         datatype = 'mag_rtn_4_per_cycle'
                     else:
                         datatype = 'mag_rtn'
                 else:
+                    print('Using SC frame mag data.')
                     if mag_resolution> 230:
                         datatype = 'mag_sc_4_per_cycle'
                     else:
                         datatype = 'mag_sc'
-                MAGdata = pyspedas.psp.fields(trange=[t0, t1], datatype=datatype, level='l2', time_clip=True)
+                MAGdata = pyspedas.psp.fields(trange=[t0, t1], datatype=datatype, level='l2', time_clip=True)           
+                
+
 
             if j == 0:
                 col_names = map_col_names_PSP('FIELDS-MAG', [datatype])
@@ -221,7 +257,25 @@ def download_MAG_FIELD_PSP(t0, t1, mag_resolution, credentials, varnames, downlo
         return None
         
 
-
+def process_mag_field_data(t0, t1, settings, credentials, varnames_MAG, ind1, ind2):
+    try:
+        dfmag = download_MAG_FIELD_PSP(t0, t1, settings['MAG_resol'], credentials, varnames_MAG)
+        try:
+            dfmag = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfmag)
+        except Exception:
+            # Adjust index format and retry processing
+            dfmag.index = pd.to_datetime(dfmag.index, format='%Y-%m-%d %H:%M:%S.%f')
+            dfmag = func.use_dates_return_elements_of_df_inbetween(pd.to_numeric(ind1), pd.to_numeric(ind2), dfmag)
+        
+        # Identify big gaps in timeseries
+        big_gaps = func.find_big_gaps(dfmag, settings['Big_Gaps']['Mag_big_gaps'])
+        # Resample the input dataframes
+        diagnostics_MAG = func.resample_timeseries_estimate_gaps(dfmag, settings['MAG_resol'], large_gaps=10)
+        return dfmag, big_gaps, diagnostics_MAG
+    except Exception as e:
+        logging.exception("An error occurred: %s", e)
+        diagnostics_MAG_default = {'Frac_miss': 100, 'Large_gaps': 100, 'Tot_gaps': 100, 'resol': 100}
+        return None, None, diagnostics_MAG_default
 
 
 def download_SPC_PSP(t0, t1, credentials, varnames):
@@ -261,8 +315,44 @@ def download_SPC_PSP(t0, t1, credentials, varnames):
         
         return dfspc
     except Exception as e:
-        print(f'Error occurred while retrieving SPC data: {e}')
+        logging.exception("An error occurred: %s", e)
         return None, None
+
+def process_spc_data(t0, t1, credentials, varnames_SPC, settings, ind1, ind2):
+    try:
+        # Download SPC data
+        dfspc = download_SPC_PSP(t0, t1, credentials, varnames_SPC)
+        # Trim data to the originally requested interval
+        dfspc = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfspc)
+
+        # Apply Hampel filter if required
+        if settings['apply_hampel']:
+            # Determine which velocity components to filter based on data presence
+            columns_for_hampel = ['Vr', 'Vt', 'Vn', 'np', 'Vth'] if 'Vr' in dfspc.keys() else ['Vx', 'Vy', 'Vz', 'np', 'Vth']
+            ws_hampel, n_hampel = settings['hampel_params']['w'], settings['hampel_params']['std']
+
+            for column in columns_for_hampel:
+                try:
+                    outliers_indices = func.hampel(dfspc[column], window_size=ws_hampel, n=n_hampel)
+                    dfspc.loc[dfspc.index[outliers_indices], column] = np.nan
+                except Exception as e:
+                    logging.exception("An error occurred while filtering %s: %s", column, e)
+
+            print(f'Applied Hampel filter to SPC columns: {columns_for_hampel}')
+
+        # Identify big gaps in timeseries
+        big_gaps_spc = func.find_big_gaps(dfspc, settings['Big_Gaps']['Par_big_gaps'])
+        
+        # Calculate diagnostics
+        diagnostics_SPC = func.resample_timeseries_estimate_gaps(dfspc, settings['part_resol'], large_gaps=10)
+        spc_flag = 'SPC'
+    except Exception as e:
+        logging.exception("An error occurred: %s", e)
+        # Return None for dfspc and default values for diagnostics_SPC on error
+        dfspc, diagnostics_SPC, spc_flag = None, {'Frac_miss': 100, 'Large_gaps': 100, 'Tot_gaps': 100, 'resol': 100}, 'No SPC'
+
+    return dfspc, diagnostics_SPC, spc_flag, big_gaps_spc
+
 
     
 def download_SPAN_PSP(t0, t1, credentials, varnames, varnames_alpha ):   
@@ -273,6 +363,8 @@ def download_SPAN_PSP(t0, t1, credentials, varnames, varnames_alpha ):
         try:
             username = credentials['psp']['sweap']['username']
             password = credentials['psp']['sweap']['password']
+            
+            
 
             spandata = pyspedas.psp.spi(trange=[t0, t1], datatype='spi_sf00', level='L3', 
                 varnames = varnames, time_clip=True, username=username, password=password)
@@ -328,9 +420,51 @@ def download_SPAN_PSP(t0, t1, credentials, varnames, varnames_alpha ):
 #         dfspan_alpha.index       = dfspan_alpha.index.tz_localize(None)
 #         dfspan_alpha.index.name  = 'datetime'        
         return dfspan#, dfspan_alpha
+
+
     except Exception as e:
-        print(f'Error occurred while retrieving SPAN data: {e}')
+        logging.exception("An error occurred: %s", e)
         return None, None
+    
+    
+import logging
+import numpy as np
+
+def process_span_data(t0, t1, credentials, varnames_SPAN, varnames_SPAN_alpha, settings, ind1, ind2):
+    try:
+        dfspan = download_SPAN_PSP(t0, t1, credentials, varnames_SPAN, varnames_SPAN_alpha)
+
+        if settings['apply_hampel']:
+            # Determine columns for Hampel filter application
+            columns_for_hampel = ['Vr', 'Vt', 'Vn', 'np', 'Vth'] if 'Vr' in dfspan.keys() else ['Vx', 'Vy', 'Vz', 'np', 'Vth']
+            ws_hampel, n_hampel = settings['hampel_params']['w'], settings['hampel_params']['std']
+
+            # Apply Hampel filter to specified columns
+            for column in columns_for_hampel:
+                try:
+                    outliers_indices = func.hampel(dfspan[column], window_size=ws_hampel, n=n_hampel)
+                    dfspan.loc[dfspan.index[outliers_indices], column] = np.nan
+                except Exception as e:
+                    logging.exception("An error occurred while filtering %s: %s", column, e)
+
+            print(f'Applied Hampel filter to SPAN columns: {columns_for_hampel}, Window size: {ws_hampel}')
+
+        # Trim data to the originally requested interval
+        dfspan = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfspan)
+        
+        # Identify big gaps in timeseries
+        big_gaps_span = func.find_big_gaps(dfspan, settings['Big_Gaps']['Par_big_gaps'])
+
+        # Calculate diagnostics
+        diagnostics_SPAN = func.resample_timeseries_estimate_gaps(dfspan, settings['part_resol'], large_gaps=10)
+        span_flag = 'SPAN'
+    except Exception as e:
+        logging.exception("An error occurred: %s", e)
+        dfspan, diagnostics_SPAN, span_flag = None, {'Frac_miss': 100, 'Large_gaps': 100, 'Tot_gaps': 100, 'resol': 100}, 'No SPAN'
+
+    return dfspan, diagnostics_SPAN, span_flag, big_gaps_span
+
+
 
 def download_QTN_PSP(t0, t1, credentials, varnames):
     
@@ -367,10 +501,47 @@ def download_QTN_PSP(t0, t1, credentials, varnames):
         dfqtn.index = dfqtn.index.tz_localize(None)
         dfqtn.index.name = 'datetime'
         
+        # Identify big gaps in timeseries
+
         return dfqtn
+    
     except Exception as e:
-        print(f'Error occurred while retrieving QTN data: {e}')
-        return None
+        logging.exception(f'Error occurred while retrieving QTN data: {e}')
+        return None, None
+    
+def process_qtn_data(t0, t1, credentials, varnames_QTN, ind1, ind2, settings):
+    # Attempt to download QTN data
+    
+    #Temporary fix
+    if ((pd.Timestamp(t0)>pd.Timestamp('2023-09-20')) &  (pd.Timestamp(t1)<pd.Timestamp('2023-10-01 23:59:39'))): 
+        
+        ll_path       = '/Users/nokni/work/turb_amplitudes/final_data/qtn/'
+        dfqtn           = pd.read_pickle(str(Path(ll_path).joinpath('qtn.pkl')))
+
+    else:
+        dfqtn = download_QTN_PSP(t0, t1, credentials, varnames_QTN)
+    
+    try:
+        # Process the downloaded data
+        dfqtn           = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfqtn)
+        big_gaps        = func.find_big_gaps(dfqtn, settings['Big_Gaps']['QTN_big_gaps'])
+        
+        diagnostics_QTN = func.resample_timeseries_estimate_gaps(dfqtn, settings['part_resol'], large_gaps=10)
+        dfqtn_flag      = 'QTN'
+
+    except Exception:
+        # Handle any exceptions during processing by resetting values
+        dfqtn, dfqtn_flag,  big_gaps = None, 'No QTN', None
+        diagnostics_QTN   = {
+                            "Init_dt"         : np.nan,
+                            "resampled_df"    : None,
+                            "Frac_miss"       : None,
+                            "Large_gaps"      : None,
+                            "Tot_gaps"        : None,
+                            "resol"           : None
+                        }
+
+    return dfqtn, diagnostics_QTN, dfqtn_flag, big_gaps
 
 def download_ephemeris_PSP(t0, t1, credentials, varnames):
     try:
@@ -399,127 +570,79 @@ def download_ephemeris_PSP(t0, t1, credentials, varnames):
         
         return dfephem
     
-    except:
-        raise ValueError("Ephemeris could not be loaded!")
+    except Exception as e:
+        logging.exception("Ephemeris could not be loaded: %s", e)
 
-def create_particle_dataframe(diagnostics_SPC, diagnostics_SPAN, start_time, end_time, dfspc, dfspan,  dfqtn, settings):
-
-    
-    
-    # default to method suggested by SWEAP team if particle_mode is not provided
-    if settings['particle_mode'] == None:
-        part_instrument = '9th_perih_cut'
-    else:
-        part_instrument = settings['particle_mode']
-
-    
-    # Define particle resolution
-    part_resolution = settings['part_resol']
-
-    if part_instrument == 'spc':
-        freq  = f"{round(diagnostics_SPC['Init_dt']*1000)}ms"
-        dfpar = diagnostics_SPC['resampled_df']
-        part_flag = 'spc'
-
-    elif part_instrument == 'span':
-        print(diagnostics_SPAN['resampled_df'])
-        freq  = f"{round(diagnostics_SPAN['Init_dt']*1000)}ms"
-        dfpar = diagnostics_SPAN['resampled_df']
-        part_flag = 'span'
-
-    # before encounter 9 (Perihelion: 2021-08-09/19:11) use SPC for solar wind speed
-    # at and after encounter 8, mix SPC and SPAN for solar wind speed
-    # prioritize QTN for density, and fill with SPC, and with SPAN
-    elif part_instrument == '9th_perih_cut':
         
-        source_df   = dfspc if pd.Timestamp(end_time) < pd.Timestamp('2021-07-15') else dfspan
-        diagnostics = diagnostics_SPC if pd.Timestamp(end_time) < pd.Timestamp('2021-07-15') else diagnostics_SPAN
-        
-        freq = f"{round(diagnostics['Init_dt'] * 1000)}ms"
-
-        # interpolate QTN to index of either SPC or SPAN and fill nan!
-        try: 
-            print('Used QTN')
-            new_dfqtn = func.newindex(dfqtn, source_df.index)
-            dfpar     = source_df.join(new_dfqtn['np_qtn'])
-            
-
-            #dfpar['np_qtn'].fillna(source_df['np'], inplace=True)
-            #dfpar['np_qtn']     = new_dfqtn['np_qtn']
-            dfpar[dfpar < -1e5] = np.nan
-            dfpar['np']         = dfpar['np_qtn']#np.nanmean(dfpar[['np', 'np_qtn']], axis=1)
-            del dfpar['np_qtn'], dfqtn
-            
-        except:
-            dfpar       = source_df
-            print('No qtn data!')
-            
-
-        part_flag = 'empirical'
-        
-
-        del source_df
-
-    elif part_instrument  =='keep_both':
-        # A regular cadence
-        freq ='5s'
-        part_flag = 'empirical'
-        # add qtn
-        try:
-            dfpar['np_qtn'] = dfqtn['np_qtn'].resample(freq).mean().interpolate()
-        except:
-            warnings.warn("No QTN data!")
-            dfpar['np_qtn'] = np.nan
-
-        # Keep only the keys that exist in either dfspc or dfspan
-        keep_keys = ['Vx','Vy','Vz','Vr','Vt','Vn','Vth','Dist_au']
-        keep_keys = [k for k in keep_keys if k in dfspc.columns or k in dfspan.columns]
-        
-        # add SPC
-        for k in keep_keys:
-            try:
-                dfpar[k+"_spc"] = dfspc[k].resample(freq).mean().interpolate()
-            except:
-                warnings.warn("key: %s not present in dfspc!" %(k))
-                dfpar[k+"_spc"] = np.nan
-
-        # add SPAN
-        for k in keep_keys:
-            try:
-                if k == 'na':
-                    dfpar[k+"_span"] = dfspan_a[k].resample(freq).mean().interpolate()
-                else:
-                    dfpar[k+"_span"] = dfspan[k].resample(freq).mean().interpolate()
-            except:
-                warnings.warn("key: %s not present in dfspan!" %(k))
-                dfpar[k+"_span"] = np.nan
-
-        # set default
-        # default density: QTN
-        dfpar['np'] = dfpar['np_qtn']
-
-        # before encounter 9, default set to SPC
-        if dfpar.index[-1] < pd.Timestamp('2021-07-01'):
-            for k in keep_keys:
-                dfpar[k] = dfpar[k+'_spc']
-        # at and after encounter 9, default set to SPAN
-        else:
-            for k in keep_keys:
-                dfpar[k] = dfpar[k+'_span']
-
-        # raise ValueError("particle mode: %s under construction!" %(part_instrument))
-    
-    else:
-        raise ValueError("particle mode: %s not supported!" %(part_instrument))
+def process_ephemeris(t0, t1, credentials, varnames_EPHEM, ind1, ind2):
     try:
-        del dfpar['na']
-    except:
-        pass
-    dfpar[dfpar < -1e5] = np.nan
+        # Attempt to download Ephemeris data
+        dfephem = download_ephemeris_PSP(t0, t1, credentials, varnames_EPHEM)
+        # Process the downloaded data if successful
+        dfephem = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfephem)
+        return dfephem
+    except Exception:
+        # Return None if any error occurs during download or processing
+        return None
+        
+
+
+
+def create_particle_dataframe(end_time,
+                              diagnostics_spc,
+                              diagnostics_span,
+                              df_spc, 
+                              df_span, 
+                              dfqtn, 
+                              dfqtn_flag,
+                              big_gaps_span,
+                              big_gaps_spc,
+                              settings):
+
+    def integrate_qtn_data(source_df, dfqtn):
+        """
+        Integrate QTN data into the source DataFrame.
+        """
+
+        try:
+            new_dfqtn               = func.newindex(dfqtn, source_df.index)
+            df_particle             = source_df.join(new_dfqtn['np_qtn']).pipe(func.replace_negative_with_nan)
+            df_particle['np_sweap'] = df_particle.pop('np')
+            df_particle['np']       = df_particle.pop('np_qtn')
+            return df_particle, 'QTN'
+
+        except Exception as e:
+            logging.exception("Failed to integrate QTN data: %s", e)
+            source_df['np_sweap']   = source_df.pop('np')
+            return source_df, 'No_QTN'
     
-    return dfpar, part_flag
+    # Default processing for '9th_perih_cut' mode
+    if settings.get('particle_mode', '9th_perih_cut') == '9th_perih_cut':
+        
+        use_spc     = pd.Timestamp(end_time) < pd.Timestamp('2021-07-15')
+        df_selected = diagnostics_spc['resampled_df'] if use_spc else diagnostics_span['resampled_df']
+        big_gaps    = big_gaps_spc if use_spc else big_gaps_span
+        
+    elif settings['particle_mode'] == 'spc':
+        df_selected = diagnostics_spc['resampled_df']                                             
+        big_gaps    = big_gaps_spc
+        
+    elif settings['particle_mode'] == 'span':
+        df_selected = diagnostics_span['resampled_df']
+        big_gaps    = big_gaps_span
+    else:
+        raise ValueError(f"Unsupported particle mode: {settings['particle_mode']}")
 
+    # Replace negative values with NaN
+    try:
+        df_selected = func.replace_negative_with_nan(df_selected)
+    except:
+        print('Bad!')
 
+    # Integrate QTN data if flagged
+    df_selected, dfqtn_flag = integrate_qtn_data(df_selected, dfqtn)
+
+    return df_selected, settings['particle_mode'], dfqtn_flag, big_gaps
 
 
 
@@ -529,8 +652,6 @@ def LoadTimeSeriesPSP(start_time,
                       vars_2_downnload,
                       cdf_lib_path,
                       credentials = None,
-                      download_SCAM =False,
-                      gap_time_threshold=10,
                       time_amount =12,
                       time_unit ='h'
                      ):
@@ -560,6 +681,7 @@ def LoadTimeSeriesPSP(start_time,
     }
  
 
+    os.chdir(settings['Data_path'])
     # check local directory
     if os.path.exists("./psp_data"):
         pass
@@ -585,246 +707,157 @@ def LoadTimeSeriesPSP(start_time,
     
     # Specify variables to download
     varnames_MAG, varnames_QTN, varnames_SPAN, varnames_SPC,  varnames_SPAN_alpha, varnames_EPHEM = default_variables_to_download_PSP(vars_2_downnload)
+    
+    
+    # Download QTN data
+    dfqtn, diagnostics_QTN, dfqtn_flag, dfqtn_big_gaps = process_qtn_data(t0, t1, credentials, varnames_QTN, ind1, ind2, settings)
         
+    print('FLAG QTN', dfqtn_flag)
+    #Download ephemeris
+    dfephem                            = process_ephemeris(t0, t1, credentials, varnames_EPHEM, ind1, ind2)
+        
+
+    # Add some thresholds
+    mean_dist        = round(np.nanmean(dfephem['Dist_au'].values),2)
+    dist_threshold   = (settings['max_PSP_dist'] > mean_dist) | (settings['max_PSP_dist']   == None)
+    qtn_threshold    = (dfqtn_flag  == 'QTN')                 | (settings['must_have_qtn']  == False)
+        
+    if (dist_threshold) & (qtn_threshold):
+        
+
+        # Download magnetic field data
+        dfmag, big_gaps, diagnostics_MAG                   = process_mag_field_data(t0, t1, settings,
+                                                                  credentials, varnames_MAG, ind1, ind2)
+       
+        # Download SPAN data
+        dfspan, diagnostics_SPAN, span_flag, big_gaps_span = process_span_data(t0, t1, credentials,
+                                                                varnames_SPAN, varnames_SPAN_alpha, settings, ind1, ind2)
+        # Download SPC data 
+        dfspc, diagnostics_SPC, spc_flag, big_gaps_spc     = process_spc_data(t0, t1, credentials, varnames_SPC, settings, ind1, ind2)
+
+      
+        try:
+
+            dfpar, part_flag, dfqtn_flag, big_gaps_par    = create_particle_dataframe(end_time,
+                                                                       diagnostics_SPC,
+                                                                       diagnostics_SPAN,
+                                                                       dfspc,
+                                                                       dfspan,
+                                                                       dfqtn,
+                                                                       dfqtn_flag,
+                                                                       big_gaps_span,
+                                                                       big_gaps_spc,
+                                                                       settings)
+            
+            diagnostics_PAR                 = func.resample_timeseries_estimate_gaps(dfpar, settings['part_resol'], large_gaps=10)
+   
+
+            keys_to_keep           = ['Frac_miss', 'Large_gaps', 'Tot_gaps', 'resol']
+            misc = {
+                'SPC'              : func.filter_dict(diagnostics_SPC,  keys_to_keep),
+                'SPAN'             : func.filter_dict(diagnostics_SPAN, keys_to_keep),
+                'QTN'              : func.filter_dict(diagnostics_QTN, keys_to_keep),
+                'Par'              : func.filter_dict(diagnostics_PAR,  keys_to_keep),
+                'Mag'              : func.filter_dict(diagnostics_MAG,  keys_to_keep),
+                'part_flag'        : part_flag,
+                'qtn_flag'         : dfqtn_flag
+            }
+            
+            # Lazy way to do this. Fix that
+            if dfqtn_flag =='No_QTN':
+                diagnostics_PAR["resampled_df"]['np']   = diagnostics_PAR["resampled_df"].pop('np_sweap')
+                
+
+            return diagnostics_MAG["resampled_df"], diagnostics_PAR["resampled_df"], dfephem.interpolate(), big_gaps,  dfqtn_big_gaps, big_gaps_par, misc
+        
+     
+        except Exception as e:
+            logging.exception("An error occurred: %s", e)
+            return None, None, None, None, None, None, None
+    else:
+        if (dist_threshold == False) and (qtn_threshold == False):
+            logging.info(BG_BLUE+'Discarded, No qtn and d=%s' + RESET, mean_dist)
+        elif dist_threshold == False:
+            logging.info(BG_BLUE+'Discarded, d=%s' + RESET, mean_dist)
+        elif qtn_threshold == False:
+            logging.info(BG_BLUE+'Discarded, no qtn dat.' + RESET)
+
+
+def LoadSCAMFromSPEDAS_PSP(in_RTN, start_time, end_time, credentials = None):
+    """ 
+    load scam data with pyspedas and return a dataframe
+    Input:
+        start_time, end_time                pd.Timestamp
+        (optional) credentials              dictionary, {'username':..., 'password':...}
+    Output:
+        return None if no data is present, otherwise a dataframe containing all the scam data
+    """ 
+    
+    # Ensure the dates have appropriate format
+    t0i, t1i = func.ensure_time_format(start_time, end_time)
+    
+    # Since pyspedas does not always return what tou ask for we have to enforce it
+    t0 = func.add_time_to_datetime_string(t0i, -time_amount, time_unit)
+    t1 = func.add_time_to_datetime_string(t1i,  time_amount, time_unit)
+
+    # In order to return the originaly requested interval
+    ind1  = func.string_to_datetime_index(t0i)
+    ind2  = func.string_to_datetime_index(t1i)
+
+    # use credentials
     try:
-        # Download Magnetic field data
-        dfmag                 = download_MAG_FIELD_PSP(t0, t1, settings['MAG_resol'], credentials, varnames_MAG, download_SCAM=download_SCAM)
+        if in_RTN:
+            scam_vars = pyspedas.psp.fields(
+                trange=[t0, t1], datatype='merged_scam_wf',
+                        varnames = ['psp_fld_l3_merged_scam_wf_RTN'], level='l3', time_clip=1, downloadonly = False,
+                username = credentials['username'], password = credentials['password'])
+        else:
+            scam_vars = pyspedas.psp.fields(
+                trange=[t0, t1], datatype='merged_scam_wf',
+                        varnames = ['psp_fld_l3_merged_scam_wf_SC'], level='l3', time_clip=1, downloadonly = False,
+                username = credentials['username'], password = credentials['password'])                
+            
+            
+        if scam_vars == []:
+            return None
+
+        if  in_RTN:
+            data   = get_data(scam_vars[0])
+            dfscam = pd.DataFrame(
+                    index = data.times,
+                    data = data.y,
+                    columns = ['Br','Bt','Bn'])
+        else:
+            data   = get_data(scam_vars[0])
+            dfscam = pd.DataFrame(
+                    index = data.times,
+                    data = data.y,
+                    columns = ['Bx','By','Bz']) 
+            
+        dfscam.index = time_string.time_datetime(time=dfscam.index)
+        dfscam.index = dfscam.index.tz_localize(None)
+        dfscam.index.name = 'datetime'
+
 
         # Return the originaly requested interval
         try:
-            dfmag                 = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfmag)
+            dfscam                 = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfscam)
         except:
-            dfmag.index = pd.to_datetime(dfmag.index, format='%Y-%m-%d %H:%M:%S.%f')
-            dfmag                 = func.use_dates_return_elements_of_df_inbetween(pd.to_numeric(ind1), pd.to_numeric(ind2), dfmag)
+            dfscam.index = pd.to_datetime(dfscam.index, format='%Y-%m-%d %H:%M:%S.%f')
+            dfscam                 = func.use_dates_return_elements_of_df_inbetween(pd.to_numeric(ind1), pd.to_numeric(ind2), dfscam)
 
 
 
-         # Identify big gaps in timeseries
-        big_gaps              = func.find_big_gaps(dfmag , gap_time_threshold)        
+        # Identify big gaps in timeseries
+        big_gaps              = func.find_big_gaps(dfscam , settings['gap_time_threshold'])        
         # Resample the input dataframes
-        diagnostics_MAG       = func.resample_timeseries_estimate_gaps(dfmag , settings['MAG_resol']  , large_gaps=10)      
-        
-        
+        diagnostics_MAG       = func.resample_timeseries_estimate_gaps(dfscam , settings['MAG_resol']  , large_gaps=10)      
+
+
     except:
         traceback.print_exc()
-        dfmag                 = None
-        big_gaps              = None
-        diagnostics_MAG       = {'Frac_miss':100, 'Large_gaps':100, 'Tot_gaps':100, 'resol':100}
-
-    try:        
-        # Download SPAN data
-        dfspan  = download_SPAN_PSP(t0, t1, credentials, varnames_SPAN, varnames_SPAN_alpha)
-        
-            
-        if settings['apply_hampel']:
-            if 'Vr' in dfspan.keys():
-                list_2_hampel = ['Vr','Vt','Vn','np','Vth']
-            else:
-                list_2_hampel = ['Vx','Vy','Vz','np','Vth']
-                
-            ws_hampel  = settings['hampel_params']['w']
-            n_hampel   = settings['hampel_params']['std']
-                
-            for k in list_2_hampel:
-                try:
-                    outliers_indices = func.hampel(dfspan[k], window_size = ws_hampel, n = n_hampel)
-                    # print(outliers_indices)
-                    dfspan.loc[dfspan.index[outliers_indices], k] = np.nan
-                except:
-                     traceback.print_exc()
-            print('Applied hampel filter to SPAN columns :', list_2_hampel, 'Windows size', ws_hampel)
-        
-        
-        # Return the originaly requested interval
-        dfspan                 = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfspan)
-        
-        
-        diagnostics_SPAN       = func.resample_timeseries_estimate_gaps(dfspan, settings['part_resol'] , large_gaps=10)
-    
-    except:
-        
-        traceback.print_exc()
-        dfspan                = None
-       
-        diagnostics_SPAN      = {'Frac_miss':100, 'Large_gaps':100, 'Tot_gaps':100, 'resol':100}
-    try:      
-        # Download SPC data
-        dfspc                 = download_SPC_PSP(t0, t1, credentials, varnames_SPC)
-
-        # Return the originaly requested interval
-   
-        dfspc                 = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfspc)
-      
-        if settings['apply_hampel']:
-            if 'Vr' in dfspc.keys():
-                list_2_hampel = ['Vr','Vt','Vn','np','Vth']
-            else:
-                list_2_hampel = ['Vx','Vy','Vz','np','Vth']
-                
-            ws_hampel  = settings['hampel_params']['w']
-            n_hampel   = settings['hampel_params']['std']
-                
-            for k in list_2_hampel:
-                try:
-                    outliers_indices = func.hampel(dfspc[k], window_size = ws_hampel, n = n_hampel)
-                    # print(outliers_indices)
-                    dfspc.loc[dfspc.index[outliers_indices], k] = np.nan
-                except:
-                     traceback.print_exc()
-            print('Applied hampel filter to SPC columns :', list_2_hampel)
-                    
-
-         # Resample the input dataframes
-        diagnostics_SPC       = func.resample_timeseries_estimate_gaps(dfspc , settings['part_resol'] , large_gaps=10)
-    except:
-        traceback.print_exc()
-        dfspc                 = None
-        diagnostics_SPC       = {'Frac_miss':100, 'Large_gaps':100, 'Tot_gaps':100, 'resol':100}
-    try:              
-        # Download QTN data
-        dfqtn                 = download_QTN_PSP(t0, t1, credentials, varnames_QTN)
-        
-        # Return the originaly requested interval
-        dfqtn                 = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfqtn)
-        
-    except:
-        traceback.print_exc()
-        dfqtn                 = None
-    try:  
-        # Download Ephemeris data
-        dfephem               = download_ephemeris_PSP(t0, t1, credentials, varnames_EPHEM)
-        
-        # Return the originaly requested interval
-        dfephem                = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfephem)
-    except:
-        dfephem               = None
-
-    try:
-
-        #Create final particle dataframe
-
-        dfpar, part_flag = create_particle_dataframe(diagnostics_SPC,diagnostics_SPAN, start_time, end_time, dfspc, dfspan, dfqtn, settings)
-        diagnostics_PAR  = func.resample_timeseries_estimate_gaps(dfpar, settings['part_resol'], large_gaps=10)
-
-
-        keys_to_keep           = ['Frac_miss', 'Large_gaps', 'Tot_gaps', 'resol']
-        misc = {
-            'SPC'              : func.filter_dict(diagnostics_SPC,  keys_to_keep),
-            'SPAN'             : func.filter_dict(diagnostics_SPAN, keys_to_keep),
-            'Par'              : func.filter_dict(diagnostics_PAR,  keys_to_keep),
-            'Mag'              : func.filter_dict(diagnostics_MAG,  keys_to_keep),
-            'part_flag'        : part_flag
-        }
-
-        return diagnostics_MAG["resampled_df"].interpolate().dropna(), dfpar.interpolate().dropna(), dfephem, big_gaps, misc
-    except:
-        traceback.print_exc()
-
-
-
-# def LoadSCAMFromSPEDAS_PSP(in_RTN, start_time, end_time, credentials = None):
-#     """ 
-#     load scam data with pyspedas and return a dataframe
-#     Input:
-#         start_time, end_time                pd.Timestamp
-#         (optional) credentials              dictionary, {'username':..., 'password':...}
-#     Output:
-#         return None if no data is present, otherwise a dataframe containing all the scam data
-#     """
-
-#     # # check pyspedas
-#     # if os.path.exists(Path(".").absolute().parent.joinpath("pyspedas")):
-#     #     print("Using pyspedas at %s" %(str(Path(".").absolute().parent.joinpath("pyspedas"))))
-#     # else:
-#     #     raise ValueError("Please clone pyspedas to %s" %(str(Path(".").absolute().parent.joinpath("pyspedas"))))
-#     #print(type(start_time))
-#     if type(start_time) =='str':
-#         t0 = start_time
-#         t1 = end_time
-#     else:
-#         try:
-#             t0 = start_time.strftime("%Y-%m-%d/%H:%M:%S")
-#             t1 = end_time.strftime("%Y-%m-%d/%H:%M:%S")
-#         except:
-#             t0 = start_time
-#             t1 = end_time
-
-#     if credentials is None:
-#         if in_RTN:
-#             scam_vars = pyspedas.psp.fields(
-#                 trange=[t0, t1], datatype='merged_scam_wf', 
-#                             varnames = ['psp_fld_l3_merged_scam_wf_RTN'], level='l3', time_clip=0, downloadonly = False ) 
-#         else:
-#             scam_vars = pyspedas.psp.fields(
-#                 trange=[t0, t1], datatype='merged_scam_wf', 
-#                             varnames = ['psp_fld_l3_merged_scam_wf_SC'], level='l3', time_clip=0, downloadonly = False )            
-
-#         if scam_vars == []:
-#             return None
-
-#         if  in_RTN:
-#             data = get_data(scam_vars[0])
-#             dfscam = pd.DataFrame(
-#                     index = data.times,
-#                     data = data.y,
-#                     columns = ['Br','Bt','Bn']
-#                 )
-#         else:
-#             data = get_data(scam_vars[0])
-#             dfscam = pd.DataFrame(
-#                     index = data.times,
-#                     data = data.y,
-#                     columns = ['Bx','By','Bz']
-#                 )         
-
-#         dfscam.index      = time_string.time_datetime(time=dfscam.index)
-#         dfscam.index      = dfscam.index.tz_localize(None)
-#         dfscam.index.name = 'datetime'
-#     else:
-#         # use credentials
-
-#         try:
-#             if in_RTN:
-#                 scam_vars = pyspedas.psp.fields(
-#                     trange=[t0, t1], datatype='merged_scam_wf',
-#                             varnames = ['psp_fld_l3_merged_scam_wf_RTN'], level='l3', time_clip=0, downloadonly = False,
-#                     username = credentials['username'], password = credentials['password'])
-#             else:
-#                 scam_vars = pyspedas.psp.fields(
-#                     trange=[t0, t1], datatype='merged_scam_wf',
-#                             varnames = ['psp_fld_l3_merged_scam_wf_SC'], level='l3', time_clip=0, downloadonly = False,
-#                     username = credentials['username'], password = credentials['password'])                
-#         except:
-#             raise ValueError('Wrong Username or Password!')
-
-#         if scam_vars == []:
-#             return None
-
-#         if  in_RTN:
-#             data = get_data(scam_vars[0])
-#             dfscam = pd.DataFrame(
-#                     index = data.times,
-#                     data = data.y,
-#                     columns = ['Br','Bt','Bn']
-#                 )
-#         else:
-#             data = get_data(scam_vars[0])
-#             dfscam = pd.DataFrame(
-#                     index = data.times,
-#                     data = data.y,
-#                     columns = ['Bx','By','Bz']
-#                 )         
-
-#         dfscam.index = time_string.time_datetime(time=dfscam.index)
-#         dfscam.index = dfscam.index.tz_localize(None)
-#         dfscam.index.name = 'datetime'
-#         #print("SCAM data", dfscam)
-
-#         r8      = dfscam.index.unique().get_loc(start_time, method='nearest');
-#         r8a     = dfscam.index.unique().get_loc(end_time, method='nearest');
-#         dfscam   = dfscam[r8:r8a]
-
-
-
-#     #print("SCAM data", dfscam)
-#     return dfscam
+        dfscam                 = None
+        big_gaps               = None
+        diagnostics_MAG        = {'Frac_miss':100, 'Large_gaps':100, 'Tot_gaps':100, 'resol':100}
+ 
+    return dfscam

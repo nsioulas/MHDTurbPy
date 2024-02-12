@@ -14,6 +14,10 @@ import traceback
 from time import sleep
 import matplotlib.dates as mdates
 from scipy import interpolate
+import gc
+from scipy.interpolate import interp1d
+
+
 
 # Make sure to use the local spedas
 sys.path.insert(0, os.path.join(os.getcwd(), 'pyspedas'))
@@ -32,99 +36,14 @@ import Figures as figs
 from   SEA import SEA
 import three_D_funcs as threeD
 
-os.path.join(os.getcwd(), 'functions','downloading_helpers' )
-from PSP import  download_ephemeris_PSP
+# os.path.join(os.getcwd(), 'functions','downloading_helpers' )
+# from PSP import  download_ephemeris_PSP
 
 os.path.join(os.getcwd(), 'functions','3d_anis_analysis_toolboox' )
 import collect_wave_coeffs 
 
 
 
-
-def download_files( ok,
-                    df,
-                    final_path,
-                    only_one_interval,
-                    step,
-                    duration,
-                    addit_time_around,
-                    settings,
-                    vars_2_downnload,
-                    cdf_lib_path,
-                    credentials,
-                    gap_time_threshold,
-                    estimate_PSD_V,
-                    subtract_rol_mean,
-                    rolling_window,
-                    f_min_spec,
-                    f_max_spec,
-                    estimate_PSD,
-                    sc,
-                    high_resol_data,
-                    in_RTN,
-                    three_sec_resol= False):
-    
-    try:
-        t0 = df['Start'][ok]
-        t1 = df['End'][ok]
-
-        """Setup for main function"""
-        tstarts, tends, tfmt, path0  = calc.set_up_main_loop(final_path, only_one_interval,t0, t1, step, duration)
-        
-       
-
-        start_time  = df['Start'][ok]
-        end_time    = df['End'][ok]
-        
-
-        # Define folder name
-        foldername  = "%s_%s_sc_%d" %(str(start_time.strftime(tfmt)), str(end_time.strftime(tfmt)), 0)
-
-        if not os.path.exists(path0.joinpath(foldername).joinpath('final_data.pkl')):
-            print('Folder name', path0.joinpath(foldername))
-            # Running the main function
-            big_gaps, flag_good, final, general, sig_c_sig_r_timeseries, dfdis = calc.final_func(
-                                                                                            start_time         , 
-                                                                                            end_time           , 
-                                                                                            addit_time_around  ,
-                                                                                            settings           , 
-                                                                                            vars_2_downnload   ,
-                                                                                            cdf_lib_path       ,
-                                                                                            credentials        ,
-                                                                                            gap_time_threshold ,
-                                                                                            estimate_PSD_V     ,
-                                                                                            subtract_rol_mean  ,
-                                                                                            rolling_window     ,
-                                                                                            f_min_spec         ,
-                                                                                            f_max_spec         ,  
-                                                                                            estimate_PSD       , 
-                                                                                            sc                 , 
-                                                                                            high_resol_data    ,
-                                                                                            in_RTN             ,
-                                                                                            three_sec_resol = three_sec_resol
-                                                                                          )
-            try:
-                final['Par']['V_resampled'] = final['Par']['V_resampled'].join(func.newindex(dfdis[['sc_vel_r', 'sc_vel_t', 'sc_vel_n']],
-                                                                                             final['Par']['V_resampled'].index))
-
-            except:
-                pass
-
-
-            if flag_good == 1:
-                os.makedirs(path0.joinpath(foldername), exist_ok=True)
-
-                pickle.dump(final,open(path0.joinpath(foldername).joinpath("final_data.pkl"),'wb'))
-                pickle.dump(general,open(path0.joinpath(foldername).joinpath("general.pkl"),'wb'))
-                pickle.dump(sig_c_sig_r_timeseries,open(path0.joinpath(foldername).joinpath("sig_c_sig_r.pkl"),'wb'))
-
-                print("%d out of %d finished" %(ok, len(df)))
-            else:
-                os.makedirs(path0.joinpath(foldername), exist_ok=True)
-                print("%s - %s failed!" %(ok, len(df)))   
-    except Exception as e:
-        print('failed at index', ok, 'with error:', str(e))
-        traceback.print_exc()
 
 
 
@@ -181,7 +100,8 @@ def five_pt_two_pt_wavelet_analysis(i,
                                     overwrite_existing_files = False,
                                     thetas_phis_step         = 10, 
                                     return_B_in_vel_units    = False, 
-                                    max_interval_dur         =  240):
+                                    max_interval_dur         =  240,
+                                   estimate_dzp_dzm          = False):
     
     import warnings
     
@@ -203,8 +123,10 @@ def five_pt_two_pt_wavelet_analysis(i,
         if dts<max_interval_dur:
             print('Considering an interval of duration:', dts,'[hrs]')
                     
-            if strict_thresh:
+            if strict_thresh==1:
                 strict_suffix = '5deg_'
+            elif strict_thresh==2:
+                strict_suffix = '2deg_'
             else:
                 strict_suffix = ''
 
@@ -244,7 +166,7 @@ def five_pt_two_pt_wavelet_analysis(i,
                 fname          = f"_all_bins_{general_suffix}{npoints_suffix}{strict_suffix}{conditions_suffix}{vsc_suffix}{sfuncs_suffix}_step_{str(thetas_phis_step)}.pkl"
                 
             else:  
-                fname          = f"{general_suffix}{npoints_suffix}{strict_suffix}{conditions_suffix}{vsc_suffix}{sfuncs_suffix}.pkl"
+                fname          = f"{general_suffix}{npoints_suffix}{strict_suffix}{conditions_suffix}{vsc_suffix}{sfuncs_suffix}_final.pkl"
             
                 
             # Check wether file alredy exists
@@ -368,7 +290,8 @@ def five_pt_two_pt_wavelet_analysis(i,
                                                                                                                  fix_sign                 = fix_sign,
                                                                                                                  ts_list                  = ts_list,
                                                                                                                  thetas_phis_step         = thetas_phis_step, 
-                                                                                                                 return_B_in_vel_units    = return_B_in_vel_units
+                                                                                                                 return_B_in_vel_units    = return_B_in_vel_units,
+                                                                                                                 estimate_dzp_dzm          = estimate_dzp_dzm
                                                                                                                  
                                                                                                             )
 
@@ -431,6 +354,289 @@ def five_pt_two_pt_wavelet_analysis(i,
     except:
         traceback.print_exc()
         pass
+    
+    
+def five_pt_two_pt_wavelet_analysis_E1_only(i,
+                                    fnames,
+                                    scam_names,
+                                    credentials,
+                                    conditions,
+                                    gen_names,
+                                    return_flucs,
+                                    consider_Vsc,
+                                    only_E1,
+                                    Estimate_5point,
+                                    keep_wave_coeefs,
+                                    strict_thresh,
+                                    max_hours,
+                                    qorder,
+                                    estimate_alignment_angle,
+                                    return_mag_align_correl,
+                                    only_general,
+                                    phi_thresh_gen,
+                                    theta_thresh_gen,
+                                    sc                       ='PSP', 
+                                    extra_conditions         = False,
+                                    ts_list                  = None,
+                                    overwrite_existing_files = False,
+                                    thetas_phis_step         = 10, 
+                                    return_B_in_vel_units    = False, 
+                                    max_interval_dur         =  240,
+                                   estimate_dzp_dzm          = False):
+    
+    import warnings
+    
+    # Ignore all warnings
+    warnings.filterwarnings("ignore")
+    
+    try:
+    
+        # Print progress
+        func.progress_bar(i, len(fnames))
+
+        # Load files
+        res  = pd.read_pickle(fnames[i])
+        gen  = pd.read_pickle(gen_names[i])
+        scam = pd.read_pickle(scam_names[i])
+        
+        # Duration of interval in hours
+        dts = (gen['End_Time']- gen['Start_Time']).total_seconds()/3600
+        
+        if dts<max_interval_dur:
+            print('Considering an interval of duration:', dts,'[hrs]')
+                    
+            if strict_thresh==1:
+                strict_suffix = '5deg_'
+            elif strict_thresh==2:
+                strict_suffix = '2deg_'
+            else:
+                strict_suffix = ''
+
+
+            if extra_conditions:
+                conditions_suffix = 'extra_conditions_'
+            else:
+                conditions_suffix = ''
+
+            if Estimate_5point:
+
+                npoints_suffix = '5pt_'
+            else:
+                npoints_suffix = '2pt_'
+
+            if return_flucs:
+                sfuncs_suffix = ''
+            else:
+                sfuncs_suffix = 'sfuncs_estimated'
+
+
+            if only_general==1:
+                general_suffix = 'general_SF_'
+            else:
+                general_suffix = ''
+
+            if consider_Vsc:
+                vsc_suffix = 'Vsc_removed_'
+            else:
+                vsc_suffix = ''  
+
+
+            if only_general==1:
+                fname          = f"{general_suffix}{npoints_suffix}{strict_suffix}{conditions_suffix}{vsc_suffix}{sfuncs_suffix}theta_{theta_thresh_gen}_phi_{phi_thresh_gen}.pkl"
+                align_name     = f"{npoints_suffix}{vsc_suffix}.pkl"
+            elif only_general==2:
+                fname          = f"_all_bins_{general_suffix}{npoints_suffix}{strict_suffix}{conditions_suffix}{vsc_suffix}{sfuncs_suffix}_step_{str(thetas_phis_step)}.pkl"
+                
+            else:  
+                fname          = f"{general_suffix}{npoints_suffix}{strict_suffix}{conditions_suffix}{vsc_suffix}{sfuncs_suffix}_final.pkl"
+            
+                
+            # Check wether file alredy exists
+            check_file     = str(Path(gen_names[i][:-11]).joinpath('final').joinpath(fname))
+                                 
+            # Now work on data!
+            if (not os.path.exists(check_file)) or (overwrite_existing_files):
+
+                                 
+                if (overwrite_existing_files) & (os.path.exists(check_file)):
+                    print('Overwriting', check_file ,'per your commands ')
+                else:
+                    print('Working on new file: ', check_file)
+
+                # Choose V, B dataframes
+                B  = scam["resampled_df"][['Br', 'Bt', 'Bn']]
+                V  = res['Par']['V_resampled']()[['Vr', 'Vt', 'Vn']]
+                Np = res['Par']['V_resampled']()[['np']]
+
+
+                Np = Np[~Np.index.duplicated()]
+
+                V  = V[~V.index.duplicated()]
+                B  = B[~B.index.duplicated()]
+                try:
+                    Np = func.newindex(Np, B.index)
+                except:
+                    print(Np.index[0])
+                    print(V)
+                    print(func.find_cadence(Np))
+
+                if (consider_Vsc) & (sc=='PSP'):
+                    # download ephemeris data
+                    ephem                 = download_ephemeris_PSP(str(gen['Start_Time']-pd.Timedelta('10min')), 
+                                                                   str(gen['End_Time']  +pd.Timedelta('10min')),
+                                                                   credentials,
+                                                                   ['position','velocity']
+                                                                  )
+
+                    # Only keep data needed
+                    ephem                 = ephem[['sc_vel_r', 'sc_vel_t', 'sc_vel_n']]
+
+                    # Reindex them to V df index
+                    ephem                 = func.newindex(ephem, V.index)
+
+                    # Subract
+                    V[['Vr', 'Vt', 'Vn']] = res['Par']['V_resampled'][['Vr', 'Vt', 'Vn']]().values - ephem[['sc_vel_r', 'sc_vel_t', 'sc_vel_n']].interpolate().values
+
+                    # Keep Vsw to normalize
+                    Vsw_norm              = np.nanmean(np.sqrt(V['Vr']**2 + V['Vt']**2 + V['Vn']**2))
+                else:
+                    Vsw_norm              = np.nanmean(np.sqrt(res['Par']['V_resampled']()['Vr']**2 + res['Par']['V_resampled']()['Vt']**2 + res['Par']['V_resampled']()['Vn']**2))
+
+                if sc =='WIND':
+                    fix_sign =False
+                else:
+                    fix_sign =True           
+
+                # Vsw Mean, di mean
+                di  = res['Par']['di_mean']
+                Vsw = res['Par']['Vsw_mean']
+
+                # Reindex V timeseries
+                try:
+                    V   = func.newindex(V, B.index)
+                except:
+                    print(func.find_cadence(V))
+
+                # Estimate lags
+                dt  = func.find_cadence(B)
+
+                # Try CWT method
+                if keep_wave_coeefs:
+
+                    Wx, Wy, Wz, freqs, PSD,  scales = turb.trace_PSD_wavelet(B.Br.values,
+                                                                                          B.Bt.values,
+                                                                                          B.Bn.values, 
+                                                                                          dt,
+                                                                                          dj_wave)
+                    phys_scales =  1 / (freqs)
+
+                    # Create dictionary
+                    keep_wave_coeff = {'Wx': Wx, 'Wy': Wy, 'Wz': Wz, 'freqs':freqs, 'PSD':PSD, 'phys_scales':phys_scales, 'scales': scales, 'di':di, 'Vsw_RTN':Vsw, 'Vsw_minus_Vsc':Vsw_norm, 'dt':dt }
+
+                    del Wx, Wy, Wz
+
+                    # Save dictionary
+                    if strict_thresh:
+                        func.savepickle(keep_wave_coeff, fnames[i][:-9], 'wave_coeffs_5deg.pkl')               
+                    else:
+                        func.savepickle(keep_wave_coeff, fnames[i][:-9], 'wave_coeffs.pkl')
+
+                    del keep_wave_coeff
+                else:
+                    max_lag     = int((max_hours*3600)/dt)
+                    tau_values  = 1.2**np.arange(0, 1000)
+                    max_ind     = (tau_values<max_lag) & (tau_values>0)
+                    phys_scales = np.unique(tau_values[max_ind].astype(int))
+
+
+                # Create an empty list to store the final results
+                thetas, phis, flucts, ell_di, Sfunctions, PDFs, overall_align_angles = threeD.estimate_3D_sfuncs(B,
+                                                                                                                 V, 
+                                                                                                                 Np,
+                                                                                                                 dt,
+                                                                                                                 Vsw_norm, 
+                                                                                                                 di, 
+                                                                                                                 conditions,
+                                                                                                                 qorder, 
+                                                                                                                 phys_scales, 
+                                                                                                                 estimate_PDFS            = False,
+                                                                                                                 return_unit_vecs         = False,
+                                                                                                                 five_points_sfuncs       = Estimate_5point,
+                                                                                                                 estimate_alignment_angle = estimate_alignment_angle,
+                                                                                                                 return_mag_align_correl  = return_mag_align_correl,
+                                                                                                                 return_coefs             = return_flucs,
+                                                                                                                 only_general             = only_general,
+                                                                                                                 theta_thresh_gen         = theta_thresh_gen,
+                                                                                                                 phi_thresh_gen           = phi_thresh_gen,
+                                                                                                                 extra_conditions         = extra_conditions,
+                                                                                                                 fix_sign                 = fix_sign,
+                                                                                                                 ts_list                  = ts_list,
+                                                                                                                 thetas_phis_step         = thetas_phis_step, 
+                                                                                                                 return_B_in_vel_units    = return_B_in_vel_units,
+                                                                                                                 estimate_dzp_dzm          = estimate_dzp_dzm
+                                                                                                                 
+                                                                                                            )
+
+
+                keep_sfuncs_final = {'di':di, 'Vsw':Vsw, 'Vsw_norm': Vsw_norm, 'ell_di':ell_di,'Sfuncs':Sfunctions, 'flucts':flucts}
+
+                #Now save file
+                func.savepickle(keep_sfuncs_final, str(Path(gen_names[i][:-11]).joinpath('final')), fname)
+
+                # also Save alignment abnles
+                if  estimate_alignment_angle:
+                    align_name   = f"alignment_angles_{npoints_suffix}{vsc_suffix}.pkl"
+                    func.savepickle(overall_align_angles, str(Path(gen_names[i][:-11]).joinpath('final')), align_name)
+
+
+                # Save some space for ram
+                del keep_sfuncs_final
+
+                if keep_wave_coeefs:
+
+                    # We want to prevent saving tons of data (phis, thetas). For this reason we will load the 'wave_coeffs.pkl' file again.
+                    # We will once again use the conditionals for the angles. Keep the wavelet coefficients we want for each category
+                    # Then we will overwrite the previous version of 'wave_coeffs.pkl'
+
+                    # First load
+                    if strict_thresh:
+                        wave_coeffs =  pd.read_pickle(str(os.path.join(fnames[i][:-9], 'wave_coeffs_5deg.pkl') ))                
+                    else:
+                        wave_coeffs =  pd.read_pickle(str(os.path.join(fnames[i][:-9], 'wave_coeffs.pkl') ))
+
+                    ell_perp_dict, Ell_perp_dict, ell_par_dict, ell_par_rest_dict = collect_wave_coeffs.keep_conditioned_coeffs(
+                                                                                                                                np.hstack(list(phis.values())),
+                                                                                                                                np.hstack(list(thetas.values())),
+                                                                                                                                wave_coeffs,
+                                                                                                                                conditions)
+                    keep_wave_coeff = {'ell_perp'           : ell_perp_dict,
+                                       'Ell_perp'           : Ell_perp_dict,
+                                       'ell_par'            : ell_par_dict,
+                                       'ell_par_rest_dict'  : ell_par_rest_dict,
+                                       'freqs'              : freqs,
+                                       'PSD'                : PSD,  
+                                       'di'                 : di,
+                                       'Vsw_RTN'            : Vsw, 
+                                       'Vsw_minus_Vsc'      : Vsw_norm,
+                                       'dt'                 : dt }
+                    # Save dictionary
+                    if strict_thresh:
+                        func.savepickle(keep_wave_coeff, fnames[i][:-9], 'wave_coeffs_5deg.pkl')               
+                    else:
+                        func.savepickle(keep_wave_coeff, fnames[i][:-9], 'wave_coeffs.pkl')
+
+                    del thetas, phis, wave_coeffs, ell_perp_dict, Ell_perp_dict, ell_par_dict, ell_par_rest_dict
+
+                # Check if it's time to trigger garbage collection
+                if i % 2 == 0:
+                    gc.collect()
+            else:
+                if (os.path.exists(check_file)):
+                    print('Omitted file because it already exists, and overwrite option is False !')
+    except:
+        traceback.print_exc()
+        pass
+
 
 from numba import prange, jit
 def digitize_flucs(xvalues, yvalues, what, std_or_std_mean, nbins, loglog):
@@ -576,15 +782,99 @@ def process_data( data_file, data_file_gen, data_file_fin, data_file_align, max_
     
     return SF_ell_final
 
+def process_data_new( data_file,
+                     data_file_gen,
+                     data_file_fin,
+                     data_file_align,
+                     max_d, 
+                     min_d,
+                     qorders,
+                     general_sf):
+    
+    res       = pd.read_pickle(data_file)
+    res_gen   = pd.read_pickle(data_file_gen)
+    res_fin   = pd.read_pickle(data_file_fin)
+    res_align = pd.read_pickle(data_file_align)
+
+    # Define parameters
+    Vsw      = res['Vsw']
+    di       = res['di']
+    sigma_c  = res_fin['Par']['sigma_c_mean']
+    sigma_r  = res_fin['Par']['sigma_r_mean']
+    VB_sin   = res_align['VB']['reg']
+    B_mean   = np.nanmean(np.linalg.norm(res_fin["Mag"]["B_resampled"].values, axis=1)) ** 2
+    duration = (pd.to_datetime(res_fin['Mag']['B_resampled'].index)[-1] - pd.to_datetime(res_fin['Mag']['B_resampled'].index)[0]) / np.timedelta64(1, 's')
+
+
+    keep_sfunc_ell_perp             = np.nan*np.ones((len(qorders), len(res['Sfuncs']['B']['ell_perp'][0])))
+    keep_sfunc_Ell_perpendicular    = np.nan*np.ones((len(qorders), len(res['Sfuncs']['B']['ell_perp'][0])))
+    keep_sfunc_ell_par              = np.nan*np.ones((len(qorders), len(res['Sfuncs']['B']['ell_perp'][0])))
+    keep_sfunc_ell_par_rest         = np.nan*np.ones((len(qorders), len(res['Sfuncs']['B']['ell_perp'][0])))
+
+    keep_sdk_ell_perp               = np.nan*np.ones(len(res['Sfuncs']['B']['ell_perp'][0]))
+    keep_sdk_Ell_perpendicular      = np.nan*np.ones(len(res['Sfuncs']['B']['ell_perp'][0]))
+    keep_sdk_ell_par                = np.nan*np.ones(len(res['Sfuncs']['B']['ell_perp'][0]))
+    keep_sdk_ell_par_rest           = np.nan*np.ones(len(res['Sfuncs']['B']['ell_perp'][0]))
+
+    keep_sfunc_ell_perp_di          = np.nan*np.ones(len(res['Sfuncs']['B']['ell_perp'][0]))
+    keep_sfunc_Ell_perpendicular_di = np.nan*np.ones(len(res['Sfuncs']['B']['ell_perp'][0]))
+    keep_sfunc_ell_par_di           = np.nan*np.ones(len(res['Sfuncs']['B']['ell_perp'][0]))
+    keep_sfunc_ell_par_rest_di      = np.nan*np.ones(len(res['Sfuncs']['B']['ell_perp'][0]))        
+    keep_align                      = []
+    
+
+    for qorder in qorders:
+
+        keep_sfunc_ell_perp[qorder-1, :]               = res['Sfuncs']['B']['ell_perp'][qorder-1]
+        keep_sfunc_Ell_perpendicular[qorder-1, :]      = res['Sfuncs']['B']['Ell_perp'][qorder-1]
+        keep_sfunc_ell_par[qorder-1, :]                = res['Sfuncs']['B']['ell_par'][qorder-1]
+        keep_sfunc_ell_par_rest[qorder-1, :]           = res['Sfuncs']['B']['ell_par_rest'][qorder-1]
+
+        if  qorder ==5:
+
+            keep_sfunc_ell_perp_di[:]                      = res['ell_di']
+            keep_sfunc_Ell_perpendicular_di[:]             = res['ell_di']            
+            keep_sfunc_ell_par_di[:]                       = res['ell_di']   
+            keep_sfunc_ell_par_rest_di[:]                  = res['ell_di'] 
+
+
+                    
+    
+    SF_ell_final = pd.DataFrame({'sfuncs_ell_perp'          : [keep_sfunc_ell_perp],
+                                  'ells_ell_perp'           : [keep_sfunc_ell_perp_di],
+                                  'VB_reg_sin'              : [VB_sin],
+                                  'sdk_ell_perp'            : [keep_sdk_ell_perp],
+                                  'sfuncs_Ell_perpendicular': [keep_sfunc_Ell_perpendicular],
+                                  'ells_Ell_perpendicular'  : [keep_sfunc_Ell_perpendicular_di],
+                                  'sdk_Ell_perpendicular'   : [keep_sdk_Ell_perpendicular],
+                                  'sfuncs_ell_par'          : [keep_sfunc_ell_par],
+                                  'sdk_ell_par'             : [keep_sdk_ell_par],
+                                  'ells_ell_par'            : [keep_sfunc_ell_par_di],
+                                  'sfuncs_ell_par_rest'     : [keep_sfunc_ell_par_rest],
+                                  'sdk_ell_par_rest'        : [keep_sdk_ell_par_rest],
+                                  'ells_ell_par_rest'       : [keep_sfunc_ell_par_rest_di],
+                                  'sig_c'                   : sigma_c,
+                                  'sig_r'                   : sigma_r,
+                                  'd'                       : res_gen['d'],
+                                  'Vsw'                     : Vsw,
+                                  'B_mean_sq'               : B_mean,
+                                  'duration'                : duration,
+                                  'miss_frac_mag'           : res_gen['Fraction_missing_MAG'],
+                                  'miss_frac_par'           : res_gen['Fraction_missing_part']})
+    
+    return SF_ell_final
+
+
+                     
 
 #Define function to process each file in parallel
-def process_file(data_file, data_file_gen, data_file_fin, data_file_align, max_d, min_d, qorders, general_sf):
+def process_file(data_file, data_file_gen, data_file_fin, data_file_align, max_d, min_d, qorders, general_sf, old_way = True):
     # Call process_data function on each file
-    result = process_data(data_file, data_file_gen, data_file_fin, data_file_align,  max_d, min_d, qorders, general_sf)
+    if old_way:
+        result = process_data(data_file, data_file_gen, data_file_fin, data_file_align,  max_d, min_d, qorders, general_sf)
+    else:
+        result = process_data_new(data_file, data_file_gen, data_file_fin, data_file_align,  max_d, min_d, qorders, general_sf)                     
     return result
-
-
-
 
 def calculate_sfuncs(which_ones,
                      step,
@@ -609,19 +899,21 @@ def calculate_sfuncs(which_ones,
                      min_dur,
                      max_qorder,
                      path, 
+                     old_way          = False,
                      normalize_sfuncs ='with_mean'):
     if E1_only:
-        if five_point:
-            prefix = '5pt'
-        else:
-            prefix = '2pt'
-        if strict_thresh:
-            res = pd.read_pickle(path+str(duration)+'_'+str(step)+'_binned_data/trace_SF/final_sfuncs/E1_'+str(prefix)+'_alfvenic_SFuncs_final_slow_5deg.pkl')
-        else:
-            res = pd.read_pickle(path+str(duration)+'_'+str(step)+'_binned_data/trace_SF/final_sfuncs/E1_'+str(prefix)+'_alfvenic_SFuncs_final_slow.pkl')
-            
+        if old_way:
+            if five_point:
+                prefix = '5pt'
+            else:
+                prefix = '2pt'
+            if strict_thresh:
+                res = pd.read_pickle(path+str(duration)+'_'+str(step)+'_binned_data/trace_SF/final_sfuncs/E1_'+str(prefix)+'_alfvenic_SFuncs_final_slow_5deg.pkl')
+            else:
+                res = pd.read_pickle(path+str(duration)+'_'+str(step)+'_binned_data/trace_SF/final_sfuncs/E1_'+str(prefix)+'_alfvenic_SFuncs_final_slow.pkl')
 
-
+                
+        print(len(res))
     else:
         if alfvenic:
             res = pd.read_pickle(path+str(duration)+'_'+str(step)+'_all_binned_data/trace_SF/0.1_1.2/final_sfuncs/5pt_alfvenic_SFuncs_final_slow.pkl')
@@ -652,46 +944,62 @@ def calculate_sfuncs(which_ones,
             chi_array_sqrt_db_sq_over_B0 = []
             B_0                          = []
             for N in range(len(res)):
-                keep_row = res[int(N):int(N+1)]
+                
+                try:
+                    keep_row = res[int(N):int(N+1)]
 
-                if E1_only:
-                    conditions = 0
-                else:
-                    if alfvenic:
+                    if E1_only:
                         conditions = (keep_row['sig_c'].values[0] > sig_c_alfv) & \
                                      (keep_row['d'].values[0] > min_d) & \
                                      (keep_row['d'].values[0] < max_d) & \
+                                     (keep_row['Vsw'].values[0] < max_Vsw) &\
                                      (keep_row['miss_frac_mag'].values[0] < min_mag_mis_frac) & \
                                      (keep_row['miss_frac_par'].values[0] < min_par_mis_frac) & \
                                      (keep_row['duration'].values[0] > min_dur)
                     else:
-                        conditions = (keep_row['sig_c'].values[0] < sig_c_non_alfv) & \
-                                     (keep_row['d'].values[0] > min_d) & \
-                                     (keep_row['d'].values[0] < max_d) & \
-                                     (keep_row['miss_frac_mag'].values[0] < min_mag_mis_frac) & \
-                                     (keep_row['miss_frac_par'].values[0] < min_par_mis_frac) & \
-                                     (keep_row['duration'].values[0] > min_dur)
+                        if alfvenic:
+                            conditions = (keep_row['sig_c'].values[0] > sig_c_alfv) & \
+                                         (keep_row['d'].values[0] > min_d) & \
+                                         (keep_row['d'].values[0] < max_d) & \
+                                         (keep_row['miss_frac_mag'].values[0] < min_mag_mis_frac) & \
+                                         (keep_row['miss_frac_par'].values[0] < min_par_mis_frac) & \
+                                         (keep_row['duration'].values[0] > min_dur)
+                        else:
+                            conditions = (keep_row['sig_c'].values[0] < sig_c_non_alfv) & \
+                                         (keep_row['d'].values[0] > min_d) & \
+                                         (keep_row['d'].values[0] < max_d) & \
+                                         (keep_row['miss_frac_mag'].values[0] < min_mag_mis_frac) & \
+                                         (keep_row['miss_frac_par'].values[0] < min_par_mis_frac) & \
+                                         (keep_row['duration'].values[0] > min_dur)
 
-                if conditions or (E1_only and keep_row['Vsw'].values[0] < max_Vsw):
-                    sig_c.append(keep_row['sig_c'].values[0])
-                    B_0.append(np.sqrt(keep_row['B_mean_sq'].values[0]))
-                    xx         = keep_row['ells_'+str(which_one)].values[0]
-                    yvals_keep = keep_row['sfuncs_'+str(which_one)].values[0][qorder][(xx>min_norm) & (xx<max_norm)]
-                    if normalize_sfuncs=='with_mean':
-                        yvals.append(keep_row['sfuncs_'+str(which_one)].values[0][qorder]/np.nanmean(yvals_keep))
-                    elif normalize_sfuncs=='B_sq':
-                        yvals.append(keep_row['sfuncs_'+str(which_one)].values[0][qorder]/keep_row['B_mean_sq'].values[0])
-                    else:
-                        yvals.append(keep_row['sfuncs_'+str(which_one)].values[0][qorder])                        
-                    xvals.append(keep_row['ells_'+str(which_one)].values[0])
-                    sdks.append(keep_row['sdk_'+str(which_one)].values[0])
-                    if qorder==0:
-                        
-                        chi_array_db_over_B0.append((keep_row['sfuncs_'+str(which_one)].values[0][qorder])/np.sqrt(keep_row['B_mean_sq']).values[0])
-                        #chi_array_db_over_B0_sin.append((keep_row['sfuncs_'+str(which_one)].values[0][qorder]* #keep_row['VB_reg_sin'].values[0])/np.sqrt(keep_row['B_mean_sq']).values[0])
-#                    elif qorder==1:
-#                        chi_array_sqrt_db_sq_over_B0.append((np.sqrt(keep_row['sfuncs_'+str(which_one)].values[0][qorder]* #keep_row['VB_reg_sin'].values[0]))/np.sqrt(keep_row['B_mean_sq']).values[0])                        
-                    
+                    if (conditions) or (E1_only) :
+                        sig_c.append(keep_row['sig_c'].values[0])
+                        try:
+                            B_0.append(np.sqrt(keep_row['B_mean_sq'].values[0]))
+                        except:
+                            B_0.append(np.nan)
+                            #print(keep_row.keys())
+                        xx         = keep_row['ells_'+str(which_one)].values[0]
+                        yvals_keep = keep_row['sfuncs_'+str(which_one)].values[0][qorder][(xx>min_norm) & (xx<max_norm)]
+                        if normalize_sfuncs=='with_mean':
+                            yvals.append(keep_row['sfuncs_'+str(which_one)].values[0][qorder]/np.nanmean(yvals_keep))
+                        elif normalize_sfuncs=='B_sq':
+                            try:
+                                yvals.append(keep_row['sfuncs_'+str(which_one)].values[0][qorder]/keep_row['B_mean_sq'].values[0])
+                            except:
+                                yvals.append(np.nan)
+                        else:
+                            yvals.append(keep_row['sfuncs_'+str(which_one)].values[0][qorder])                        
+                        xvals.append(keep_row['ells_'+str(which_one)].values[0])
+                        sdks.append(keep_row['sdk_'+str(which_one)].values[0])
+                        if qorder==0:
+                            try:
+                                chi_array_db_over_B0.append((keep_row['sfuncs_'+str(which_one)].values[0][qorder])/np.sqrt(keep_row['B_mean_sq']).values[0])
+                            except:
+                                chi_array_db_over_B0.append(np.nan)
+                except:
+                    traceback.print_exc()
+
             if qorder ==0:
                 wave_chi_array_db_over_B0 = chi_array_db_over_B0
                 wave_chi_array_db_over_B0_sin     = chi_array_db_over_B0_sin
@@ -703,7 +1011,7 @@ def calculate_sfuncs(which_ones,
                 wave_chi_array_sqrt_db_sq_over_B0 = chi_array_sqrt_db_sq_over_B0
                
                 
-            #print(xvals)
+            #print(np.shape(xvals))
             xvals_new = np.hstack(xvals)
             yvals_new = np.hstack(yvals)
             sdks_new  = np.hstack(sdks)
@@ -830,8 +1138,9 @@ def calculate_sfuncs_WIND_sc(
                     if qorder==0:
                         chi_array_db_over_B0.append((keep_row['sfuncs_'+str(which_one)].values[0][qorder])/np.sqrt(keep_row['B_mean_sq']).values[0])
  
+
             if qorder ==0:
-                wave_chi_array_db_over_B0 = chi_array_db_over_B0
+                wave_chi_array_db_over_B0         = chi_array_db_over_B0
                 wave_chi_array_db_over_B0_sin     = chi_array_db_over_B0_sin
             if qorder==1:
                 wave_xvals = xvals
@@ -877,28 +1186,105 @@ def calculate_sfuncs_WIND_sc(
 
 
 
-def alignment_anlges(duration,
-                     step,
+def estimate_non_lin_parameter(load_path,
+                               sf_name, 
+                               fin_name,
+                               al_name,
+                               aling_x_min,
+                               sig_c_min):
+    
+    from scipy import constants
+    mu0          = constants.mu_0  # Vacuum magnetic permeability [N A^-2]
+    m_p          = constants.m_p    # Proton mass [kg]
+
+    # Load files
+    sf_files    = func.load_files(load_path, sf_name, 'final')
+    final_files = func.load_files(load_path, fin_name, '')
+    align_files = func.load_files(load_path, al_name, 'final')
+    
+    # Initialize lists
+    xvm, yvm =[],[]
+    xvp, yvp =[],[]
+
+    yvm_xi   =[]
+    yvp_xi   =[]
+
+    for ww, ( sf_file, fin_file, align_file)  in enumerate(zip(sf_files, final_files, align_files)):
+        sf = pd.read_pickle(sf_file)
+        fin = pd.read_pickle(fin_file)
+        al  = pd.read_pickle(align_file)
+
+
+        if fin['Par']['sigma_c_median']> sig_c_min:
+
+            kinet_normal = np.nanmedian(1e-15 / np.sqrt(mu0 * fin['Par']['V_resampled']['np'].values * m_p))
+
+            Var          = kinet_normal*fin['Mag']['B_resampled']['Br']
+            Vat          = kinet_normal*fin['Mag']['B_resampled']['Bt']
+            Van          = kinet_normal*fin['Mag']['B_resampled']['Bn']
+            Va_ts        = np.sqrt(Var**2 + Vat**2 + Van**2)
+            Va           = np.nanmedian(Va_ts)
+
+            d_zp_lambda, d_zp_xi, d_zp_ell = sf['Sfuncs']['Zp']['ell_perp'][0], sf['Sfuncs']['Zp']['Ell_perp'][0], sf['Sfuncs']['Zp']['ell_par_rest'][0]
+            d_zm_lambda, d_zm_xi, d_zm_ell = sf['Sfuncs']['Zm']['ell_perp'][0], sf['Sfuncs']['Zm']['Ell_perp'][0], sf['Sfuncs']['Zm']['ell_par_rest'][0]
+
+            zp_lambda  , zp_xi  , zp_ell   = sf['Sfuncs']['l_ell_perp']/sf['di'], sf['Sfuncs']['l_Ell_perp']/sf['di'], sf['Sfuncs']['l_ell_par']/sf['di']
+            zm_lambda  , zm_xi  , zm_ell   = sf['Sfuncs']['l_ell_perp']/sf['di'], sf['Sfuncs']['l_Ell_perp']/sf['di'], sf['Sfuncs']['l_ell_par']/sf['di']
+
+            align_angle = np.array(al['Zpm']['reg'])
+            index       = zp_lambda >aling_x_min
+            
+            try:
+ 
+                # Estimate non-lin parameter
+                lambdas, chi_m_lambda, chi_m_xi, chi_p_lambda, chi_p_xi = turb.calculate_non_linearity_parameter(d_zp_lambda[index], d_zp_xi[index], d_zp_ell[index],
+                                                                                                                  d_zm_lambda[index], d_zm_xi[index], d_zm_ell[index],
+                                                                                                                  zp_lambda[index], zp_xi[index], zp_ell[index], zm_lambda[index],
+                                                                                                                  zm_xi[index], zm_ell[index], align_angle[index], Va)
+                xvm.append(lambdas)
+                xvp.append(lambdas)
+
+                yvm.append(chi_m_lambda)
+                yvp.append(chi_p_lambda)
+
+                yvm_xi.append(chi_m_xi)
+                yvp_xi.append(chi_p_xi)
+            except:
+                print('bad')
+                pass
+
+    xvm, yvm = np.hstack(xvm), np.hstack(yvm)
+    xvp, yvp = np.hstack(xvp), np.hstack(yvp) 
+
+    yvm_xi =  np.hstack(yvm_xi)
+    yvp_xi =  np.hstack(yvp_xi)
+
+    
+    return xvm, xvp, yvm, yvp, yvm_xi, yvp_xi
+
+
+
+def alignment_anlges(
                      what,
                      std,
+                     al_names,
                      wind,
                      loglog,
-                     zesen_ints= 0):
+                     sig_c_min,
+                     data_path    = '',
+                     fnames_sf    ='',
+                     fnames_align ='',
+                     base_path    ='',
+                     connect2     = ''):
     
-    if zesen_ints==0:
-        base_path = Path('/Users/nokni/work/3d_anisotropy/structure_functions_E1/data')
-        data_path = base_path / f'{duration}_{step}_final_fixed'
-        
-        data_filess = np.sort(list(data_path.glob('*/5point_sfuncs_5deg.pkl')))
-        data_filess_align = np.sort(list(data_path.glob('*/alignment_angles.pkl')))
-    else:
-        data_path = Path('/Users/nokni/work/3d_anisotropy/structure_functions_E1/3plaw_data_zesen/intervals')
-        
-        data_filess = np.sort(list(data_path.glob('*/final/5point_sfuncs.pkl')))
-        data_filess_align = np.sort(list(data_path.glob('*/final/alignment_angles.pkl')))
 
 
+
+
+    data_filess_align = func.load_files(data_path,al_names, '')
+    fin_filess        = func.load_files(data_path,'final.pkl', '')
     
+
     xvals       = []
     zpm_ang_w   = []
     VB_ang_w    = []
@@ -912,28 +1298,32 @@ def alignment_anlges(duration,
     sig_r_median = []
     sig_c_mean   = []
     sig_c_median = []
-    for data_files, data_files_align in zip(data_filess, data_filess_align):
+    for  data_files_align, fin_file in zip( data_filess_align, fin_filess):
+        
         res = pd.read_pickle(data_files_align)
-        res1 = pd.read_pickle(data_files)
-        
-        xvals.append(res1['ell_di'])
-        
-        zpm_ang_w.append(np.arcsin(res['Zpm']['weighted'])*180/np.pi)
-        VB_ang_w.append(np.arcsin(res['VB']['weighted'])*180/np.pi)
-        
-        zpm_ang_reg.append(np.arcsin(res['Zpm']['reg'])*180/np.pi)
-        VB_ang_reg.append(np.arcsin(res['VB']['reg'])*180/np.pi)
-        VB_sin_reg.append(res['VB']['reg'])
-        
-        zpm_ang_pol.append(np.arcsin(res['Zpm']['polar'])*180/np.pi)
-        VB_ang_pol.append(np.arcsin(res['VB']['polar'])*180/np.pi)  
-        
-        sig_r_mean.append(res['VB']['sig_r_mean'])
-        sig_r_median.append(res['VB']['sig_r_median'])
-        sig_c_mean.append(res['Zpm']['sig_c_mean'])
-        sig_c_median.append(res['Zpm']['sig_c_median'])
+        fin  = pd.read_pickle(fin_file)
         
         
+        if  fin['Par']['sigma_c_median']> sig_c_min:
+            vv = np.array(res['Zpm']['weighted'])
+            xvals.append(np.array(res['l_di'])[0:len(vv)])
+
+            zpm_ang_w.append(np.arcsin(res['Zpm']['weighted'])*180/np.pi)
+            VB_ang_w.append(np.arcsin(res['VB']['weighted'])*180/np.pi)
+
+            zpm_ang_reg.append(np.arcsin(res['Zpm']['reg'])*180/np.pi)
+            VB_ang_reg.append(np.arcsin(res['VB']['reg'])*180/np.pi)
+            VB_sin_reg.append(np.array(res['VB']['reg']))
+
+            zpm_ang_pol.append(np.arcsin(res['Zpm']['polar'])*180/np.pi)
+            VB_ang_pol.append(np.arcsin(res['VB']['polar'])*180/np.pi)  
+
+            sig_r_mean.append(np.array(res['VB']['sig_r_mean']))
+            sig_r_median.append(np.array(res['VB']['sig_r_median']))
+            sig_c_mean.append(np.array(res['Zpm']['sig_c_mean']))
+            sig_c_median.append(np.array(res['Zpm']['sig_c_median']))
+
+    print(len(sig_r_mean))
     keep_all  = {
                   'xvals'         : np.hstack(xvals),
                   'Zpm_reg'       : np.hstack(zpm_ang_reg),        
@@ -970,6 +1360,348 @@ def alignment_anlges(duration,
 
     return keep_all
 
+
+
+
+
+
+def find_nearest(array, value):
+    """Find the nearest value in an array."""
+    array = np.asarray(array)
+    idx = (np.abs(array - value)).argmin()
+    return array[idx]
+
+from scipy.interpolate import PchipInterpolator
+def calculate_wavenumber_aniso(d_b_lambda, d_b_xi, d_b_ell, 
+                               b_lambda, b_xi, b_ell,
+                               return_dbs  = False,
+                               smooth      = False,
+                               method      = 'linear',
+                               window      = 1.2
+                              ):
+    # Interpolation functions
+    
+    if smooth:
+
+        b_lambda, d_b_lambda = func.smooth_filter(b_lambda, d_b_lambda, window)
+        b_xi, d_b_xi         = func.smooth_filter(b_xi, d_b_xi, window)
+        b_ell, d_b_ell       = func.smooth_filter(b_ell,d_b_ell, window)
+
+
+#     interp_d_b_lambda = interp1d(b_lambda, d_b_lambda, kind=method, fill_value='extrapolate')
+#     interp_d_b_ell = interp1d(b_ell, d_b_ell, kind=method, fill_value='extrapolate')
+#     interp_d_b_xi = interp1d(b_xi, d_b_xi, kind=method, fill_value='extrapolate')
+
+#     interp_b_lambda = interp1d(d_b_lambda, b_lambda, kind=method, fill_value='extrapolate')
+#     interp_b_ell = interp1d(d_b_ell, b_ell, kind=method, fill_value='extrapolate')
+#     interp_b_xi = interp1d(d_b_xi, b_xi, kind=method, fill_value='extrapolate')
+    
+    interp_d_b_lambda = interp1d(b_lambda, d_b_lambda, kind=method, bounds_error=False)#, fill_value=(d_b_lambda[0], d_b_lambda[-1]))
+    interp_d_b_ell = interp1d(b_ell, d_b_ell, kind=method, bounds_error=False)#, fill_value=(d_b_ell[0], d_b_ell[-1]))
+    interp_d_b_xi = interp1d(b_xi, d_b_xi, kind=method, bounds_error=False)#, fill_value=(d_b_xi[0], d_b_xi[-1]))
+
+    interp_b_lambda = interp1d(d_b_lambda, b_lambda, kind=method, bounds_error=False)#, fill_value=(b_lambda[0], b_lambda[-1]))
+    interp_b_ell = interp1d(d_b_ell, b_ell, kind=method, bounds_error=False)#, fill_value=(b_ell[0], b_ell[-1]))   
+    interp_b_xi = interp1d(d_b_xi, b_xi, kind=method, bounds_error=False)#, fill_value=(b_xi[0], b_xi[-1])) 
+        
+    # Calculating chi_p_lambda_ast
+    lambdas = []
+    xis     = []
+    ells    = []
+    
+    dbs_lambda = []
+    dbs_xi     = []
+    dbs_ell    = []
+   # new_lambdas =np.logspace(np.log10(np.nanmin(b_lambda)), np.log10(np.nanmax(b_lambda)), int(Npoints))
+    for b_lambda_ast in b_lambda:
+        d_b_lambda_ast = interp_d_b_lambda(b_lambda_ast)
+        
+        interp_ell  =interp_b_ell(d_b_lambda_ast)
+        interp_xi  = interp_b_xi(d_b_lambda_ast)
+ 
+        ells.append( interp_ell)
+        xis.append(interp_xi)
+        lambdas.append(b_lambda_ast)  
+        
+        if return_dbs:
+            dbs_lambda.append(d_b_lambda_ast)
+            dbs_xi.append(interp_d_b_xi( interp_xi))
+            dbs_ell.append(interp_d_b_ell( interp_ell))   
+            #ratio_perp.append()
+
+    if return_dbs:
+        return np.array(ells), np.array(xis),  np.array(lambdas), np.array(dbs_lambda), np.array(dbs_xi), np.array(dbs_ell)
+        
+    else:
+        return np.array(ells), np.array(xis),  np.array(lambdas) 
+
+
+
+
+def estimate_wave_power_anisotropy_updated(path,
+                                           sf_name,
+                                           gen_name,
+                                           final_fname,
+                                           q_order,
+                                           what,
+                                           sigma_c_min,
+                                           Vsw_max,
+                                           mag_mis_min,
+                                           fit_windows,
+                                           which_var,
+                                           which_comps,
+                                           x01, xf1,
+                                           x02, xf2,
+                                           smooth      = False,
+                                           method      = 'linear',
+                                           window      = 1.2
+                                          # Npoints =int(3e2)
+                                          ):
+    
+    
+    ells_yvm    = []
+    xis_yvm     = []
+    lambdas_yvm = []
+    fit_x_xis   = []
+    fit_y_xis   = []
+    fit_x_ells  = []
+    fit_y_ells  = []
+    
+    power_aniso_xis   = []
+    power_aniso_ells  = []
+    power_aniso_xvals = []
+
+    fit1_w_xi_dict  = []
+    fit1_w_ell_dict = []  
+    fit2_w_xi_dict  = [] 
+    fit2_w_ell_dict = []      
+
+    fit1_p_xi_dict  = []
+    fit1_p_ell_dict = []  
+    fit2_p_xi_dict  = [] 
+    fit2_p_ell_dict = [] 
+    
+    sigma_c =[]
+    sigma_r =[]   
+    
+    fit_x_xis_dict_wave   = {}
+    fit_y_xis_dict_wave   = {}
+    fit_x_ells_dict_wave  = {}
+    fit_y_ells_dict_wave  = {}
+
+    fit_x_xis_dict_power   = {}
+    fit_y_xis_dict_power   = {}
+    fit_x_ells_dict_power  = {}
+    fit_y_ells_dict_power  = {}
+
+
+    #locate files
+    sf_names    = func.load_files(path, sf_name, 'final')
+    gen         = func.load_files(path, gen_name, '')
+    final       = func.load_files(path, final_fname, '')
+
+
+    bad =0
+    counts =0
+    for ww in range(len(sf_names)):
+        func.progress_bar(ww, len(sf_names))
+        try:
+            res = pd.read_pickle(sf_names[ww])
+            fin = pd.read_pickle(final[ww])
+            gg  = pd.read_pickle(gen[ww])
+
+            if (fin['Par']['Vsw_mean']< Vsw_max) &(fin['Par']['sigma_c_median']> sigma_c_min) & ((gg['Fraction_missing_MAG']< mag_mis_min)) :
+
+                # Load data
+                d_b_lambda, d_b_xi, d_b_ell    = res['Sfuncs'][which_var][which_comps[0]][q_order], res['Sfuncs'][which_var][which_comps[1]][q_order], res['Sfuncs'][which_var][which_comps[2]][q_order]
+                #d_b_lambda2, d_b_xi2, d_b_ell2 = res['Sfuncs'][which_var][which_comps[0]][1], res['Sfuncs'][which_var][which_comps[1]][q_order], res['Sfuncs'][which_var][which_comps[2]][q_order]
+
+                b_lambda  , b_xi  , b_ell   = res['Sfuncs']['l_ell_perp']/res['di'], res['Sfuncs']['l_Ell_perp']/res['di'], res['Sfuncs']['l_ell_par']/res['di']
+
+                # Do wavevector anisotropy analysis
+                ells, xis,  lambdas  = calculate_wavenumber_aniso(d_b_lambda, d_b_xi, d_b_ell, 
+                                                                  b_lambda,   b_xi,   b_ell,
+                                                                   smooth      = smooth,
+                                                                   method      = method,
+                                                                   window      = window
+                                                                 )
+
+                
+                
+                # Save wavenumber anisotropy
+
+                
+                # Estimate power anisotropy
+                p_aniso_ell = np.array(d_b_lambda)/ np.array(d_b_ell)
+                p_aniso_xi  = np.array(d_b_lambda)/ np.array(d_b_xi)
+ 
+                
+                
+                # Estimate fits over ranges for wavenumber aniso
+                fit1_w_xi   = func.find_fit(lambdas, xis, x01, xf1)
+                fit1_w_ell  = func.find_fit(lambdas, ells, x01, xf1)
+                fit2_w_xi   = func.find_fit(lambdas, xis, x02, xf2)
+                fit2_w_ell  = func.find_fit(lambdas, ells, x02, xf2)
+                
+                 
+                # Estimate fits over ranges for power aniso
+                fit1_p_xi   = func.find_fit(b_lambda, p_aniso_xi, x01, xf1)
+                fit1_p_ell  = func.find_fit(b_lambda, p_aniso_ell, x01, xf1)
+                fit2_p_xi   = func.find_fit(b_lambda, p_aniso_xi, x02, xf2)
+                fit2_p_ell  = func.find_fit(b_lambda, p_aniso_ell, x02, xf2)
+                
+                # Example combined check before appending
+                if (not np.isnan(fit1_w_xi[0][0][1]) and fit1_w_xi[0][0][1] is not None and
+                    not np.isnan(fit1_w_ell[0][0][1]) and fit1_w_ell[0][0][1] is not None and
+                    not np.isnan(fit2_w_xi[0][0][1]) and fit2_w_xi[0][0][1] is not None and
+                    not np.isnan(fit2_w_ell[0][0][1]) and fit2_w_ell[0][0][1] is not None and
+                    not np.isnan(fit1_p_xi[0][0][1]) and fit1_p_xi[0][0][1] is not None and
+                    not np.isnan(fit1_p_ell[0][0][1]) and fit1_p_ell[0][0][1] is not None and
+                    not np.isnan(fit2_p_xi[0][0][1]) and fit2_p_xi[0][0][1] is not None and
+                    not np.isnan(fit2_p_ell[0][0][1]) and fit2_p_ell[0][0][1] is not None):
+
+
+                    fit1_w_xi_dict.append( fit1_w_xi[0][0][1])
+                    fit1_w_ell_dict.append(fit1_w_ell[0][0][1])  
+                    fit2_w_xi_dict.append( fit2_w_xi[0][0][1])
+                    fit2_w_ell_dict.append( fit2_w_ell[0][0][1]) 
+
+                    fit1_p_xi_dict.append( fit1_p_xi[0][0][1])
+                    fit1_p_ell_dict.append(fit1_p_ell[0][0][1])  
+                    fit2_p_xi_dict.append( fit2_p_xi[0][0][1])
+                    fit2_p_ell_dict.append( fit2_p_ell[0][0][1])  
+
+
+                
+                    ells_yvm.append(ells)
+                    xis_yvm.append(xis)
+                    lambdas_yvm.append(lambdas)
+
+                    sigma_c.append(fin['Par']['sigma_c_median'])
+                    sigma_r.append(fin['Par']['sigma_r_median'])
+
+                    power_aniso_xis.append(p_aniso_xi)
+                    power_aniso_ells.append(p_aniso_ell)
+                    power_aniso_xvals.append(b_lambda)
+                
+
+                try:
+                    for  fit_window in fit_windows:
+
+                        f_xis  = func.mov_fit_func(lambdas, xis, fit_window, 1e-3, 5e6)
+                        f_ells = func.mov_fit_func(lambdas, ells, fit_window, 1e-3, 5e6)
+
+                        p_xis  = func.mov_fit_func(b_lambda, p_aniso_xi, fit_window, 1e-3, 5e6)
+                        p_ells = func.mov_fit_func(b_lambda, p_aniso_ell, fit_window, 1e-3, 5e6)
+
+                        if counts==0:
+
+                            fit_x_xis_dict_wave[str(fit_window)]   = list(f_xis['xvals'])
+                            fit_y_xis_dict_wave[str(fit_window)]   = list(f_xis['plaw'])
+                            fit_x_ells_dict_wave[str(fit_window)]  = list(f_ells['xvals'])
+                            fit_y_ells_dict_wave[str(fit_window)]  = list(f_ells['plaw']) 
+
+
+                            fit_x_xis_dict_power[str(fit_window)]   = list(p_xis['xvals'])
+                            fit_y_xis_dict_power[str(fit_window)]   = list(p_xis['plaw'])
+                            fit_x_ells_dict_power[str(fit_window)]  = list(p_ells['xvals'])
+                            fit_y_ells_dict_power[str(fit_window)]  = list(p_ells['plaw'])  
+
+                        else:
+
+                            fit_x_xis_dict_wave[str(fit_window)]   = fit_x_xis_dict_wave[str(fit_window)]  + list(f_xis['xvals'])
+                            fit_y_xis_dict_wave[str(fit_window)]   = fit_y_xis_dict_wave[str(fit_window)]  + list(f_xis['plaw'])
+                            fit_x_ells_dict_wave[str(fit_window)]  = fit_x_ells_dict_wave[str(fit_window)] + list(f_ells['xvals'])
+                            fit_y_ells_dict_wave[str(fit_window)]  = fit_y_ells_dict_wave[str(fit_window)] + list(f_ells['plaw'])
+
+                            fit_x_xis_dict_power[str(fit_window)]   = fit_x_xis_dict_power[str(fit_window)]  + list(p_xis['xvals'])
+                            fit_y_xis_dict_power[str(fit_window)]   = fit_y_xis_dict_power[str(fit_window)]  + list(p_xis['plaw'])
+                            fit_x_ells_dict_power[str(fit_window)]  = fit_x_ells_dict_power[str(fit_window)] + list(p_ells['xvals'])
+                            fit_y_ells_dict_power[str(fit_window)]  = fit_y_ells_dict_power[str(fit_window)] + list(p_ells['plaw'])
+
+
+                except:
+                    pass
+                counts+=1
+        except:
+            
+            ells_yvm.append(np.nan)
+            xis_yvm.append(np.nan)
+            lambdas_yvm.append(np.nan)
+
+            sigma_c.append(np.nan)
+            sigma_r.append(np.nan)
+
+
+                
+            power_aniso_xis.append(np.nan)
+            power_aniso_ells.append(np.nan)
+            power_aniso_xvals.append(np.nan)
+            
+            fit1_w_xi_dict.append(np.nan)
+            fit1_w_ell_dict.append(np.nan)  
+            fit2_w_xi_dict.append( np.nan)
+            fit2_w_ell_dict.append( np.nan)
+            
+            
+            fit1_p_xi_dict.append(np.nan)
+            fit1_p_ell_dict.append(np.nan)  
+            fit2_p_xi_dict.append( np.nan)
+            fit2_p_ell_dict.append( np.nan)  
+            traceback.print_exc()
+
+    
+
+    # Power anisotropy, p-laws
+    final_plaw_power = {}
+    final_plaw_wave  = {}
+    for  fit_window in fit_windows:
+        final_plaw_power[str(fit_window)] = {
+                                                'xis_xv' : np.hstack(fit_x_xis_dict_power[str(fit_window)]),
+                                                'xis_yv' : np.hstack(fit_y_xis_dict_power[str(fit_window)]),
+                                                'ells_xv': np.hstack(fit_x_ells_dict_power[str(fit_window)]),
+                                                'ells_yv': np.hstack(fit_y_ells_dict_power[str(fit_window)]),
+                                            }
+    
+        final_plaw_wave[str(fit_window)] = {
+                                                'xis_xv' : np.hstack(fit_x_xis_dict_wave[str(fit_window)]),
+                                                'xis_yv' : np.hstack(fit_y_xis_dict_wave[str(fit_window)]),
+                                                'ells_xv': np.hstack(fit_x_ells_dict_wave[str(fit_window)]),
+                                                'ells_yv': np.hstack(fit_y_ells_dict_wave[str(fit_window)]),
+                                            }   
+
+
+    
+    final_dict = {
+                    'Power_aniso': {
+                                        'xv'     : np.hstack(power_aniso_xvals),
+                                    'xis_yv'     : np.hstack(power_aniso_xis),
+                                    'ells_yv'    : np.hstack(power_aniso_ells),
+                                    'plaws'      : final_plaw_power,
+                        
+                                    'xi_1_plaw'  : np.hstack(fit1_p_xi_dict),
+                                    'ell_1_plaw' : np.hstack(fit1_p_ell_dict),  
+                                    'xi_2_plaw'  : np.hstack(fit2_p_xi_dict),
+                                    'ell_2_plaw' : np.hstack(fit2_p_ell_dict),  
+                                   },
+                    'sigma_c'   : np.hstack(sigma_c),
+                    'sigma_r'   : np.hstack(sigma_r),
+        
+                    'Wave_aniso': {
+                                    'lambdas'    : np.hstack(lambdas_yvm),
+                                    'xis'        : np.hstack(xis_yvm),
+                                    'ells'       : np.hstack(ells_yvm),
+                                    'plaws'      : final_plaw_wave,
+                                    'xi_1_plaw'  : np.hstack(fit1_w_xi_dict),
+                                    'ell_1_plaw' : np.hstack(fit1_w_ell_dict),  
+                                    'xi_2_plaw'  : np.hstack(fit2_w_xi_dict),
+                                    'ell_2_plaw' : np.hstack(fit2_w_ell_dict),  
+                                   },    
+    
+                  }
+    
+    
+    return final_dict
 
 
 def scanning_variance_analysis(index,
@@ -1154,49 +1886,16 @@ def create_averaged_SF_df(load_path,
 
     # Load files
     f_names         = func.load_files(load_path, sf_name_path)
-    gen_names       = func.load_files(load_path, gen_name_path)
-    final_df_names  = func.load_files(load_path, final_df_name_path)
-    
-    print('Initial number of files considered', len(final_df_names))
+
+    print('Initial number of files considered', len(f_names))
     
     if load_path_2 is not None:
         print('Also considering 2 mission data')
         f_names2        = func.load_files(load_path_2, sf_name_path)
-        gen_names2      = func.load_files(load_path_2, gen_name_path)
-        final_df_names2 = func.load_files(load_path_2, final_df_name_path)
-        
         f_names         = list(f_names)   + list(f_names2)
-        gen_names       = list(gen_names) + list(gen_names2 ) 
-        final_df_names  = list(final_df_names) + list(final_df_names2 ) 
-    
-
-    
-    if find_corressponding_files:
-    
-    
-        f_names, gen_names          = func.find_matching_files_with_common_parent(f_names,  sf_name_path , gen_names, gen_name_path,  num_parents_f=2, num_parents_g=1)
-        final_df_names, gen_names   = func.find_matching_files_with_common_parent(final_df_names,  final_df_name_path , gen_names, gen_name_path,  num_parents_f=1, num_parents_g=1)
-
 
         
-        # Parallelize the processing of fnames and gnames using joblib
-        results = Parallel(n_jobs=-1, verbose=5)(
-            delayed(select_files)(fname,
-                                                 gname,
-                                                 final_df_name,
-                                                 conditions =conditions)
-            for fname, gname, final_df_name in zip(f_names, gen_names, final_df_names)
-        )
-
-        # Filter out the None values from the results (if any)
-        f_names = [f_name for f_name in results if f_name is not None]
-        
-    
-        f_names, gen_names          = func.find_matching_files_with_common_parent(f_names,  sf_name_path , gen_names, gen_name_path,  num_parents_f=2, num_parents_g=1)
-        final_df_names, gen_names   = func.find_matching_files_with_common_parent(final_df_names,  final_df_name_path , gen_names, gen_name_path,  num_parents_f=1, num_parents_g=1)
-        
-        
-        print('Number of files considered after thresholds are imposed', len(final_df_names))
+    print('Number of files considered after thresholds are imposed', len(f_names))
     
 
     # Extract normalization scales
@@ -1212,11 +1911,13 @@ def create_averaged_SF_df(load_path,
     
     count_intervals = 0
     
-    for j, (fname, gen_name) in enumerate(zip(f_names, gen_names)):
+    for j, fname in enumerate(f_names):
+        
+        
         try:
             # Load file
             sf_dict = pd.read_pickle(fname)
-            gen_dict = pd.read_pickle(gen_name)
+            gen_dict = pd.read_pickle(fname.replace(sf_name_path, gen_name_path))
 
             if j == 0:
                 max_qorder = np.shape(sf_dict['Sfuncs']['B']['ell_perp'])[0]
