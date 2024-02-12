@@ -81,12 +81,12 @@ def apply_rolling_mean_and_get_columns(f_df, settings):
     return f_df, columns_b, columns_v
 
 
-def calculate_signB(f_df):
+def calculate_signB(f_df, settings):
     """Calculate the sign of B based on available column."""
-    if 'Br_mean' in f_df.columns:
+    if settings['sc'] in ['PSP', 'SOLO']:
         return -np.sign(f_df['Br_mean'])
-    elif 'Bx_mean' in f_df.columns:
-        return np.abs(-np.sign(f_df['Bx_mean']))
+    elif settings['sc'] in ['WIND']:
+        return np.sign(f_df['Br_mean'])
     else:
         raise ValueError("Required column is missing in DataFrame.")
 
@@ -373,7 +373,7 @@ def calculate_diagnostics(
     VBangle_mean, VBangle_std = np.nanmean(vbang), np.nanstd(vbang)
 
     # Estimate sigmas and elssaser variable fluctuations
-    signB            = calculate_signB(f_df)                         # Calculate sign of B
+    signB            = calculate_signB(f_df, settings)               # Calculate sign of B
     dZp, dZm         = calculate_components(dv, dva, signB)          # Calculate Zp and Zm components
     Zp, Zm           = calculate_components(V_ts, Va_ts, signB)
     sigma_r, sigma_c = calculate_energies_sigmas(dZp, dZm, dv, dva)    # Calculate energies and normalized residual energies
