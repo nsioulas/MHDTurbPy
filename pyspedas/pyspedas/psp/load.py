@@ -2,7 +2,7 @@ from pyspedas.utilities.dailynames import dailynames
 from pyspedas.utilities.download import download
 from pyspedas.analysis.time_clip import time_clip as tclip
 from pytplot import cdf_to_tplot
-from .rfs import rfs_variables_to_load
+
 from .config import CONFIG
 
 def load(trange=['2018-11-5', '2018-11-6'], 
@@ -56,10 +56,16 @@ def load(trange=['2018-11-5', '2018-11-6'],
 
         # 4_per_cycle and 1min are daily, not 6h like the full resolution 'mag_(rtn|sc)'
         if datatype in ['mag_rtn', 'mag_sc']:
-            pathformat = instrument + '/' + level + '/' + datatype + '/%Y/psp_fld_' + level + '_' + datatype + '_%Y%m%d%H_v02.cdf'
+            pathformat = instrument + '/' + level + '/' + datatype + '/%Y/psp_fld_' + level + '_' + datatype + '_%Y%m%d%H_v??.cdf'
             file_resolution = 6*3600.
-        elif datatype in ['mag_rtn_1min', 'mag_sc_1min', 'rfs_hfr', 'rfs_lfr', 'rfs_burst', 'f2_100bps', 'aeb']:
+        elif datatype in ['mag_rtn_1min', 'mag_sc_1min', 'rfs_hfr',  'rfs_burst', 'f2_100bps']:
             pathformat = instrument + '/' + level + '/' + datatype + '/%Y/psp_fld_' + level + '_' + datatype + '_%Y%m%d_v??.cdf'
+            
+        elif datatype in ['rfs_lfr']:
+            pathformat = 'fields/l3/rfs_lfr_qtn/2023/09/psp_fld_l3_rfs_lfr_qtn_20230910_20231001_v01.cdf'
+            #psp_fld_l3_rfs_lfr_qtn_20230910_20231001_v01.cdf
+            
+            
         elif datatype in ['mag_rtn_4_per_cycle', 'mag_rtn_4_sa_per_cyc']:
             pathformat = instrument + '/' + level + '/mag_rtn_4_per_cycle/%Y/psp_fld_' + level + '_mag_rtn_4_sa_per_cyc_%Y%m%d_v??.cdf'
         elif datatype in ['mag_sc_4_per_cycle', 'mag_sc_4_sa_per_cyc']:
@@ -89,20 +95,22 @@ def load(trange=['2018-11-5', '2018-11-6'],
         elif datatype == 'sqtn_rfs_V1V2':
             # unpublished QTN data
             pathformat = instrument + '/' + level + '/' + datatype + '/%Y/%m/psp_fld_' + level + '_' + datatype + '_%Y%m%d_v?.?.cdf'
+
         elif datatype == 'merged_scam_wf':
             if username == None:
                 pathformat = instrument + '/' + level + '/' + datatype + '/%Y/psp_fld_' + level + '_' + datatype + '_%Y%m%d%H_v??.cdf'
             else:
                 pathformat = instrument + '/' + level + '/' + datatype + '/%Y/%m/psp_fld_' + level + '_' + datatype + '_%Y%m%d%H_v??.cdf'
+            file_resolution = 6*3600.
 
-        # unpublished data
+        # unpublished data (only download v02 mag data which would be published)
         elif username != None:
             if datatype in ['mag_RTN', 'mag_SC']:
                 pathformat = instrument + '/' + level + '/' + datatype + '/%Y/%m/psp_fld_' + level + '_' + datatype + '_%Y%m%d%H_v02.cdf'
                 file_resolution = 6*3600.
 
             elif datatype in ['mag_RTN_1min', 'mag_RTN_4_Sa_per_Cyc', 'mag_SC_1min', 'mag_SC_4_Sa_per_Cyc']:
-                pathformat = instrument + '/' + level + '/' + datatype + '/%Y/%m/psp_fld_' + level + '_' + datatype + '_%Y%m%d_v??.cdf'
+                pathformat = instrument + '/' + level + '/' + datatype + '/%Y/%m/psp_fld_' + level + '_' + datatype + '_%Y%m%d_v02.cdf'
 
             elif datatype ==  'sqtn_rfs_V1V2':
                 pathformat = instrument + '/' + level + '/' + datatype + '/%Y/%m/psp_fld_' + level + '_' + datatype + '_%Y%m%d_v?.?.cdf'
@@ -154,7 +162,7 @@ def load(trange=['2018-11-5', '2018-11-6'],
     else:
         if instrument == 'fields':
             try:
-                print("Downloading unpublished Data....")
+                print("Downloading unpublished FIELDS Data....")
                 files = download(
                     remote_file=remote_names, remote_path=CONFIG['fields_remote_data_dir'], 
                     local_path=CONFIG['local_data_dir'], no_download=no_update,
@@ -165,7 +173,7 @@ def load(trange=['2018-11-5', '2018-11-6'],
                                 local_path=CONFIG['local_data_dir'], no_download=no_update)
         elif instrument in ['spc','spi']:
             try:
-                print("Downloading unpublished Data....")
+                print("Downloading unpublished SWEAP Data....")
                 files = download(
                     remote_file=remote_names, remote_path=CONFIG['sweap_remote_data_dir'], 
                     local_path=CONFIG['local_data_dir'], no_download=no_update,
@@ -184,14 +192,6 @@ def load(trange=['2018-11-5', '2018-11-6'],
 
     if downloadonly:
         return out_files
-
-    # find the list of varnames for RFS data
-    # these files have > 1500 variables, but
-    # we only load ~50
-    if 'rfs' in datatype.lower() and varformat is None and varnames == []:
-        varnames = rfs_variables_to_load(out_files)
-        # we'll need the support data for the quality flags
-        get_support_data = True
 
     tvars = cdf_to_tplot(out_files, suffix=suffix, prefix=prefix, get_support_data=get_support_data, 
                         varformat=varformat, varnames=varnames, notplot=notplot)

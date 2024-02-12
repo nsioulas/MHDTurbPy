@@ -17,7 +17,56 @@ import joblib
 from joblib import Parallel, delayed
 import statistics
 from statistics import mode
+import orderedstructs
+import sys
 
+# Import TurbPy
+sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+
+from plasma_params import*
+import signal_processing 
+
+
+
+
+import orderedstructs
+
+
+
+def synchronize_dfs(df_higher_freq, df_lower_freq, upsample):
+    """
+    Align two dataframes based on their frequency, upsample lower frequency dataframe if specified.
+    
+    Args:
+    - df_higher_freq: DataFrame with higher frequency data.
+    - df_lower_freq: DataFrame with lower frequency data.
+    - settings: Dictionary containing settings including 'upsample_low_freq_ts'.
+    
+    Returns:
+    - Tuple of aligned DataFrames.
+    """
+    if upsample:
+        # Upsample the lower frequency dataframe to match the higher frequency one
+        aligned_lower_freq = newindex(df_lower_freq, df_higher_freq.index)
+        return df_higher_freq, aligned_lower_freq
+    else:
+        # Attempt to align the higher frequency dataframe to the lower frequency one
+        try:
+            
+            
+            aligned_higher_freq = signal_processing.downsample_and_filter(df_higher_freq.copy(), 
+                                                                          df_lower_freq.copy())
+ 
+            return aligned_higher_freq, df_lower_freq
+        except Exception as e:  # Consider specifying the exact exception if known
+            print(f'Error aligning dataframes: {e}')
+            # Optionally, handle the error or return the original dataframes
+            return df_higher_freq, df_lower_freq
+
+def clean_data(x, y):
+    """Remove non-finite values from the data."""
+    finite_mask = np.isfinite(x) & np.isfinite(y)
+    return x[finite_mask], y[finite_mask]
 
 
 
@@ -50,10 +99,17 @@ def symlogspace(start, end, num=50, linthresh=1):
 def most_common(List):
     return(mode(List))
 
-def load_files(load_path, filenames, conect_2= ''):
+def load_files(load_path, filenames, conect_2= '', sort= True):
     import glob
-    fnames = np.sort(glob.glob(str(Path(load_path).joinpath('*').joinpath(conect_2).joinpath(filenames))))
-    print(str(Path(load_path).joinpath('*').joinpath(conect_2).joinpath(filenames)))
+    
+    pattern = Path(load_path, '*', conect_2, filenames)
+    print(pattern)
+    if sort:
+        fnames = np.sort(glob.glob(str(pattern)))
+    else:
+        
+        fnames = glob.glob(str(pattern))      
+    
     return fnames
 
 
@@ -139,7 +195,25 @@ def generate_date_range_df(Start_date,
 
 
 
+import numpy as np
+from numba import njit, prange
+
+@njit(parallel=True)
+def custom_nansum_product(xvec, yvec, axis):
+    result = np.zeros(xvec.shape[1-axis], dtype=xvec.dtype)
+    # Parallelizing the outer loop
+    for j in prange(xvec.shape[1-axis]):
+        for i in range(xvec.shape[axis]):
+            if axis == 0:
+                if not np.isnan(xvec[i, j]) and not np.isnan(yvec[i, j]):
+                    result[j] += xvec[i, j] * yvec[i, j]
+            else:
+                if not np.isnan(xvec[j, i]) and not np.isnan(yvec[j, i]):
+                    result[j] += xvec[j, i] * yvec[j, i]
+    return result
+
 def dot_product(xvec, yvec):
+    
     """
     Calculate the dot product between two arrays and return the result.
 
@@ -153,19 +227,15 @@ def dot_product(xvec, yvec):
     Raises:
         ValueError: If the dimensions of xvec and yvec are not compatible for dot product.
     """
-    # Get the shapes of the input arrays
-    len_x_0, len_x_1 = xvec.shape
-    len_y_0, len_y_1 = yvec.shape
-
-    # Check if the dimensions are compatible for dot product
-    if len_x_0 == len_y_0 and len_x_1 == len_y_1:
-        # Calculate the dot product along the appropriate axis
-        if len_x_0 > len_x_1:
-            return np.abs(np.nansum(xvec * yvec, axis=1))
-        else:
-            return np.abs(np.nansum(xvec * yvec, axis=0))
-    else:
+    if xvec.shape != yvec.shape:
         raise ValueError("Incompatible dimensions for dot product.")
+
+    len_x_0, len_x_1 = xvec.shape
+
+    if len_x_0 > len_x_1:
+        return custom_nansum_product(xvec, yvec, 1)
+    else:
+        return custom_nansum_product(xvec, yvec, 0)
 
 
 # Original function
@@ -316,8 +386,39 @@ def filter_dict(d, keys_to_keep):
     return dict(filter(lambda item: item[0] in keys_to_keep, d.items()))
 
 
-# def string_to_datetime_index(datetime_string, datetime_format='%Y-%m-%d %H:%M:%S.%f'):
-#     return pd.to_datetime(datetime_string, format=datetime_format)
+from dateutil import parser
+
+def format_date_to_str(date_input):
+    """
+    Takes a date input (string or object that can be converted to a string) and attempts to parse and format it
+    into a 'YYYY-MM-DD HH:MM' format.
+
+    Parameters:
+    - date_input: The date input to be formatted. Can be a string or an object that can be converted to a string.
+
+    Returns:
+    - A string representing the formatted date in 'YYYY-MM-DD HH:MM' format if successful.
+    - None if parsing fails.
+    """
+    try:
+        # Convert input to string in case it's not already a string
+        date_str = str(date_input)
+        # Try to parse the date string
+        date_obj = parser.parse(date_str)
+        # Format the datetime object to the desired format
+        formatted_date_str = date_obj.strftime('%Y-%m-%d %H:%M')
+        return formatted_date_str
+    except ValueError as e:
+        print(f"Error parsing date: {e}")
+        # Return None or consider a default value or re-raise the exception based on your use case
+        return None
+    
+def replace_negative_with_nan(df):
+    """
+    Replace negative values with NaN in a DataFrame.
+    """
+    return df.where(df >= -1e5, np.nan)
+
 
 def string_to_datetime_index(datetime_string, datetime_format='%Y-%m-%d %H:%M:%S'):
     return pd.to_datetime(datetime_string, format=datetime_format)
@@ -383,6 +484,16 @@ def count_fits_in_duration(df, wind_size):
     return fits_in_duration
 
 
+def smooth_filter(xv, arr, window):
+    from scipy import signal
+    from scipy.ndimage import gaussian_filter1d
+    # Convolve with sobel filter
+    xv, arr = clean_data(xv, arr)
+    grad    = signal.convolve(arr, [1,-1,0])[:-1]
+    # Smooth gradient
+    smooth_grad = smooth_grad = gaussian_filter1d(grad, window)
+    
+    return smooth_grad
 
 @jit(nopython=True)
 def calc_medians(window_size, arr, medians): 
@@ -422,8 +533,11 @@ def calc_medians_std_parallel(window_size, arr, medians, medians_diff):
         
 
 
+    
+    return xv, [arr[0] + sum(smooth_grad[:x]) for x in range(len(arr))]
 
-def hampel(arr, window_size=5, n=3, parallel=False):
+
+def hampel(arr, window_size=200, n=3, parallel=False):
     """
     Apply Hampel filter to despike a time series by removing spurious data points.
 
@@ -567,6 +681,50 @@ def curve_fit_log(xdata, ydata) :
     ydatafit_log = np.power(10, linlaw(xdata_log, *popt_log))
     # There is no need to apply fscalex^-1 as original data is already available
     return (popt_log, pcov_log, ydatafit_log)
+
+def curve_fit_log_wrap(x, y, x0, xf):  
+    
+    from scipy.optimize import curve_fit
+    
+    def linlaw(x, a, b) : 
+        return a + x * b
+
+
+    def curve_fit_log(xdata, ydata) : 
+
+        """Fit data to a power law with weights according to a log scale"""
+        # Weights according to a log scale
+        # Apply fscalex
+        xdata_log = np.log10(xdata)
+        # Apply fscaley
+        ydata_log = np.log10(ydata)
+        # Fit linear
+        popt_log, pcov_log = curve_fit(linlaw, xdata_log, ydata_log)
+        #print(popt_log, pcov_log)
+        # Apply fscaley^-1 to fitted data
+        ydatafit_log = np.power(10, linlaw(xdata_log, *popt_log))
+        # There is no need to apply fscalex^-1 as original data is already available
+        return (popt_log, pcov_log, ydatafit_log)
+
+            
+   # Apply fit on specified range #
+    if  len(np.where(x == x.flat[np.abs(x - x0).argmin()])[0])>0:
+        s = np.where(x == x.flat[np.abs(x - x0).argmin()])[0][0]
+        e = np.where(x  == x.flat[np.abs(x - xf).argmin()])[0][0]
+        # s = np.min([s,e])
+        # e = np.max([s,e])
+        if s>e:
+            s,e = e,s
+        else:
+            pass
+
+        if (len(y[s:e])>1): #& (np.median(y[s:e])>1e-1):  
+            fit = curve_fit_log(x[s:e],y[s:e])
+            #print(fit)
+
+            return fit, s, e, False
+        else:
+            return [np.nan, np.nan, np.nan],np.nan,np.nan, True
 
 
 def find_fit(x, y, x0, xf):  
@@ -935,123 +1093,56 @@ def line_annotate(ax, text, line, x, font_size=None, *args, **kwargs):
     return a
 
 
-@jit(nopython=True, parallel=True)      
-def smoothing_function(x,
-                       y,
-                       mean=True,
-                       window=2, 
-                       pad = 1):
-    
+import numpy as np
+from numba import jit, prange
+
+@jit(nopython=True, parallel=True)
+def smoothing_function(x, y, mean=True, window=2):
     """
-    Smoothing function for time series data.
-
-    This function applies a smoothing operation to the input time series data (`x` and `y`) and returns the smoothed
-    data along with corresponding mid and mean points.
-
-    Parameters:
-    ----------
-    x : array-like
-        The independent variable values of the time series data.
-    y : array-like
-        The dependent variable (data) values of the time series.
-    mean : bool, optional
-        A flag indicating whether to use the mean or median for smoothing. If True, the mean is used; otherwise,
-        the median is used. The default value is True (mean smoothing).
-    window : int or float, optional
-        The window size used to smooth the data. For each data point at `x[i]`, the function computes the smoothed
-        value based on the data within the range `[x[i], x[i] * window]`. The default value is 2.
-    pad : int or float, optional
-        The padding factor for extending the smoothing range. The function extends the smoothing range to
-        `[x[i], x[i] * (window + pad)]`. The default value is 1.
-
-    Returns:
-    -------
-    tuple
-        A tuple containing three arrays:
-        1. The smoothed mid-point values (xoutmid) corresponding to the smoothed data points.
-        2. The smoothed mean-point values (xoutmean) corresponding to the smoothed data points.
-        3. The smoothed data (yout) obtained from the input time series.
-
-    Notes:
-    -----
-    The function applies a smoothing operation to each data point at `x[i]`, where `i` is the index of the data point.
-    The smoothing is performed by computing either the mean or median of the data within the range `[x[i], x[i] * (window + pad)]`.
-    The function uses Numba JIT with parallel processing to optimize performance for large arrays.
-
+    Optimized smoothing function for time series data.
+    [Description same as before...]
     """
     
-    def bisection(array,value):
+    def optimized_bisection(array, value):
         """
-        Perform bisection search to find the index `j` such that `value` is between `array[j]` and `array[j+1]`.
-
-        This function searches for the index `j` in the sorted array `array`, such that the given `value` is between
-        `array[j]` and `array[j+1]`. The array `array` must be monotonic increasing for the bisection search to work correctly.
-
-        Parameters:
-        ----------
-        array : array-like
-            The sorted array in which the bisection search is performed.
-        value : int or float
-            The value for which the index is to be found in the array.
-
-        Returns:
-        -------
-        int
-            The index `j` such that `value` is between `array[j]` and `array[j+1]`. If `value` is less than the first element
-            in the array, -1 is returned. If `value` is greater than the last element in the array, `n` is returned, where
-            `n` is the length of the array. If `value` is equal to the first element, 0 is returned. If `value` is equal to
-            the last element, `n-1` is returned.
-
-        Notes:
-        -----
-        The function performs a bisection search to find the index `j` efficiently in the sorted array `array`.
-        It is assumed that the array is monotonic increasing.ndicate that ``value`` is out of range below and above respectively.
+        Optimized bisection search function.
+        [Description same as before...]
         """
         n = len(array)
-        if (value < array[0]):
+        if value < array[0]:
             return -1
-        elif (value > array[n-1]):
+        elif value > array[n-1]:
             return n
-        jl = 0# Initialize lower
-        ju = n-1# and upper limits.
-        while (ju-jl > 1):# If we are not yet done,
-            jm=(ju+jl) >> 1# compute a midpoint with a bitshift
-            if (value >= array[jm]):
-                jl=jm# and replace either the lower limit
+        jl, ju = 0, n-1
+        while ju - jl > 1:
+            jm = (ju + jl) >> 1
+            if value >= array[jm]:
+                jl = jm
             else:
-                ju=jm# or the upper limit, as appropriate.
-            # Repeat until the test condition is satisfied.
-        if (value == array[0]):# edge cases at bottom
-            return 0
-        elif (value == array[n-1]):# and top
-            return n-1
-        else:
-            return jl
+                ju = jm
+        return jl if value != array[n-1] else n-1
 
-    len_x    = len(x)
-    max_x    = np.max(x)
-    xoutmid  = np.full(len_x, np.nan)
-    xoutmean = np.full(len_x, np.nan)
-    yout     = np.full(len_x, np.nan)
-    
+    len_x = len(x)
+    max_x = np.max(x)
+    xoutmid,  yout = np.full(len_x, np.nan), np.full(len_x, np.nan)
+
     for i in prange(len_x):
         x0 = x[i]
-        xf = window*x0
-        
-        if xf < max_x:
-            #e = np.where(x  == x[np.abs(x - xf).argmin()])[0][0]
-            e = bisection(x,xf)
-            if e<len_x:
-                if mean:
-                    yout[i]     = np.nanmean(y[i:e])
-                    xoutmid[i]  = x0 + np.log10(0.5) * (x0 - x[e])
-                    xoutmean[i] = np.nanmean(x[i:e])
-                else:
-                    yout[i]     = np.nanmedian(y[i:e])
-                    xoutmid[i]  = x0 + np.log10(0.5) * (x0 - x[e])
-                    xoutmean[i] = np.nanmean(x[i:e])                   
+        xf = window * x0
 
-    return xoutmid, xoutmean,  yout
+        if xf < max_x:
+            e = optimized_bisection(x, xf)
+            if e < len_x:
+                x_range = x[i:e]
+                y_range = y[i:e]
+                if mean:
+                    yout[i] = np.nanmean(y_range)
+                else:
+                    yout[i] = np.nanmedian(y_range)
+                xoutmid[i] = x0 + np.log10(0.5) * (x0 - x[e])
+               
+
+    return xoutmid, yout
 
 
 
@@ -1090,6 +1181,33 @@ def interp(df, new_index):
         df_out[colname] = np.interp(new_index, df.index, col)
 
     return df_out
+
+
+
+
+def simple_python_rolling_median(vector: np.ndarray,
+                                 window_length: int) -> np.ndarray:
+    """Computes a rolling median of a numpy vector returning a new numpy
+    vector of the same length.
+    NaNs in the input are not handled but a ValueError will be raised."""
+    if vector.ndim != 1:
+        raise ValueError(
+            f'vector must be one dimensional not shape {vector.shape}'
+        )
+    skip_list = orderedstructs.SkipList(float)
+    ret = np.empty_like(vector)
+    for i in range(len(vector)):
+        value = vector[i]
+        skip_list.insert(value)
+        if i >= window_length - 1:
+            # // 4 for lower quartile
+            # * 3 // 4 for upper quartile etc.
+            median = skip_list.at(window_length // 2)
+            skip_list.remove(vector[i - window_length + 1])
+        else:
+            median = np.nan
+        ret[i] = median
+    return ret
 
 
 def use_dates_return_elements_of_df_inbetween(t0, t1, df):
@@ -1136,24 +1254,62 @@ def use_dates_return_elements_of_df_inbetween(t0, t1, df):
     
     return f_df
 
-def find_big_gaps(df, gap_time_threshold):
-    """
-    Filter a data set by the values of its first column and identify gaps in time that are greater than a specified threshold.
+# def find_big_gaps(df, gap_time_threshold):
+#     """
+#     Filter a data set by the values of its first column and identify gaps in time that are greater than a specified threshold.
 
+#     Parameters:
+#     df (pandas DataFrame): The data set to be filtered and analyzed.
+#     gap_time_threshold (float): The threshold for identifying gaps in time, in seconds.
+
+#     Returns:
+#     big_gaps (pandas Series): The time differences between consecutive records in df that are greater than gap_time_threshold.
+#     """
+#     keys = df.keys()
+
+#     filtered_data = df[df[keys[1]] > -1e10]
+#     time_diff     = (filtered_data.index.to_series().diff() / np.timedelta64(1, 's'))
+#     big_gaps      = time_diff[time_diff > gap_time_threshold]
+
+#     return big_gaps
+
+
+def find_big_gaps(df, gap_time_threshold=10):
+    """
+    Identifies gaps where the time difference between consecutive filtered entries
+    exceeds the gap_time_threshold, in a vectorized manner.
+    
     Parameters:
-    df (pandas DataFrame): The data set to be filtered and analyzed.
-    gap_time_threshold (float): The threshold for identifying gaps in time, in seconds.
-
+    - df: pandas DataFrame with a datetime index and at least one column.
+    - gap_time_threshold: float, the gap size threshold in seconds.
+    
     Returns:
-    big_gaps (pandas Series): The time differences between consecutive records in df that are greater than gap_time_threshold.
+    - A DataFrame with the start and end times of the gaps.
     """
-    keys = df.keys()
-
-    filtered_data = df[df[keys[1]] > -1e10]
-    time_diff     = (filtered_data.index.to_series().diff() / np.timedelta64(1, 's'))
-    big_gaps      = time_diff[time_diff > gap_time_threshold]
-
-    return big_gaps
+    # Filter rows based on the condition for the first column
+    filtered_df = df[df.iloc[:, 0] > -1e10]
+    
+    # Calculate time differences in seconds between consecutive rows
+    time_diffs = filtered_df.index.to_series().diff().dt.total_seconds()
+    
+    # Identify indices where time differences exceed the threshold
+    gap_mask = time_diffs > gap_time_threshold
+    
+    # Using the mask, find the end times of the gaps
+    gap_ends = filtered_df.index[gap_mask]
+    
+    # The start times are just before the ends, adjust indices accordingly
+    gap_starts = filtered_df.index[gap_mask.shift(-1, fill_value=False)]
+    
+    # Remove the last element from starts and the first element from ends to align
+    if len(gap_starts) > 0 and len(gap_ends) > 0:  # Ensure there are gaps
+        gap_starts = gap_starts[:-1]
+        gap_ends = gap_ends[1:]
+    
+    # Create a DataFrame to return the start and end times of gaps
+    gaps_df = pd.DataFrame({'Start': gap_starts, 'End': gap_ends})
+    
+    return gaps_df
 
 def percentile(y,percentile):
     return(np.percentile(y,percentile))
@@ -1162,7 +1318,7 @@ def percentile(y,percentile):
 import numpy as np
 
 
-def binned_statistics_exclude(x, values, bins, statistic='mean', N=2, log_binning=False, n_jobs=1):
+def binned_statistics_exclude(x, values, bins, statistic='mean', N=2, log_binning=True, n_jobs=1):
     """
     Compute binned statistics with exclusion of outliers greater than N standard deviations from the bin-specific mean.
 
@@ -1200,11 +1356,13 @@ def binned_statistics_exclude(x, values, bins, statistic='mean', N=2, log_binnin
         bin_values = bin_values[mask_std]
 
         if statistic == 'mean':
-            return np.mean(bin_values)
+            return np.nanmean(bin_values)
+        elif statistic == 'median':
+            return np.nanmedian(bin_values)
         elif statistic == 'sum':
-            return np.sum(bin_values)
+            return np.nansum(bin_values)
         elif statistic == 'std':
-            return np.std(bin_values)
+            return np.nanstd(bin_values)
         elif statistic == 'count':
             return len(bin_values)
         elif callable(statistic):
@@ -1214,8 +1372,8 @@ def binned_statistics_exclude(x, values, bins, statistic='mean', N=2, log_binnin
 
     # Remove nan and inf values
     mask_valid = np.isfinite(x) & np.isfinite(values)
-    x = x[mask_valid]
-    values = values[mask_valid]
+    x          = x[mask_valid]
+    values     = values[mask_valid]
     
     # Determine bins 
     if log_binning:
@@ -1235,12 +1393,97 @@ def binned_statistics_exclude(x, values, bins, statistic='mean', N=2, log_binnin
     results = Parallel(n_jobs=n_jobs)(delayed(compute_bin_statistic)(values[bin_indices == i], statistic, N) 
                                       for i in range(1, len(bin_edges)))
     
+    std_results = Parallel(n_jobs=n_jobs)(delayed(compute_bin_statistic)(values[bin_indices == i], 'std', N) 
+                                      for i in range(1, len(bin_edges)))
+    count_results = Parallel(n_jobs=n_jobs)(delayed(compute_bin_statistic)(values[bin_indices == i], 'count', N) 
+                                      for i in range(1, len(bin_edges)))
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
+    
+    return bin_centers, np.array(results), np.array(std_results)/np.sqrt(count_results)
+
+# Example usage
+
+
+def binned_statistics_high_percentile(x, values, bins, statistic='mean', percentile=50, log_binning=True, n_jobs=1):
+    """
+    Compute binned statistics considering only values above the given percentile for each bin.
+
+    Parameters:
+    - x : (N,) array_like
+        Input values to be binned.
+    - values : (N,) array_like
+        Data values to compute the statistics on.
+    - bins : int or sequence of scalars
+        If bins is an int, it defines the number of equal-width bins. If bins is a sequence, it defines the bin edges.
+    - statistic : string in ['mean', 'sum', 'std', 'count'] or callable
+        The statistic to compute (default is 'mean').
+    - percentile : float, default=50
+        Percentile below which data will be excluded from each bin. 
+        Values should be between 0 and 100.
+    - log_binning : bool
+        If True, use logarithmic bins.
+    - n_jobs : int, default=1
+        Number of CPU cores to use when parallelizing. Use -1 for all cores.
+    
+    Returns:
+    - bin_centers : (nbins,) array
+        The center of each bin.
+    - result : (nbins,) array
+        The computed statistic for each bin.
+    """
+    
+    from joblib import Parallel, delayed
+
+    def compute_bin_statistic(bin_values, statistic, percentile):
+        # Check if bin_values is empty
+        if len(bin_values) == 0:
+            return np.nan
+
+        # Filter values that are below the provided percentile
+        threshold = np.percentile(bin_values, percentile)
+        bin_values = bin_values[bin_values >= threshold]
+
+        if statistic == 'mean':
+            return np.mean(bin_values)
+        elif statistic == 'sum':
+            return np.sum(bin_values)
+        elif statistic == 'std':
+            return np.std(bin_values)
+        elif statistic == 'count':
+            return len(bin_values)
+        elif callable(statistic):
+            return statistic(bin_values)
+        else:
+            return np.nan
+
+
+    # Remove nan and inf values
+    mask_valid = np.isfinite(x) & np.isfinite(values)
+    x          = x[mask_valid]
+    values     = values[mask_valid]
+    
+    # Determine bins 
+    if log_binning:
+        if isinstance(bins, int):
+            bin_edges = np.logspace(np.log10(min(x)), np.log10(max(x)), bins+1)
+        else:
+            bin_edges = np.logspace(np.log10(min(bins)), np.log10(max(bins)), len(bins))
+    else:
+        if isinstance(bins, int):
+            bin_edges = np.linspace(min(x), max(x), bins+1)
+        else:
+            bin_edges = bins
+        
+    bin_indices = np.digitize(x, bin_edges)
+
+    # Compute statistic for each bin using parallel processing
+    results = Parallel(n_jobs=n_jobs)(delayed(compute_bin_statistic)(values[bin_indices == i], statistic, percentile) 
+                                      for i in range(1, len(bin_edges)))
     
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
     
     return bin_centers, np.array(results)
 
-# Example usage
 
 
 
@@ -1316,13 +1559,10 @@ def ensure_time_format(start_time, end_time):
     return t0.strftime(desired_format), t1.strftime(desired_format)
 
 
-def binned_quantity(x,
-                    y, 
-                    what='mean',
-                    std_or_error_of_mean=True,
-                    bins=100, 
-                    loglog=True,
-                    return_counts=False):
+import numpy as np
+from scipy import stats
+
+def binned_quantity(x, y, what='mean', std_or_error_of_mean=True, bins=100, loglog=True, return_counts=False, return_percentiles=False, lower_percentile =25, higher_percentile = 75):
     """
     Calculate binned statistics of one variable (y) with respect to another variable (x).
 
@@ -1345,6 +1585,8 @@ def binned_quantity(x,
         If True, logarithmic bins are used instead of linear bins. The default is True.
     return_counts : bool, optional
         If True, also return the number of points in each bin. The default is False.
+    return_percentiles : bool, optional
+        If True, also return the 25th and 75th percentiles for each bin. The default is False.
 
     Returns
     -------
@@ -1356,6 +1598,8 @@ def binned_quantity(x,
         The standard deviation or error of the mean of the binned statistic.
     points : ndarray, optional
         The number of points in each bin. This is only returned if `return_counts` is True.
+    percentiles : tuple of ndarrays, optional
+        The 25th and 75th percentiles for each bin. This is only returned if `return_percentiles` is True.
     """
     
     if loglog:
@@ -1368,11 +1612,9 @@ def binned_quantity(x,
     if loglog:
         bins = np.logspace(np.log10(np.nanmin(x)), np.log10(np.nanmax(x)), bins)
 
+    # Binned statistic calculation
     y_b, x_b, _ = stats.binned_statistic(x, y, statistic=what, bins=bins)
-
     z_b, _, _ = stats.binned_statistic(x, y, statistic='std', bins=bins)
-
-    #if return_counts:
     points, _, _ = stats.binned_statistic(x, y, statistic='count', bins=bins)
 
     if std_or_error_of_mean == 0:
@@ -1380,8 +1622,15 @@ def binned_quantity(x,
 
     x_b = x_b[:-1] + 0.5 * (x_b[1:] - x_b[:-1])
 
-    return (x_b, y_b, z_b, points) if return_counts else (x_b, y_b, z_b)
+    result = (x_b, y_b, z_b, points) if return_counts else (x_b, y_b, z_b)
 
+    if return_percentiles:
+        percentile_25, _, _ = stats.binned_statistic(x, y, statistic=lambda y: np.percentile(y, lower_percentile), bins=bins)
+        percentile_75, _, _ = stats.binned_statistic(x, y, statistic=lambda y: np.percentile(y, higher_percentile), bins=bins)
+        percentiles = (percentile_25, percentile_75)
+        result += (percentiles,)
+
+    return result
 
 
 
@@ -1598,7 +1847,8 @@ def mov_fit_func(xx, yy, w_size, xmin, xmax, keep_plot=0):
             if len(np.shape(x1)) > 0:
                 keep_err.append(np.sqrt(fit[1][1][1]))
                 keep_ind.append(fit[0][1])
-                keep_x.append(np.nanmean(x1[s:e]))
+                #keep_x.append(np.nanmean(x1[s:e]))
+                keep_x.append(x1[s])
                 if keep_plot:
                     xvals.append(x1[s:e])
                     yvals.append(2 * fit[2])
@@ -1615,7 +1865,73 @@ def mov_fit_func(xx, yy, w_size, xmin, xmax, keep_plot=0):
 
     return result_dict
 
+import numpy as np
+from scipy.optimize import curve_fit
 
+
+
+def moving_fit(x, 
+               y,
+               fwin,
+               df, 
+               make_df_adapt_2_scale = True,
+               df_multiplier         = 0.005
+              ):
+    """
+    Process data by fitting curves within specified window and step sizes.
+
+    Parameters:
+    x (np.ndarray): Array of x values.
+    y (np.ndarray): Array of y values.
+    fwin (float): Window size for the logarithmic fitting.
+    df (float): Step size for shifting the window in logarithmic scale.
+
+    Returns:
+    list: List of fit values.
+    list: List of x midpoints of each fitting window.
+    """
+    # Delete NaNs
+    ind = np.isnan(y)
+    x = x[np.invert(ind)]
+    y = y[np.invert(ind)]
+
+    xmin = np.nanmin(x)
+    xmax = np.nanmax(x)
+
+
+    x1 = xmin
+    x2 = fwin*xmin
+    
+    if make_df_adapt_2_scale:
+        df = x1*df_multiplier
+        print('Using adaptive df. Init Value:',df)
+    
+    
+    fit_vals  = []
+    xmids     = []
+
+    while x2 < xmax:
+        try:
+            fit, _, _, flag = curve_fit_log_wrap(x, y, x1, x2)
+
+
+            xmids.append(x1)
+            fit_vals.append(fit[0][1])                
+
+        except:
+            fit_vals.append(np.nan)
+            
+    
+            xmids.append(x1)
+                            
+        x1 = x1 + df
+        x2 = fwin*x1
+        
+        if make_df_adapt_2_scale:
+            df = x1*df_multiplier
+        
+
+    return  xmids, fit_vals
 
 def freq2wavenum(freq, P, Vtot, di):
     """ Takes the frequency, the PSD, the SW velocity and the di.
@@ -1632,6 +1948,55 @@ def freq2wavenum(freq, P, Vtot, di):
     return k_star, eps_of_k_star
 
 
+import numpy as np
+from scipy.interpolate import griddata
+
+def smooth_2d_data(X, Y, Z, Ntimes):
+    """
+    Interpolate 2D data on a new grid.
+
+    Parameters:
+    X (2D array): X-coordinates of the data.
+    Y (2D array): Y-coordinates of the data.
+    Z (2D array): Values at each (X, Y) point.
+    Ntimes (int): Factor to scale the new grid size.
+
+    Returns:
+    Xn, Yn (2D arrays): New meshgrid for X and Y.
+    data1 (2D array): Interpolated data on the new grid.
+    """
+
+    # Calculate differences and midpoints
+    X_diff = np.diff(X, axis=1)
+    Y_diff = np.diff(Y.T, axis=1)
+    X_mid = X[:, :-1] + X_diff / 2
+    Y_mid = (Y.T)[:,:-1] + Y_diff / 2
+
+    # Flatten the arrays
+    x = X_mid[1:, :].flatten()
+    y = (Y_mid[1:,:].T).flatten()
+    z = Z.flatten()
+
+    # Filter out NaN values
+    mask = ~np.isnan(x) & ~np.isnan(y) & ~np.isnan(z)
+    x_filtered = x[mask]
+    y_filtered = y[mask]
+    z_filtered = z[mask]
+
+    # Define the new grid for interpolation
+    xnew = np.logspace(np.log10(np.nanmin(X)), np.log10(np.nanmax(X)), int(Ntimes*len(X[0])))
+    ynew = np.logspace(np.log10(np.nanmin(Y)), np.log10(np.nanmax(Y)), int(Ntimes*len(Y[0])))
+
+    # Create a meshgrid for the new grid
+    Xn, Yn = np.meshgrid(xnew, ynew)
+
+    # Perform the interpolation
+    data1 = griddata((x_filtered, y_filtered), z_filtered, (Xn, Yn), method='linear')
+
+    return Xn, Yn, data1
+
+# Example usage
+# Xn, Yn, interpolated_data = interpolate_2d_data(X, Y, Z, Ntimes)
 
 
 def smooth(x, n=5):
@@ -1798,9 +2163,15 @@ def savepickle(df_2_save, save_path, filename):
     >>> filename = 'saved_data.pkl'
     >>> savepickle(data_to_save, save_path, filename)
     """
-    os.makedirs(str(save_path), exist_ok=True)
-    pickle.dump(df_2_save, open(Path(save_path).joinpath(filename), 'wb'))
     
+    # Ensure the directory exists
+    os.makedirs(str(save_path), exist_ok=True)
+    
+    # Use the highest protocol available for more efficient serialization
+    # Open the file using a context manager to ensure it's properly closed after writing
+    file_path = Path(save_path).joinpath(filename)
+    with open(file_path, 'wb') as file:
+        pickle.dump(df_2_save, file, protocol=pickle.HIGHEST_PROTOCOL)
     
     
 
@@ -1833,31 +2204,37 @@ def replace_filename_extension(oldfilename, newextension, addon=False):
 
 def newindex(df, ix_new, interp_method='linear'):
     """
-    Reindex a DataFrame according to the new index *ix_new* supplied.
+    Reindex a DataFrame according to the new index *ix_new* supplied, ensuring no duplicate labels in the index.
 
     Args:
-        df: [pandas DataFrame] The dataframe to be reindexed
-        ix_new: [np.array] The new index
-        interp_method: [str] Interpolation method to be used; forwarded to `pandas.DataFrame.reindex.interpolate`
+        df: [pandas DataFrame] The dataframe to be reindexed.
+        ix_new: [np.array] The new index.
+        interp_method: [str] Interpolation method to be used; forwarded to `pandas.DataFrame.reindex.interpolate`.
 
     Returns:
-        df3: [pandas DataFrame] DataFrame interpolated and reindexed to *ixnew*
-
+        df3: [pandas DataFrame] DataFrame interpolated and reindexed to *ix_new*.
     """
-    
-    # sort the index in increasing order
-    df = df.sort_index(ascending=True)
+    # Ensure df.index and ix_new do not contain duplicates
+    df     = df[~df.index.duplicated(keep='first')]
+    ix_new = np.unique(ix_new)
 
-    # create combined index from old and new index arrays
-    ix_com = np.unique(np.append(df.index, ix_new))
+    # Verify that reindexing is necessary and feasible
+    if not np.array_equal(df.index.sort_values(), ix_new.sort()):
+        # Sort the DataFrame index in increasing order
+        df = df.sort_index(ascending=True)
 
-    # sort the combined index (ascending order)
-    ix_com.sort()
+        # Create combined index from old and new index arrays, ensuring no duplicates
+        ix_com = np.unique(np.concatenate([df.index.values, ix_new]))
 
-    # re-index and interpolate over the non-matching points
-    df2 = df.reindex(ix_com).interpolate(method=interp_method)
+        # Re-index and interpolate over the non-matching points
+        df2 = df.reindex(ix_com).interpolate(method=interp_method)
 
-    return df2.reindex(ix_new)
+        # Reindex to the new index, ix_new
+        return df2.reindex(ix_new)
+    else:
+        # If the current index and new index are effectively the same, no reindexing is needed
+        print("No reindexing necessary; DataFrame index matches the new index.")
+        return df
 
 
 
@@ -1963,6 +2340,29 @@ def find_ind_of_closest_dates(df, dates):
     return [df.index.unique().get_loc(date, method='nearest') for date in dates]
 
 
+def find_ind_of_closest_dates_updated(df, dates):
+    """
+    Find the indices of the closest dates in a DataFrame to a list of input dates in a vectorized manner.
+
+    Parameters
+    ----------
+    df : pandas DataFrame
+        Input DataFrame containing time series data with a DateTime index.
+    dates : list-like
+        List of dates (as pandas Timestamps or compatible types) for which the closest indices need to be found.
+
+    Returns
+    -------
+    list
+        A list containing the indices of the closest dates in the DataFrame `df` to each date in the `dates` list.
+    """
+    df_timestamps = df.index.values.astype('datetime64[ns]')
+    input_dates = np.array(pd.to_datetime(dates).values.astype('datetime64[ns]'))
+    abs_diff = np.abs(df_timestamps[:, np.newaxis] - input_dates)
+    closest_indices = abs_diff.argmin(axis=0)
+    return closest_indices.tolist()
+
+
 
 def find_closest_values_of_2_arrays(a, b):
     """
@@ -2009,7 +2409,7 @@ def find_closest_values_of_2_arrays(a, b):
     return np.column_stack((uni, ret_b))
 
 
-def find_cadence(df, mean_or_median_cadence='Mean'):
+def find_cadence(df, mean_or_median_cadence='mean'):
     """
     Find the cadence (time interval) between successive timestamps in a DataFrame's index.
 
@@ -2030,10 +2430,11 @@ def find_cadence(df, mean_or_median_cadence='Mean'):
     This function calculates the cadence (time interval) between successive timestamps in the DataFrame's index.
     It drops any rows with missing values and computes either the mean or median cadence based on the `mean_or_median_cadence` parameter.
     """
-    if mean_or_median_cadence == 'Mean':
-        return np.nanmean((df.dropna().index.to_series().diff() / np.timedelta64(1, 's')))
+    keys = list(df.keys())
+    if mean_or_median_cadence == 'mean':
+        return np.nanmean((df[keys[0]].dropna().index.to_series().diff() / np.timedelta64(1, 's')))
     else:
-        return np.nanmedian((df.dropna().index.to_series().diff() / np.timedelta64(1, 's')))
+        return np.nanmedian((df[keys[0]].dropna().index.to_series().diff() / np.timedelta64(1, 's')))
     
 
 def resample_timeseries_estimate_gaps(df, resolution, large_gaps=5):
@@ -2069,16 +2470,11 @@ def resample_timeseries_estimate_gaps(df, resolution, large_gaps=5):
 
 
     """
-    keys = df.keys()
     try:
-        init_dt = find_cadence(df[keys[1]])
-    except:
-        init_dt = find_cadence(df[keys[0]])
+        keys    = list(df.keys())
+        init_dt = find_cadence(df)
 
-    if init_dt > -1e10:
-        
-        
-        
+
         # Estimate fraction of missing values within interval
         fraction_missing = 100 * len(df[(np.abs(df[keys[0]])>1e10) | (np.isnan(df[keys[0]])) |  (np.isinf(df[keys[0]]))  ])/ len(df)
         
@@ -2102,21 +2498,21 @@ def resample_timeseries_estimate_gaps(df, resolution, large_gaps=5):
         df_resampled = df.resample(f"{int(resolution)}ms").mean().interpolate()
 
 
-    else:
-        init_dt = None
-        df_resampled = None
-        fraction_missing = 100
-        total_gaps = None
-        total_large_gaps = None
-        resolution = np.nan
+    except:
+        init_dt           = None
+        df_resampled      = None
+        fraction_missing  = 100
+        total_gaps        = None
+        total_large_gaps  = None
+        resolution        = np.nan
 
     return {
-        "Init_dt": init_dt,
-        "resampled_df": df_resampled,
-        "Frac_miss": fraction_missing,
-        "Large_gaps": total_large_gaps,
-        "Tot_gaps": total_gaps,
-        "resol": resolution
+        "Init_dt"         : init_dt,
+        "resampled_df"    : df_resampled,
+        "Frac_miss"       : fraction_missing,
+        "Large_gaps"      : total_large_gaps,
+        "Tot_gaps"        : total_gaps,
+        "resol"           : resolution
     }
 
 

@@ -3,10 +3,61 @@ Largely based on MATLAB's Multirate signal processing toolbox with consultation
 of Octave m-file source code.
 """
 
+
+import os
 import sys
 import fractions
 import numpy
+import numpy as np
+import pandas as pd
 from scipy import signal
+from scipy.signal import butter, filtfilt
+
+#Important!! Make sure your current directory is the MHDTurbPy folder!
+os.chdir("/Users/nokni/work/MHDTurbPy/")
+
+
+""" Import manual functions """
+sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+import general_functions as func
+
+def butter_lowpass(cutoff, fs, order=5):
+    nyq = 0.5 * fs
+    normal_cutoff = cutoff / nyq
+    b, a = butter(order, normal_cutoff, btype='low', analog=False)
+    return b, a
+
+def apply_lowpass_filter(data, cutoff, fs, order=5):
+    b, a = butter_lowpass(cutoff, fs, order=order)
+    y = filtfilt(b, a, data)
+    return y
+
+def downsample_and_filter(high_df,
+                          low_df,
+                          order=5,
+                          percentage=1.15):
+    
+    
+    # Calculate sampling rates for both datasets
+    high_fs = 1 / func.find_cadence(high_df)  # Adjusted for high_df
+    low_fs = 1 /  func.find_cadence(low_df)   # assuming index is datetime
+    
+    cutoff = percentage * low_fs / 2  # Define cutoff frequency
+    
+    # Ensure the cutoff frequency is within valid range for digital filter design
+    if cutoff >= high_fs / 2:
+        raise ValueError("Cutoff frequency must be less than half the high_df sampling rate.")
+
+    filtered_df = high_df.copy()
+    for column in high_df.columns:
+        # Apply low-pass filter to each column
+        filtered_data = apply_lowpass_filter(high_df[column].values, cutoff, high_fs, order=order)
+        filtered_df[column] = filtered_data
+
+    # Interpolate or reindex the filtered data to match the lower sample rate DataFrame's index
+    resampled_df = func.newindex(filtered_df, low_df.index)
+    return resampled_df
+
 
 
 def downsample(s, n, phase=0):

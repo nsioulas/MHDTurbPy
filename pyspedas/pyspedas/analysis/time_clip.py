@@ -6,7 +6,7 @@ Notes
 Similar to tclip.pro in IDL SPEDAS.
 
 """
-import logging
+
 import pyspedas
 import pytplot
 
@@ -40,7 +40,7 @@ def time_clip(names, time_start, time_end, new_names=None, suffix=None,
     old_names = pyspedas.tnames(names)
 
     if len(old_names) < 1:
-        logging.error('Time clip error: No pytplot names were provided.')
+        print('Time clip error: No pytplot names were provided.')
         return
 
     if suffix is None:
@@ -68,14 +68,15 @@ def time_clip(names, time_start, time_end, new_names=None, suffix=None,
 
         if not isinstance(alldata, tuple): # NRV variable
             continue
-
+            
         time = alldata[0]
         data = alldata[1]
 
+        index_start = 0
         index_end = len(time)
 
         if index_end < 1:
-            logging.error('Time clip found empty list.')
+            print('Time clip found empty list.')
             continue
 
         new_time = pyspedas.time_float(time)
@@ -83,28 +84,26 @@ def time_clip(names, time_start, time_end, new_names=None, suffix=None,
         new_time_end = pyspedas.time_float(time_end)
 
         if new_time_start > new_time_end:
-            logging.error('Error: Start time is larger than end time.')
+            print('Error: Start time is larger than end time.')
             continue
 
         if (new_time_start > new_time[-1]) or (new_time_end < new_time[0]):
-            logging.error('Time clip returns empty data.')
+            print('Time clip returns empty data.')
             continue
 
         if (new_time_start <= new_time[0]) and (new_time_end >= new_time[-1]):
-            logging.info('Time clip returns full data set.')
+            print('Time clip returns full data set.')
             continue
 
-        index_start = next(
-            (i for i in range(index_end) if new_time[i] >= new_time_start), 0
-        )
-        found_end = next(
-            (
-                i
-                for i in range(index_start, index_end)
-                if new_time[i] > new_time_end
-            ),
-            index_end,
-        )
+        for i in range(index_end):
+            if new_time[i] >= new_time_start:
+                index_start = i
+                break
+        found_end = index_end
+        for i in range(index_start, index_end):
+            if new_time[i] > new_time_end:
+                found_end = i
+                break
         index_end = found_end
 
         tmp_q = pytplot.data_quants[n_names[j]]
@@ -182,7 +181,7 @@ def time_clip(names, time_start, time_end, new_names=None, suffix=None,
                     'y': data[index_start:index_end]},
                     attr_dict=metadata)
         except:
-            logging.error(f'Problem time clipping: {n_names[j]}')
+            print('Problem time clipping: ' + n_names[j])
             continue
 
-        logging.info(f'Time clip was applied to: {n_names[j]}')
+       # print('Time clip was applied to: ' + n_names[j])

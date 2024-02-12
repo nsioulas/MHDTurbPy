@@ -7,6 +7,7 @@ from joblib import Parallel, delayed
 sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
 import general_functions as func
 import TurbPy as turb
+import traceback
 
 from scipy import constants
 mu_0            = constants.mu_0  # Vacuum magnetic permeability [N A^-2]
@@ -39,7 +40,8 @@ def est_alignment_angles(
     # Estimate cross product of the two vectors
     
     numer          = np.cross(xvec, yvec)
-    numer_cos      = np.nansum(xvec* yvec, axis=1)# np.nansum(, axis=1)
+    numer_cos      = func.custom_nansum_product(xvec, yvec, 1)
+    
 
     # Estimate magnitudes of the two vectors:
     xvec_mag       = func.estimate_vec_magnitude(xvec)
@@ -47,7 +49,7 @@ def est_alignment_angles(
 
     # Estimate sigma (sigma_r for (δv, δb), sigma_c for (δzp, δz-) )
     sigma_ts             = (xvec_mag**2 - yvec_mag**2 )/( xvec_mag**2 + yvec_mag**2 )
-    sigma_mean           = np.nanmean(sigma_ts)
+    sigma_mean           = (np.nanmean(xvec_mag**2) - np.nanmean(yvec_mag**2))/(np.nanmean(xvec_mag**2) + np.nanmean(yvec_mag**2))
     sigma_median         = np.nanmedian(sigma_ts)   
     
     # Estimate denominator
@@ -84,7 +86,6 @@ def est_alignment_angles(
                                
     return counts, sigma_ts, sigma_mean, sigma_median, numer, numer_cos,  denom, xvec_mag, yvec_mag, reg_align_angle_sin, polar_int_angle, weighted_sins
 
-
 def fast_unit_vec(a):
     return a.T / func.estimate_vec_magnitude(a)
 
@@ -96,24 +97,29 @@ def mag_of_ell_projections_and_angles(
                                         db_perp_vector
                                     ):
     
-    # estimate unit vector in parallel and displacement dir
-    B_l_vector     = (B_l_vector.T/func.estimate_vec_magnitude(B_l_vector)).T
-    db_perp_vector = (db_perp_vector.T/func.estimate_vec_magnitude(db_perp_vector)).T
+    try:
+        # estimate unit vector in parallel and displacement dir
+        B_l_vector     = (B_l_vector.T/func.estimate_vec_magnitude(B_l_vector)).T
+        db_perp_vector = (db_perp_vector.T/func.estimate_vec_magnitude(db_perp_vector)).T
 
-    # estimate unit vector in pependicular by cross product
-    b_perp_vector  = np.cross(B_l_vector, db_perp_vector)
+        # estimate unit vector in pependicular by cross product
+        b_perp_vector  = np.cross(B_l_vector, db_perp_vector)
 
-    # Calculate dot product in-place
-    l_ell          = np.abs(np.nansum(l_vector* B_l_vector, axis=1))
-    l_xi           = np.abs(np.nansum(l_vector* db_perp_vector, axis=1))
-    l_lambda       = np.abs(np.nansum(l_vector* b_perp_vector, axis=1))
+        # Calculate dot product in-place
+        l_ell    = np.abs(func.custom_nansum_product(l_vector, B_l_vector, 1))
+        l_xi     = np.abs(func.custom_nansum_product(l_vector, db_perp_vector, 1))
+        l_lambda = np.abs(func.custom_nansum_product(l_vector, b_perp_vector, 1))
 
-    #  Estimate the component l perpendicular to Blocal
-    l_perp         = func.perp_vector(l_vector, B_l_vector)
 
-    # Estimate angles needed for 3D decomposition
-    VBangle        = func.angle_between_vectors(l_vector, B_l_vector, restrict_2_90 = True)
-    Phiangle       = func.angle_between_vectors(l_perp, db_perp_vector,  restrict_2_90 = True)
+        #  Estimate the component l perpendicular to Blocal
+        l_perp         = func.perp_vector(l_vector, B_l_vector)
+
+        # Estimate angles needed for 3D decomposition
+        VBangle        = func.angle_between_vectors(l_vector, B_l_vector, restrict_2_90 = True)
+        Phiangle       = func.angle_between_vectors(l_perp, db_perp_vector,  restrict_2_90 = True)
+
+    except:
+        traceback.print_exc()
 
     return l_ell, l_xi, l_lambda, VBangle, Phiangle
 
@@ -201,11 +207,7 @@ def local_structure_function(
         # Estimate average of Np to avoid unphysical spikes
         N_l          = (Np.iloc[:-tau].values + Np.iloc[tau:].values)/2
         
-#         needed_index = B[tau:].index
-        
-#         dB_shape                = B.shape
-#         dB_filled               = pd.DataFrame(np.nan, index=B.index, columns=B.columns)
-#         dB_filled.iloc[:-tau,:] = dB
+
         needed_index = B.iloc[:-tau,:].index
                 
    
@@ -214,7 +216,7 @@ def local_structure_function(
     
     # Estimate amplitudes of perp, par
     dB_perp_amp        = np.sqrt(dB_perp.T[0]**2 + dB_perp.T[1]**2 + dB_perp.T[2]**2  )
-    dB_parallel_amp = np.sqrt(dB_parallel.T[0]**2 + dB_parallel.T[1]**2 + dB_parallel.T[2]**2  )
+    dB_parallel_amp    = np.sqrt(dB_parallel.T[0]**2 + dB_parallel.T[1]**2 + dB_parallel.T[2]**2  )
     
     
     #Estimate l vector
@@ -241,30 +243,17 @@ def local_structure_function(
     if estimate_alignment_angle:
 
         # Kinetic normalization of magnetic field
-        dva_perp         =  dB_perp*kinet_normal
+        dva_perp = dB_perp * kinet_normal
 
         # We need the perpendicular component of the fluctuations
-        du_perp          = func.perp_vector(du, B_l)
+        du_perp = func.perp_vector(du, B_l)
 
-        
-        # Sign of  background Br
-        if fix_sign:
-            signBx            = - np.sign(B_l.T[0])
-            
-            # Estimate fluctuations in Elssaser variables
-            dzp_perp         = du_perp + (np.array(signBx)*dva_perp.T).T
-            dzm_perp         = du_perp - (np.array(signBx)*dva_perp.T).T
-            
-        else:
-            #print('Here')
-            signBx            =  np.sign(func.newindex( B['Br'].rolling('10min', center=True).mean().interpolate(), needed_index).values)  #np.abs(np.sign(B_l.T[0]))     
+        # Determine the sign of background Br
+        signBx = -np.sign(B_l.T[0]) if fix_sign else np.sign(func.newindex(B['Br'].rolling('10min', center=True).mean().interpolate(), needed_index).values)
 
-            # Estimate fluctuations in Elssaser variables
-            dzp_perp         = du_perp + (np.array(signBx)*dva_perp.T).T
-            dzm_perp         = du_perp - (np.array(signBx)*dva_perp.T).T
-            
-
-        
+        # Estimate fluctuations in Elssaser variables
+        dzp_perp = du_perp + signBx[:, None] * dva_perp
+        dzm_perp = du_perp - signBx[:, None] * dva_perp
 
         if turb_amp_analysis:
             
@@ -293,6 +282,7 @@ def local_structure_function(
                                
         # Assign values for va, v, z+, z-
         countsvb, sigma_r_ts,  sigma_r_mean, sigma_r_median, sins_ub_numer, cos_ub_numer, sins_ub_denom,  v_mag, va_mag, reg_align_angle_sin_ub, polar_int_angle_ub, weighted_sins_ub         = ub_results
+        
         countszp, sigma_c_ts,  sigma_c_mean, sigma_c_median, sins_zpm_numer, cos_zpm_numer, sins_zpm_denom, zp_mag, zm_mag, reg_align_angle_sin_zpm, polar_int_angle_zpm, weighted_sins_zpm   = zpm_results  
 
         
@@ -342,7 +332,7 @@ def structure_functions_3D(
                            indices, 
                            qorder,
                            mat,
-                           max_std=18
+                           max_std=12
                           ):
     """
     Parameters:
@@ -372,10 +362,13 @@ def structure_functions_3D(
     ar    = ar[index]
     at    = at[index]
     an    = an[index]
-
+    
+    dbtot = np.sqrt(ar**2 + at**2 +an**2)
     for i in prange(len(qorder)):   
-        result[i] = np.nanmean(ar**qorder[i]) +  np.nanmean(at**qorder[i]) +  np.nanmean(an**qorder[i])
-    return list(result)
+        result[i] = np.nanmean((dbtot)**qorder[i])
+
+    sdk   = result[3] /result[1]**2
+    return list(result), sdk
 
 def estimate_pdfs_3D(
                      indices,
@@ -445,10 +438,10 @@ def quants_2_estimate(
     variables = {}
     
     if 'db_perp_amp' in quants:
-        variables['db_perp_amp'] =dB_perp
+        variables['db_perp_amp'] = dB_perp
         
     if 'db_par_amp' in quants:
-        variables['db_par_amp'] =dB_parallel
+        variables['db_par_amp']  = dB_parallel
                
     
     if 'PVI_vec_zp' in quants:
@@ -542,18 +535,7 @@ def quants_2_estimate(
         variables['V_N']             =  dV.T[2] 
         
         del dV
-        
-#     if 'dva_perp' in quants:
-#         variables['dva_perp']             =  keep_turb_amp['dva_perp']
-        
-#     if 'du_perp' in quants:
-#         variables['du_perp']             =  keep_turb_amp['du_perp']
-        
-#     if 'dzp_perp' in quants:
-#         variables['dzp_perp']             =  keep_turb_amp['dzp_perp']
-        
-#     if 'dzm_perp' in quants:
-#         variables['dzm_perp']             =  keep_turb_amp['dzm_perp']  
+         
 
     if 'sign_Bx' in quants:
         variables['sign_Bx']         =  sign_Bx 
@@ -892,7 +874,8 @@ def estimate_3D_sfuncs(
                        ts_list                  = None,
                        thetas_phis_step         = 10,
                        return_B_in_vel_units    = False,
-                       turb_amp_analysis        = False):
+                       turb_amp_analysis        = False,
+                       estimate_dzp_dzm         = False):
     """
     Estimate the 3D structure functions for the data given in `B` and `V`
 
@@ -945,27 +928,35 @@ def estimate_3D_sfuncs(
     sf_ell_par_conds        = conditions['ell_par']
     sf_ell_par_rest_conds   = conditions['ell_par_rest']
 
-    # Initialize arrays
-    sf_ell_perp_B             = np.zeros(( len(tau_values), len(qorder))); counts_ell_perp             = np.zeros( len(tau_values));
-    sf_Ell_perp_B             = np.zeros(( len(tau_values), len(qorder))); counts_Ell_perp             = np.zeros( len(tau_values));
-    sf_ell_par_B              = np.zeros(( len(tau_values), len(qorder))); counts_ell_par              = np.zeros( len(tau_values));
-    sf_ell_par_rest_B         = np.zeros(( len(tau_values), len(qorder))); counts_ell_par_rest         = np.zeros( len(tau_values)); 
-    sf_overall_B              = np.zeros(( len(tau_values), len(qorder))); counts_overall              = np.zeros( len(tau_values))
-    
-    sf_ell_perp_V             = np.zeros(( len(tau_values), len(qorder))); 
-    sf_Ell_perp_V             = np.zeros(( len(tau_values), len(qorder))); 
-    sf_ell_par_V              = np.zeros(( len(tau_values), len(qorder))); 
-    sf_ell_par_rest_V         = np.zeros(( len(tau_values), len(qorder))); 
-    sf_overall_V              = np.zeros(( len(tau_values), len(qorder))); 
-    
+
+    # Function to initialize arrays
+    def init_nan_array(shape):
+        return np.full(shape, np.nan)
+
+    # Initialize 2D arrays
+    sf_ell_perp_B, sf_Ell_perp_B, sf_ell_par_B, sf_ell_par_rest_B, sf_overall_B = \
+        (init_nan_array((len(tau_values), len(qorder))) for _ in range(5))
+
+    sf_ell_perp_V, sf_Ell_perp_V, sf_ell_par_V, sf_ell_par_rest_V, sf_overall_V = \
+        (init_nan_array((len(tau_values), len(qorder))) for _ in range(5))
+
+    sf_ell_perp_Zp, sf_Ell_perp_Zp, sf_ell_par_Zp, sf_ell_par_rest_Zp, sf_overall_Zp, \
+    sf_ell_perp_Zm, sf_Ell_perp_Zm, sf_ell_par_Zm, sf_ell_par_rest_Zm, sf_overall_Zm = \
+        (init_nan_array((len(tau_values), len(qorder))) for _ in range(10))
+
+    # Initialize 1D arrays
+    counts_ell_perp, counts_Ell_perp, counts_ell_par, counts_ell_par_rest, counts_overall, \
+    sdk_ell_perp_B, sdk_Ell_perp_B, sdk_ell_par_B, sdk_ell_par_rest_B, sdk_overall_B, \
+    l_ell_perp, l_Ell_perp, l_ell_par, l_ell_par_rest, l_overall = \
+        (init_nan_array(len(tau_values)) for _ in range(15))
+
     # Initialize dictionaries    
-    thetas                  = {}; phis                    = {}
-    u_norms                 = {}; b_norms                 = {}
-    ub_polar                = []; ub_reg                  = [];  ub_weighted             = []
-    zpm_polar               = []; zpm_reg                 = [];  zpm_weighted            = []
-    sig_c_mean              = []; sig_r_mean              = []; sig_c_median             = [];  sig_r_median            = []
-    
-    counts_vb               = []; counts_zp               = [];
+    thetas, phis, u_norms, b_norms                     = {}, {}, {}, {}
+    ub_polar, ub_reg, ub_weighted                      = [], [], []
+    zpm_polar, zpm_reg, zpm_weighted                   = [], [], []
+    sig_c_mean, sig_r_mean, sig_c_median, sig_r_median = [], [], [], []
+    counts_vb, counts_zp                               = [], []
+
     
     
     if only_general ==2:
@@ -982,180 +973,218 @@ def estimate_3D_sfuncs(
     
     # Run main loop
     for jj, tau_value in enumerate(tau_values):
+        
+        try:
        
 
-        # Call the function with keyword arguments directly
-        keep_turb_amp, dB, dB_perp, dB_parallel, dV, dN,  kinet_normal, sign_Bx, normal_flag,  l_mag,  l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb, align_angles_zpm, needed_index = local_structure_function(
-                                                                                                                                                                       B.copy(),
-                                                                                                                                                                       V.copy(),
-                                                                                                                                                                       Np.copy(),
-                                                                                                                                                                       int(tau_value),
-                                                                                                                                                                       dt,
-                                                                                                                                                                       return_unit_vecs         = return_unit_vecs,
-                                                                                                                                                                       five_points_sfunc        = five_points_sfuncs,
-                                                                                                                                                                       estimate_alignment_angle = estimate_alignment_angle,
-                                                                                                                                                                       return_mag_align_correl  = return_mag_align_correl,
-                                                                                                                                                                       fix_sign                 = fix_sign,
-                                                                                                                                                                       return_B_in_vel_units    = return_B_in_vel_units,
-                                                                                                                                                                       turb_amp_analysis        = turb_amp_analysis)
-        if estimate_alignment_angle:
-            # Va, v average angles
-            ub_polar.append(align_angles_vb['polar_inter_angle'])
-            ub_reg.append(align_angles_vb['reg_angle'])
-            ub_weighted.append(align_angles_vb['weighted_angle'])
-            sig_r_mean.append(align_angles_vb['sig_r_mean'])
-            sig_r_median.append(align_angles_vb['sig_r_median'])   
-            counts_vb.append(align_angles_vb['counts'])
+            # Call the function with keyword arguments directly
+            keep_turb_amp, dB, dB_perp, dB_parallel, dV, dN,  kinet_normal, sign_Bx, normal_flag,  l_mag,  l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb, align_angles_zpm, needed_index = local_structure_function(
+                                                                                                                                                                           B.copy(),
+                                                                                                                                                                           V.copy(),
+                                                                                                                                                                           Np.copy(),
+                                                                                                                                                                           int(tau_value),
+                                                                                                                                                                           dt,
+                                                                                                                                                                           return_unit_vecs         = return_unit_vecs,
+                                                                                                                                                                           five_points_sfunc        = five_points_sfuncs,
+                                                                                                                                                                           estimate_alignment_angle = estimate_alignment_angle,
+                                                                                                                                                                           return_mag_align_correl  = return_mag_align_correl,
+                                                                                                                                                                           fix_sign                 = fix_sign,
+                                                                                                                                                                           return_B_in_vel_units    = return_B_in_vel_units,
+                                                                                                                                                                           turb_amp_analysis        = turb_amp_analysis)
+            if estimate_alignment_angle:
+                # Va, v average angles
+                ub_polar.append(align_angles_vb['polar_inter_angle'])
+                ub_reg.append(align_angles_vb['reg_angle'])
+                ub_weighted.append(align_angles_vb['weighted_angle'])
+                sig_r_mean.append(align_angles_vb['sig_r_mean'])
+                sig_r_median.append(align_angles_vb['sig_r_median'])   
+                counts_vb.append(align_angles_vb['counts'])
 
-            # Zp, Zm average angles
-            zpm_polar.append(align_angles_zpm['polar_inter_angle'])
-            zpm_reg.append(align_angles_zpm['reg_angle'])
-            zpm_weighted.append(align_angles_zpm['weighted_angle'])
-            sig_c_mean.append(align_angles_zpm['sig_c_mean'])
-            sig_c_median.append(align_angles_zpm['sig_c_median']) 
-            counts_zp.append(align_angles_zpm['counts'])
+                # Zp, Zm average angles
+                zpm_polar.append(align_angles_zpm['polar_inter_angle'])
+                zpm_reg.append(align_angles_zpm['reg_angle'])
+                zpm_weighted.append(align_angles_zpm['weighted_angle'])
+                sig_c_mean.append(align_angles_zpm['sig_c_mean'])
+                sig_c_median.append(align_angles_zpm['sig_c_median']) 
+                counts_zp.append(align_angles_zpm['counts'])
 
-        # Estimate extra quantities     
-        if return_coefs:
-            final_variables = quants_2_estimate(
-                                                dB,
-                                                dB_perp, 
-                                                dB_parallel,
-                                                dV,
-                                                dN,
-                                                Np,
-                                                keep_turb_amp,
-                                                np.concatenate(kinet_normal),
-                                                sign_Bx,
-                                                B.copy(),
-                                                V.copy(),
-                                                Phiangle,
-                                                VBangle,
-                                                align_angles_zpm,
-                                                align_angles_vb,
-                                                int(tau_value),
-                                                needed_index,
-                                                di,
-                                                Vsw,
-                                                five_points_sfunc        = five_points_sfuncs,
-                                                av_hours  = 1/120,
-                                                ts_list   = ts_list)
-            
-        if only_general ==1:
-                        
-            """ For General """
+            # Estimate extra quantities     
             if return_coefs:
-                indices                   = np.where((final_variables['thetas'] > theta_thresh_gen) & (final_variables['phis'] > phi_thresh_gen))[0]
-                ell_all_dict[str(jj)]     = save_flucs(indices, final_variables, l_mag,'lambda')
-            else:
-                indices                    = np.where((VBangle > theta_thresh_gen) & (Phiangle > phi_thresh_gen))[0]
-                sf_overall_B[jj, :]        = structure_functions_3D(indices, qorder, dB)
-                sf_overall_V[jj, :]        = structure_functions_3D(indices, qorder, dV)
-                counts_overall[jj]         = len(indices)
+                final_variables = quants_2_estimate(
+                                                    dB,
+                                                    dB_perp, 
+                                                    dB_parallel,
+                                                    dV,
+                                                    dN,
+                                                    Np,
+                                                    keep_turb_amp,
+                                                    np.concatenate(kinet_normal),
+                                                    sign_Bx,
+                                                    B.copy(),
+                                                    V.copy(),
+                                                    Phiangle,
+                                                    VBangle,
+                                                    align_angles_zpm,
+                                                    align_angles_vb,
+                                                    int(tau_value),
+                                                    needed_index,
+                                                    di,
+                                                    Vsw,
+                                                    five_points_sfunc        = five_points_sfuncs,
+                                                    av_hours  = 1/120,
+                                                    ts_list   = ts_list)
 
-            if estimate_PDFS:
-                PDF_all                  = estimate_pdfs_3D(indices,  dB)
-            else:
-                PDF_all = None   
-        elif only_general ==0:
+            if estimate_dzp_dzm:
 
-            """ For Perpendicular """
-            if return_coefs:
-                indices              = np.where((final_variables['thetas'] > sf_ell_perp_conds['theta']) & (final_variables['phis'] > sf_ell_perp_conds['phi']))[0]
-                lambda_dict[str(jj)] = save_flucs(indices, final_variables, l_lambda,'lambdas')
+                # Element-wise multiplication, using direct column access for kinet_normal
+                #print(np.shape(kinet_normal[:, 0]))
+                combined = sign_Bx * kinet_normal[:, 0]
 
-            else:
-                indices                  = np.where((VBangle > sf_ell_perp_conds['theta']) & (Phiangle > sf_ell_perp_conds['phi']))[0]
-                sf_ell_perp_B[jj, :]         = structure_functions_3D(indices, qorder, dB)
-                sf_ell_perp_V[jj, :]         = structure_functions_3D(indices, qorder, dV)
-                counts_ell_perp[jj]      = len(indices)
+                # Element-wise operations for d_Zp and d_Zm
+                d_Zp = dV + dB * combined[:, None]  
+                d_Zm = dV - dB * combined[:, None]
 
+                del combined
 
-            if estimate_PDFS:
-                PDF_ell_perp             = estimate_pdfs_3D(indices,  dB)
-            else:
-                PDF_ell_perp = None
+            if only_general ==1:
 
-            """ For Displacement """
-            if return_coefs:
-                indices                  = np.where((final_variables['thetas'] > sf_Ell_perp_conds['theta']) & (final_variables['phis'] < sf_Ell_perp_conds['phi']))[0]
-                xi_dict[str(jj)]         = save_flucs(indices, final_variables, l_xi,'xis')
+                """ For General """
+                if return_coefs:
+                    indices                   = np.where((final_variables['thetas'] > theta_thresh_gen) & (final_variables['phis'] > phi_thresh_gen))[0]
+                    ell_all_dict[str(jj)]     = save_flucs(indices, final_variables, l_mag,'lambda')
+                else:
+                    indices                     = np.where((VBangle > theta_thresh_gen) & (Phiangle > phi_thresh_gen))[0]
+                    sf_overall_B[jj, :]         = structure_functions_3D(indices, qorder, dB)
+                    sf_overall_V[jj, :]         = structure_functions_3D(indices, qorder, dV)
+                    sf_overall_Zp[jj, :]        = structure_functions_3D(indices, qorder, d_Zp)
+                    sf_overall_Zm[jj, :]        = structure_functions_3D(indices, qorder, d_Zm)
+                    counts_overall[jj]          = len(indices)
 
-            else:
-                indices                  = np.where((VBangle > sf_Ell_perp_conds['theta']) & (Phiangle < sf_Ell_perp_conds['phi']))[0]
-                sf_Ell_perp_B[jj, :]     = structure_functions_3D(indices, qorder, dB)
-                sf_Ell_perp_V[jj, :]     = structure_functions_3D(indices, qorder, dV)
-                counts_Ell_perp[jj]      = len(indices)
+                if estimate_PDFS:
+                    PDF_all                  = estimate_pdfs_3D(indices,  dB)
+                else:
+                    PDF_all = None   
+            elif only_general ==0:
 
-            if estimate_PDFS:        
-                PDF_Ell_perp             = estimate_pdfs_3D(indices,  dB)
+                """ For Perpendicular """
+                if return_coefs:
+                    indices              = np.where((final_variables['thetas'] > sf_ell_perp_conds['theta']) & (final_variables['phis'] > sf_ell_perp_conds['phi']))[0]
+                    lambda_dict[str(jj)] = save_flucs(indices, final_variables, l_lambda,'lambdas')
 
-            else:
-                PDF_Ell_perp = None
-
-
-            """ For Parallel """
-            if return_coefs:
-                indices                  = np.where((final_variables['thetas'] < sf_ell_par_conds['theta']) & (final_variables['phis'] < sf_ell_par_conds['phi']))[0]
-                ell_par_dict[str(jj)]    = save_flucs(indices, final_variables, l_ell,'ells')
-
-
-            else:
-                indices                  = np.where((VBangle < sf_ell_par_conds['theta']) & (Phiangle < sf_ell_par_conds['phi']))[0] 
-                sf_ell_par_B[jj, :]      = structure_functions_3D(indices, qorder, dB)
-                sf_ell_par_V[jj, :]      = structure_functions_3D(indices, qorder, dV)
-                counts_ell_par[jj]       = len(indices)
-
-            if estimate_PDFS:
-                PDF_ell_par              = estimate_pdfs_3D(indices,  dB)
-            else:
-                PDF_ell_par = None
-
-            """ For Parallel but restricted """
-            if return_coefs:
-                indices                   = np.where((final_variables['thetas'] < sf_ell_par_rest_conds['theta']) & (final_variables['phis'] < sf_ell_par_rest_conds['phi']))[0]
-                ell_par_rest_dict[str(jj)]= save_flucs(indices, final_variables, l_ell,'ells_rest')
-            else:
-                indices                   = np.where((VBangle < sf_ell_par_rest_conds['theta']) & (Phiangle < sf_ell_par_rest_conds['phi']))[0]
-                sf_ell_par_rest_B[jj, :]  = structure_functions_3D(indices, qorder, dB)
-                sf_ell_par_rest_V[jj, :]  = structure_functions_3D(indices, qorder, dV)
-                counts_ell_par_rest[jj]       = len(indices)
-
-            if estimate_PDFS:
-                PDF_ell_par_rest         = estimate_pdfs_3D(indices,  dB)
-            else:
-                PDF_ell_par_rest = None 
-                
-                
-            """ For General """
-            if return_coefs ==0:
-   
-                indices                    = np.where((VBangle > 0) & (Phiangle > 0))[0]
-                sf_overall_B[jj, :]        = structure_functions_3D(indices, qorder, dB)
-                sf_overall_V[jj, :]        = structure_functions_3D(indices, qorder, dV)
-                counts_overall[jj]         = len(indices)
-                                                        
-                                                                           
-                                                                           
-        else:                                                     
-                                                                           
-            if return_coefs ==0:                                                   
-
-                sf_data_B, sf_data_V  = finner_bins_SFs(  dB,
-                                                          dV,
-                                                          qorder,
-                                                          jj,
-                                                          tau_values,
-                                                          thetas_phis_step,
-                                                          VBangle,
-                                                          Phiangle,
-                                                          di,
-                                                          Vsw,
-                                                          dt,
-                                                          sf_data_V,
-                                                          sf_data_B)
+                else:
+                    indices                      = np.where((VBangle > sf_ell_perp_conds['theta']) & (Phiangle > sf_ell_perp_conds['phi']))[0]
+                    sf_ell_perp_B[jj, :], sdk_ell_perp_B[jj]            = structure_functions_3D(indices, qorder, dB)
+                    sf_ell_perp_V[jj, :],_                              = structure_functions_3D(indices, qorder, dV)
+                    sf_ell_perp_Zp[jj, :],_                             = structure_functions_3D(indices, qorder, d_Zp)
+                    sf_ell_perp_Zm[jj, :],_                             = structure_functions_3D(indices, qorder, d_Zm)
+                    l_ell_perp[jj]                                      = np.nanmean(l_lambda[indices]) 
 
 
+                    counts_ell_perp[jj]      = len(indices)
+
+
+                if estimate_PDFS:
+                    PDF_ell_perp             = estimate_pdfs_3D(indices,  dB)
+                else:
+                    PDF_ell_perp = None
+
+                """ For Displacement """
+                if return_coefs:
+                    indices                  = np.where((final_variables['thetas'] > sf_Ell_perp_conds['theta']) & (final_variables['phis'] < sf_Ell_perp_conds['phi']))[0]
+                    xi_dict[str(jj)]         = save_flucs(indices, final_variables, l_xi,'xis')
+
+                else:
+                    indices                  = np.where((VBangle > sf_Ell_perp_conds['theta']) & (Phiangle < sf_Ell_perp_conds['phi']))[0]
+                    sf_Ell_perp_B[jj, :], sdk_Ell_perp_B[jj]     = structure_functions_3D(indices, qorder, dB)
+                    sf_Ell_perp_V[jj, :],_                       = structure_functions_3D(indices, qorder, dV)
+                    sf_Ell_perp_Zp[jj, :],_                      = structure_functions_3D(indices, qorder, d_Zp)
+                    sf_Ell_perp_Zm[jj, :],_                      = structure_functions_3D(indices, qorder, d_Zm)
+                    l_Ell_perp[jj]                               = np.nanmean(l_xi[indices]) 
+                    counts_Ell_perp[jj]                          = len(indices)
+
+                if estimate_PDFS:        
+                    PDF_Ell_perp             = estimate_pdfs_3D(indices,  dB)
+
+                else:
+                    PDF_Ell_perp = None
+
+
+                """ For Parallel """
+                if return_coefs:
+                    indices                  = np.where((final_variables['thetas'] < sf_ell_par_conds['theta']) & (final_variables['phis'] < sf_ell_par_conds['phi']))[0]
+                    ell_par_dict[str(jj)]    = save_flucs(indices, final_variables, l_ell,'ells')
+
+
+                else:
+                    indices                  = np.where((VBangle < sf_ell_par_conds['theta']) & (Phiangle < sf_ell_par_conds['phi']))[0] 
+                    sf_ell_par_B[jj, :], sdk_ell_par_B[jj]         = structure_functions_3D(indices, qorder, dB)
+                    sf_ell_par_V[jj, :], _                         = structure_functions_3D(indices, qorder, dV)
+                    sf_ell_par_Zp[jj, :], _                        = structure_functions_3D(indices, qorder, d_Zp)
+                    sf_ell_par_Zm[jj, :], _                        = structure_functions_3D(indices, qorder, d_Zm)
+                    l_ell_par[jj]                                  = np.nanmean(l_ell[indices]) 
+
+                    counts_ell_par[jj]                             = len(indices)
+
+                if estimate_PDFS:
+                    PDF_ell_par              = estimate_pdfs_3D(indices,  dB)
+                else:
+                    PDF_ell_par = None
+
+                """ For Parallel but restricted """
+                if return_coefs:
+                    indices        = np.where((final_variables['thetas'] < sf_ell_par_rest_conds['theta']) & (final_variables['phis'] < sf_ell_par_rest_conds['phi']))[0]
+                    ell_par_rest_dict[str(jj)]                        = save_flucs(indices, final_variables, l_ell,'ells_rest')
+                else:
+                    indices                                           = np.where((VBangle < sf_ell_par_rest_conds['theta']) & (Phiangle < sf_ell_par_rest_conds['phi']))[0]
+                    
+                    sf_ell_par_rest_B[jj, :], sdk_ell_par_rest_B[jj]  = structure_functions_3D(indices, qorder, dB)
+                    sf_ell_par_rest_V[jj, :], _                       = structure_functions_3D(indices, qorder, dV)
+                    sf_ell_par_rest_Zp[jj, :], _                      = structure_functions_3D(indices, qorder, d_Zp)
+                    sf_ell_par_rest_Zm[jj, :], _                      = structure_functions_3D(indices, qorder, d_Zm)
+                    l_ell_par_rest[jj]                                = np.nanmean(l_ell[indices]) 
+                    counts_ell_par_rest[jj]                           = len(indices)
+
+                if estimate_PDFS:
+                    PDF_ell_par_rest         = estimate_pdfs_3D(indices,  dB)
+                else:
+                    PDF_ell_par_rest = None 
+
+
+                """ For General """
+                if return_coefs ==0:
+
+                    indices                    = np.where((VBangle > 0) & (Phiangle > 0))[0]
+                    sf_overall_B[jj, :], sdk_overall_B[jj]        = structure_functions_3D(indices, qorder, dB)
+                    sf_overall_V[jj, :], _                        = structure_functions_3D(indices, qorder, dV)
+                    sf_overall_Zp[jj, :], _                       = structure_functions_3D(indices, qorder, d_Zp)
+                    sf_overall_Zm[jj, :], _                       = structure_functions_3D(indices, qorder, d_Zm)
+                    counts_overall[jj]                            = len(indices)
+
+
+
+            else:                                                     
+
+                if return_coefs ==0:                                                   
+
+                    sf_data_B, sf_data_V  = finner_bins_SFs(  dB,
+                                                              dV,
+                                                              qorder,
+                                                              jj,
+                                                              tau_values,
+                                                              thetas_phis_step,
+                                                              VBangle,
+                                                              Phiangle,
+                                                              di,
+                                                              Vsw,
+                                                              dt,
+                                                              sf_data_V,
+                                                              sf_data_B)
+
+        except:
+            traceback.print_exc()
+            pass
+    
+    
     # Also estimate x values in di
     l_di    = (tau_values*dt*Vsw)/di
     
@@ -1197,23 +1226,44 @@ def estimate_3D_sfuncs(
                                   'Ell_perp'            : sf_Ell_perp_B.T,
                                   'ell_par'             : sf_ell_par_B.T,
                                   'ell_par_rest'        : sf_ell_par_rest_B.T,
-                                  'ell_overall'         : sf_overall_B.T},
+                                  'ell_overall'         : sf_overall_B.T,
+                                  'sdk_ell_perp'            : sdk_ell_perp_B,
+                                  'sdk_Ell_perp'            : sdk_Ell_perp_B,
+                                  'sdk_ell_par'             : sdk_ell_par_B,
+                                  'sdk_ell_par_rest'        : sdk_ell_par_rest_B,
+                                  'sdk_ell_overall'         : sdk_overall_B},
 
                             'V' :{
                                   'ell_perp'            : sf_ell_perp_V.T,
                                   'Ell_perp'            : sf_Ell_perp_V.T,
                                   'ell_par'             : sf_ell_par_V.T,
                                   'ell_par_rest'        : sf_ell_par_rest_V.T,
-                                  'ell_overall'         : sf_overall_V.T},        
+                                  'ell_overall'         : sf_overall_V.T}, 
+                            'Zp' :{
+                                  'ell_perp'            : sf_ell_perp_Zp.T,
+                                  'Ell_perp'            : sf_Ell_perp_Zp.T,
+                                  'ell_par'             : sf_ell_par_Zp.T,
+                                  'ell_par_rest'        : sf_ell_par_rest_Zp.T,
+                                  'ell_overall'         : sf_overall_Zp.T}, 
+                            'Zm' :{
+                                  'ell_perp'            : sf_ell_perp_Zm.T,
+                                  'Ell_perp'            : sf_Ell_perp_Zm.T,
+                                  'ell_par'             : sf_ell_par_Zm.T,
+                                  'ell_par_rest'        : sf_ell_par_rest_Zm.T,
+                                  'ell_overall'         : sf_overall_Zm.T},  
 
-                          'counts_ell_perp'     : counts_ell_perp.T,
-                          'counts_Ell_perp'     : counts_Ell_perp.T,
-                          'counts_ell_par'      : counts_ell_par.T,
-                          'counts_ell_par_rest' : counts_ell_par_rest.T,
-                          'counts_ell_overall'  : counts_overall.T,
-                          'B_flag'              : normal_flag 
-                        }                                                                            
-                                                                             
+                              'counts_ell_perp'     : counts_ell_perp.T,
+                              'counts_Ell_perp'     : counts_Ell_perp.T,
+                              'counts_ell_par'      : counts_ell_par.T,
+                              'counts_ell_par_rest' : counts_ell_par_rest.T,
+                              'counts_ell_overall'  : counts_overall.T,
+                              'l_ell_perp'          : l_ell_perp, 
+                              'l_Ell_perp'          : l_Ell_perp, 
+                              'l_ell_par'           : l_ell_par,
+                              'l_ell_par_rest'      : l_ell_par_rest,
+                              'B_flag'              : normal_flag 
+                        }    
+                  
     else:                                                            
         Sfunctions     = {
                             'B'      : sf_data_B,

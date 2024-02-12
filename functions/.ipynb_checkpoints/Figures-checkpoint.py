@@ -17,7 +17,7 @@ from matplotlib.gridspec import GridSpec
 from matplotlib.colors import LinearSegmentedColormap
 
 # make sure defaults are used
-plt.style.use(['science', 'scatter'])
+#plt.style.use(['science', 'scatter'])
 plt.rcParams['text.usetex'] = True
 
 import sys
@@ -27,6 +27,62 @@ import calc_diagnostics as calc
 def format_timestamp(timestamp,format_2_return):
     return timestamp.strftime(format_2_return)
 
+
+def plot_pretty(dpi=175,fontsize=9):
+    # import pyplot and set some parameters to make plots prettier
+    plt.rc("savefig", dpi=dpi)
+    plt.rc("figure", dpi=dpi)
+    plt.rc('font', size=fontsize)
+    plt.rc('xtick', direction='in') 
+    plt.rc('ytick', direction='in')
+    plt.rc('xtick.major', pad=5) 
+    plt.rc('xtick.minor', pad=5)
+    plt.rc('ytick.major', pad=5) 
+    plt.rc('ytick.minor', pad=5)
+    plt.rc('lines', dotted_pattern = [2., 2.])
+    #if you don't have LaTeX installed on your laptop and this statement 
+    # generates error, comment it out
+    plt.rc('text', usetex=True)
+
+    return
+
+def plot_line_points(x, y, figsize=6, xlabel=' ', ylabel=' ', col= 'darkslateblue', 
+                     xp = None, yp = None, points = False, pmarker='.', pcol='slateblue',
+                     legend=None, plegend = None, legendloc='lower right', 
+                     plot_title = None, grid=None, figsave = None):
+    """
+    A simple helper routine to make plots that involve a line and (optionally)
+    a set of points, which was introduced and used during the first two weeks 
+    of class.
+    """
+    plt.figure(figsize=(figsize,figsize))
+    plt.xlabel(xlabel); plt.ylabel(ylabel)
+    # Initialize minor ticks
+    plt.minorticks_on()
+
+    if legend:
+        plt.plot(x, y, lw = 1., c=col, label = legend)
+        if points: 
+            if plegend:
+                plt.scatter(xp, yp, marker=pmarker, lw = 2., c=pcol, label=plegend)
+            else:
+                plt.scatter(xp, yp, marker=pmarker, lw = 2., c=pcol)
+        plt.legend(frameon=False, loc=legendloc, fontsize=3.*figsize)
+    else:
+        plt.plot(x, y, lw = 1., c=col)
+        if points:
+            plt.scatter(xp, yp, marker=pmarker, lw = 2., c=pcol)
+
+    if plot_title:
+        plt.title(plot_title, fontsize=3.*figsize)
+        
+    if grid: 
+        plt.grid(linestyle='dotted', lw=0.5, color='lightgray')
+        
+    if figsave:
+        plt.savefig(figsave, bbox_inches='tight')
+
+    plt.show()
 
 def initializeFigure(xlabel, ylabel, scale= 'loglog',width='1col', height=None):
     '''
@@ -98,26 +154,12 @@ def create_colors(hmany, which=None):
         interval = np.hstack([np.linspace(0, 0.45), np.linspace(0.55, 1)])
         colors   = cmaps.w5m4(interval)
     elif which=='bone':
-        interval = np.hstack([np.linspace(0, 0.45), np.linspace(0.55, 1)])
+        interval = np.hstack([np.linspace(0, 0.35), np.linspace(0.65, 1)])
         colors   = plt.cm.OrRd(interval)
         colors   = plt.cm.RdGy_r(interval)
 
-    
-    #colors   = cmaps.vik(interval)
-    #colors   = cmaps.hier2p(interval)
-    
+
     cmap     = LinearSegmentedColormap.from_list('name', colors)
-    #from matplotlib.colors import LinearSegmentedColormap
-
-#     # Define your custom colors
-#     custom_colors = ['#1D2633', '#232F3E', '#293749', '#304054', '#364A5F', '#3D536B', '#435D76', '#4A6782', '#50718E', '#577B9B', '#5D86A7', '#6390B4', '#699BC0', '#70A6CD', '#76B1DA', '#7CBCE7']
-
-#     #custom_colors = ['#172715', '#192F1D', '#1B3725', '#1D3E2E', '#1E4638', '#204E43', '#23564E', '#275E5A', '#2D6667', '#356D73', '#407480', '#4C7B8C', '#5A8298', '#6A88A4', '#7C8EAF', '#8E93B8']
-#     #custom_colors = ['#131D24', '#1A2830', '#21333D', '#293E49', '#304A57', '#385664', '#406272', '#476E80', '#4F7B8E', '#57899C', '#5E96AB', '#66A4B9', '#6DB2C8', '#75C0D7', '#7CCEE6', '#84DDF6']
-#     #custom_colors = ['#131D24', '#19262E', '#1F2F38', '#253843', '#2B414D', '#314B58', '#385563', '#3E5F6E', '#44697A', '#4B7385', '#517E91', '#57899D', '#5E94A9', '#649FB5', '#6AABC1', '#71B6CE']
-
-#     # Create a custom colormap using the specified colors
-#     cmap = LinearSegmentedColormap.from_list('custom_colormap', custom_colors)
 
     return cmap(np.linspace(0,1,hmany))
 
@@ -128,7 +170,7 @@ def create_colors(hmany, which=None):
 def heatmap_func(x,  y, z,
                  numb_bins, xlabel, ylabel, colbar_label, min_counts =10, what ='mean', ax_scale ='loglog',
                  min_x= -1e10, min_y= -1e10, min_z= -1e10, 
-                 max_x= 1e10, max_y= 1e10, max_z= 1e10,
+                 max_x= 1e10, max_y= 1e10, max_z= 1e10, min_col = None, max_col =None,
                  log_colorbar=True,fig_size =(20,18), f_size =35, specify_edges= False, xedges =None, yedges =None,plot_contours=True, estimate_mean_median= True, return_figure =False):
 
 
@@ -243,8 +285,12 @@ def heatmap_func(x,  y, z,
             normi    =  pltcolors.LogNorm()
             c        = ax.pcolormesh(xvals, yvals,  zvals,cmap=cmap, norm = normi)
         else:
-            normi    = None
-            c        = ax.pcolormesh(xvals, yvals,  zvals,cmap=cmap)
+            normi    =  pltcolors.Normalize(vmin =min_col, vmax = max_col)
+            if min_col !=None:
+                
+                c        = ax.pcolormesh(xvals, yvals,  zvals,cmap=cmap, norm = normi)
+            else:
+                c        = ax.pcolormesh(xvals, yvals,  zvals,cmap=cmap)
 
 
         cax = fig.add_axes([0.91, 0.125, 0.05, 0.755])

@@ -18,13 +18,50 @@ from joblib import Parallel, delayed
 import statistics
 from statistics import mode
 import orderedstructs
+import sys
+
+# Import TurbPy
+sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+
+from plasma_params import*
+import signal_processing 
 
 
-import numpy as np
+
 
 import orderedstructs
 
 
+
+def synchronize_dfs(df_higher_freq, df_lower_freq, upsample):
+    """
+    Align two dataframes based on their frequency, upsample lower frequency dataframe if specified.
+    
+    Args:
+    - df_higher_freq: DataFrame with higher frequency data.
+    - df_lower_freq: DataFrame with lower frequency data.
+    - settings: Dictionary containing settings including 'upsample_low_freq_ts'.
+    
+    Returns:
+    - Tuple of aligned DataFrames.
+    """
+    if upsample:
+        # Upsample the lower frequency dataframe to match the higher frequency one
+        aligned_lower_freq = newindex(df_lower_freq, df_higher_freq.index)
+        return df_higher_freq, aligned_lower_freq
+    else:
+        # Attempt to align the higher frequency dataframe to the lower frequency one
+        try:
+            
+            
+            aligned_higher_freq = signal_processing.downsample_and_filter(df_higher_freq.copy(), 
+                                                                          df_lower_freq.copy())
+ 
+            return aligned_higher_freq, df_lower_freq
+        except Exception as e:  # Consider specifying the exact exception if known
+            print(f'Error aligning dataframes: {e}')
+            # Optionally, handle the error or return the original dataframes
+            return df_higher_freq, df_lower_freq
 
 def clean_data(x, y):
     """Remove non-finite values from the data."""
@@ -200,34 +237,6 @@ def dot_product(xvec, yvec):
     else:
         return custom_nansum_product(xvec, yvec, 0)
 
-# def dot_product(xvec, yvec):
-#     """
-#     Calculate the dot product between two arrays and return the result.
-
-#     Parameters:
-#         xvec (numpy.ndarray): The first input array for the dot product.
-#         yvec (numpy.ndarray): The second input array for the dot product.
-
-#     Returns:
-#         numpy.ndarray: The result of the dot product.
-
-#     Raises:
-#         ValueError: If the dimensions of xvec and yvec are not compatible for dot product.
-#     """
-#     # Get the shapes of the input arrays
-#     len_x_0, len_x_1 = xvec.shape
-#     len_y_0, len_y_1 = yvec.shape
-
-#     # Check if the dimensions are compatible for dot product
-#     if len_x_0 == len_y_0 and len_x_1 == len_y_1:
-#         # Calculate the dot product along the appropriate axis
-#         if len_x_0 > len_x_1:
-#             return np.abs(np.nansum(xvec * yvec, axis=1))
-#         else:
-#             return np.abs(np.nansum(xvec * yvec, axis=0))
-#     else:
-#         raise ValueError("Incompatible dimensions for dot product.")
-
 
 # Original function
 def angle_between_vectors(V,
@@ -377,8 +386,39 @@ def filter_dict(d, keys_to_keep):
     return dict(filter(lambda item: item[0] in keys_to_keep, d.items()))
 
 
-# def string_to_datetime_index(datetime_string, datetime_format='%Y-%m-%d %H:%M:%S.%f'):
-#     return pd.to_datetime(datetime_string, format=datetime_format)
+from dateutil import parser
+
+def format_date_to_str(date_input):
+    """
+    Takes a date input (string or object that can be converted to a string) and attempts to parse and format it
+    into a 'YYYY-MM-DD HH:MM' format.
+
+    Parameters:
+    - date_input: The date input to be formatted. Can be a string or an object that can be converted to a string.
+
+    Returns:
+    - A string representing the formatted date in 'YYYY-MM-DD HH:MM' format if successful.
+    - None if parsing fails.
+    """
+    try:
+        # Convert input to string in case it's not already a string
+        date_str = str(date_input)
+        # Try to parse the date string
+        date_obj = parser.parse(date_str)
+        # Format the datetime object to the desired format
+        formatted_date_str = date_obj.strftime('%Y-%m-%d %H:%M')
+        return formatted_date_str
+    except ValueError as e:
+        print(f"Error parsing date: {e}")
+        # Return None or consider a default value or re-raise the exception based on your use case
+        return None
+    
+def replace_negative_with_nan(df):
+    """
+    Replace negative values with NaN in a DataFrame.
+    """
+    return df.where(df >= -1e5, np.nan)
+
 
 def string_to_datetime_index(datetime_string, datetime_format='%Y-%m-%d %H:%M:%S'):
     return pd.to_datetime(datetime_string, format=datetime_format)
@@ -452,6 +492,8 @@ def smooth_filter(xv, arr, window):
     grad    = signal.convolve(arr, [1,-1,0])[:-1]
     # Smooth gradient
     smooth_grad = smooth_grad = gaussian_filter1d(grad, window)
+    
+    return smooth_grad
 
 @jit(nopython=True)
 def calc_medians(window_size, arr, medians): 
@@ -1212,24 +1254,62 @@ def use_dates_return_elements_of_df_inbetween(t0, t1, df):
     
     return f_df
 
-def find_big_gaps(df, gap_time_threshold):
-    """
-    Filter a data set by the values of its first column and identify gaps in time that are greater than a specified threshold.
+# def find_big_gaps(df, gap_time_threshold):
+#     """
+#     Filter a data set by the values of its first column and identify gaps in time that are greater than a specified threshold.
 
+#     Parameters:
+#     df (pandas DataFrame): The data set to be filtered and analyzed.
+#     gap_time_threshold (float): The threshold for identifying gaps in time, in seconds.
+
+#     Returns:
+#     big_gaps (pandas Series): The time differences between consecutive records in df that are greater than gap_time_threshold.
+#     """
+#     keys = df.keys()
+
+#     filtered_data = df[df[keys[1]] > -1e10]
+#     time_diff     = (filtered_data.index.to_series().diff() / np.timedelta64(1, 's'))
+#     big_gaps      = time_diff[time_diff > gap_time_threshold]
+
+#     return big_gaps
+
+
+def find_big_gaps(df, gap_time_threshold=10):
+    """
+    Identifies gaps where the time difference between consecutive filtered entries
+    exceeds the gap_time_threshold, in a vectorized manner.
+    
     Parameters:
-    df (pandas DataFrame): The data set to be filtered and analyzed.
-    gap_time_threshold (float): The threshold for identifying gaps in time, in seconds.
-
+    - df: pandas DataFrame with a datetime index and at least one column.
+    - gap_time_threshold: float, the gap size threshold in seconds.
+    
     Returns:
-    big_gaps (pandas Series): The time differences between consecutive records in df that are greater than gap_time_threshold.
+    - A DataFrame with the start and end times of the gaps.
     """
-    keys = df.keys()
-
-    filtered_data = df[df[keys[1]] > -1e10]
-    time_diff     = (filtered_data.index.to_series().diff() / np.timedelta64(1, 's'))
-    big_gaps      = time_diff[time_diff > gap_time_threshold]
-
-    return big_gaps
+    # Filter rows based on the condition for the first column
+    filtered_df = df[df.iloc[:, 0] > -1e10]
+    
+    # Calculate time differences in seconds between consecutive rows
+    time_diffs = filtered_df.index.to_series().diff().dt.total_seconds()
+    
+    # Identify indices where time differences exceed the threshold
+    gap_mask = time_diffs > gap_time_threshold
+    
+    # Using the mask, find the end times of the gaps
+    gap_ends = filtered_df.index[gap_mask]
+    
+    # The start times are just before the ends, adjust indices accordingly
+    gap_starts = filtered_df.index[gap_mask.shift(-1, fill_value=False)]
+    
+    # Remove the last element from starts and the first element from ends to align
+    if len(gap_starts) > 0 and len(gap_ends) > 0:  # Ensure there are gaps
+        gap_starts = gap_starts[:-1]
+        gap_ends = gap_ends[1:]
+    
+    # Create a DataFrame to return the start and end times of gaps
+    gaps_df = pd.DataFrame({'Start': gap_starts, 'End': gap_ends})
+    
+    return gaps_df
 
 def percentile(y,percentile):
     return(np.percentile(y,percentile))
@@ -1479,13 +1559,10 @@ def ensure_time_format(start_time, end_time):
     return t0.strftime(desired_format), t1.strftime(desired_format)
 
 
-def binned_quantity(x,
-                    y, 
-                    what='mean',
-                    std_or_error_of_mean=True,
-                    bins=100, 
-                    loglog=True,
-                    return_counts=False):
+import numpy as np
+from scipy import stats
+
+def binned_quantity(x, y, what='mean', std_or_error_of_mean=True, bins=100, loglog=True, return_counts=False, return_percentiles=False, lower_percentile =25, higher_percentile = 75):
     """
     Calculate binned statistics of one variable (y) with respect to another variable (x).
 
@@ -1508,6 +1585,8 @@ def binned_quantity(x,
         If True, logarithmic bins are used instead of linear bins. The default is True.
     return_counts : bool, optional
         If True, also return the number of points in each bin. The default is False.
+    return_percentiles : bool, optional
+        If True, also return the 25th and 75th percentiles for each bin. The default is False.
 
     Returns
     -------
@@ -1519,6 +1598,8 @@ def binned_quantity(x,
         The standard deviation or error of the mean of the binned statistic.
     points : ndarray, optional
         The number of points in each bin. This is only returned if `return_counts` is True.
+    percentiles : tuple of ndarrays, optional
+        The 25th and 75th percentiles for each bin. This is only returned if `return_percentiles` is True.
     """
     
     if loglog:
@@ -1531,11 +1612,9 @@ def binned_quantity(x,
     if loglog:
         bins = np.logspace(np.log10(np.nanmin(x)), np.log10(np.nanmax(x)), bins)
 
+    # Binned statistic calculation
     y_b, x_b, _ = stats.binned_statistic(x, y, statistic=what, bins=bins)
-
     z_b, _, _ = stats.binned_statistic(x, y, statistic='std', bins=bins)
-
-    #if return_counts:
     points, _, _ = stats.binned_statistic(x, y, statistic='count', bins=bins)
 
     if std_or_error_of_mean == 0:
@@ -1543,8 +1622,15 @@ def binned_quantity(x,
 
     x_b = x_b[:-1] + 0.5 * (x_b[1:] - x_b[:-1])
 
-    return (x_b, y_b, z_b, points) if return_counts else (x_b, y_b, z_b)
+    result = (x_b, y_b, z_b, points) if return_counts else (x_b, y_b, z_b)
 
+    if return_percentiles:
+        percentile_25, _, _ = stats.binned_statistic(x, y, statistic=lambda y: np.percentile(y, lower_percentile), bins=bins)
+        percentile_75, _, _ = stats.binned_statistic(x, y, statistic=lambda y: np.percentile(y, higher_percentile), bins=bins)
+        percentiles = (percentile_25, percentile_75)
+        result += (percentiles,)
+
+    return result
 
 
 
@@ -2077,9 +2163,15 @@ def savepickle(df_2_save, save_path, filename):
     >>> filename = 'saved_data.pkl'
     >>> savepickle(data_to_save, save_path, filename)
     """
-    os.makedirs(str(save_path), exist_ok=True)
-    pickle.dump(df_2_save, open(Path(save_path).joinpath(filename), 'wb'))
     
+    # Ensure the directory exists
+    os.makedirs(str(save_path), exist_ok=True)
+    
+    # Use the highest protocol available for more efficient serialization
+    # Open the file using a context manager to ensure it's properly closed after writing
+    file_path = Path(save_path).joinpath(filename)
+    with open(file_path, 'wb') as file:
+        pickle.dump(df_2_save, file, protocol=pickle.HIGHEST_PROTOCOL)
     
     
 
@@ -2110,10 +2202,9 @@ def replace_filename_extension(oldfilename, newextension, addon=False):
     return oldfilename[:dot_ix] + '.' + newextension.strip('.')
 
 
-
 def newindex(df, ix_new, interp_method='linear'):
     """
-    Reindex a DataFrame according to the new index *ix_new* supplied.
+    Reindex a DataFrame according to the new index *ix_new* supplied, ensuring no duplicate labels in the index.
 
     Args:
         df: [pandas DataFrame] The dataframe to be reindexed.
@@ -2123,25 +2214,27 @@ def newindex(df, ix_new, interp_method='linear'):
     Returns:
         df3: [pandas DataFrame] DataFrame interpolated and reindexed to *ix_new*.
     """
-
     # Ensure df.index and ix_new do not contain duplicates
-    df = df[~df.index.duplicated(keep='first')]
+    df     = df[~df.index.duplicated(keep='first')]
     ix_new = np.unique(ix_new)
 
-    # Sort the DataFrame index in increasing order
-    df = df.sort_index(ascending=True)
+    # Verify that reindexing is necessary and feasible
+    if not np.array_equal(df.index.sort_values(), ix_new.sort()):
+        # Sort the DataFrame index in increasing order
+        df = df.sort_index(ascending=True)
 
-    # Create combined index from old and new index arrays
-    ix_com = np.unique(np.append(df.index, ix_new))
+        # Create combined index from old and new index arrays, ensuring no duplicates
+        ix_com = np.unique(np.concatenate([df.index.values, ix_new]))
 
-    # Sort the combined index (ascending order)
-    ix_com.sort()
+        # Re-index and interpolate over the non-matching points
+        df2 = df.reindex(ix_com).interpolate(method=interp_method)
 
-    # Re-index and interpolate over the non-matching points
-    df2 = df.reindex(ix_com).interpolate(method=interp_method)
-
-    return df2.reindex(ix_new)
-
+        # Reindex to the new index, ix_new
+        return df2.reindex(ix_new)
+    else:
+        # If the current index and new index are effectively the same, no reindexing is needed
+        print("No reindexing necessary; DataFrame index matches the new index.")
+        return df
 
 
 
@@ -2377,16 +2470,11 @@ def resample_timeseries_estimate_gaps(df, resolution, large_gaps=5):
 
 
     """
-    keys = list(df.keys())
     try:
-        init_dt = find_cadence(df)
-    except:
+        keys    = list(df.keys())
         init_dt = find_cadence(df)
 
-    if init_dt > -1e10:
-        
-        
-        
+
         # Estimate fraction of missing values within interval
         fraction_missing = 100 * len(df[(np.abs(df[keys[0]])>1e10) | (np.isnan(df[keys[0]])) |  (np.isinf(df[keys[0]]))  ])/ len(df)
         
@@ -2410,21 +2498,21 @@ def resample_timeseries_estimate_gaps(df, resolution, large_gaps=5):
         df_resampled = df.resample(f"{int(resolution)}ms").mean().interpolate()
 
 
-    else:
-        init_dt = None
-        df_resampled = None
-        fraction_missing = 100
-        total_gaps = None
-        total_large_gaps = None
-        resolution = np.nan
+    except:
+        init_dt           = None
+        df_resampled      = None
+        fraction_missing  = 100
+        total_gaps        = None
+        total_large_gaps  = None
+        resolution        = np.nan
 
     return {
-        "Init_dt": init_dt,
-        "resampled_df": df_resampled,
-        "Frac_miss": fraction_missing,
-        "Large_gaps": total_large_gaps,
-        "Tot_gaps": total_gaps,
-        "resol": resolution
+        "Init_dt"         : init_dt,
+        "resampled_df"    : df_resampled,
+        "Frac_miss"       : fraction_missing,
+        "Large_gaps"      : total_large_gaps,
+        "Tot_gaps"        : total_gaps,
+        "resol"           : resolution
     }
 
 
