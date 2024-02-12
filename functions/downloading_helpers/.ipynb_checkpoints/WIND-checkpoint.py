@@ -1,26 +1,17 @@
-from matplotlib import pyplot as plt
-from matplotlib.backend_bases import MouseButton
-from matplotlib.gridspec import GridSpec
-from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-
-
-import traceback
-import numpy as np
-from scipy.optimize import curve_fit
-import gc
-import time
-from scipy.signal import savgol_filter
+# Basic libraries
 import pandas as pd
-#from numba import jit,njit,prange,objmode 
+import numpy as np
+import sys
+import traceback
+import time
+import datetime
+import pytz
+
+# Locate files
 import os
 from pathlib import Path
 from glob import glob
-from gc import collect
-import warnings
 
-import datetime
-import pytz
-#from numba import jit,njit,prange
 
 # SPDF API
 from cdasws import CdasWs
@@ -28,45 +19,40 @@ cdas = CdasWs()
 
 # SPEDAS API
 # make sure to use the local spedas
-import sys
 sys.path.insert(0,"../pyspedas")
 import pyspedas
 from pyspedas.utilities import time_string
 from pytplot import get_data
 
+
+""" Import manual functions """
 sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
-import calc_diagnostics as calc
-import TurbPy as turb
 import general_functions as func
-import Figures as figs
-from   SEA import SEA
-import three_D_funcs as threeD
 
 
-au_to_km = 1.496e8  # Conversion factor
-rsun     = 696340   # Sun radius in units of  [km]
-
+# Some constants
 from scipy import constants
-psp_ref_point   =  0.06176464216946593 # in [au]
+au_to_km        = 1.496e8  # Conversion factor
+rsun            = 696340   # Sun radius in units of  [km]
 mu0             =  constants.mu_0  # Vacuum magnetic permeability [N A^-2]
-mu_0             =  constants.mu_0  # Vacuum magnetic permeability [N A^-2]
+mu_0            =  constants.mu_0  # Vacuum magnetic permeability [N A^-2]
 m_p             =  constants.m_p   # Proton mass [kg]
-k          = constants.k                  # Boltzman's constant     [j/K]
-au_to_km   = 1.496e8
-au_to_rsun = 215.032
-T_to_Gauss = 1e4
+k               = constants.k                  # Boltzman's constant     [j/K]
+au_to_rsun      = 215.032
+T_to_Gauss      = 1e4
+
 
 
 def LoadTimeSeriesWind_particles(start_time,
-                                 end_time, 
-                                 three_sec_resol =True):
+                                 end_time,
+                                 settings):
     """ 
     Load Wind Plasma Data 
     start_time: pd.Timestamp
     end_time: pd.Timestamp
     """
 
-    if three_sec_resol == True:
+    if settings['part_resol'] <=3:
         from cdasws import CdasWs
         cdas = CdasWs()
         vars = ['P_DENS','P_VELS','P_TEMP','TIME']
@@ -87,12 +73,12 @@ def LoadTimeSeriesWind_particles(start_time,
         
         
         dfpar[dfpar['Vr'] < -1e30] = np.nan
-        dfpar['Vth'] = 0.128487*np.sqrt(dfpar['Tp']) # vth[km/s] = 0.128487 * √Tp[K]
+        dfpar['Vth']               = 0.128487*np.sqrt(dfpar['Tp']) # vth[km/s] = 0.128487 * √Tp[K]
         
         
         length = len(data['P_VELS'][:,0][::2])
 
-    elif three_sec_resol =='Very_low_res':
+    elif settings['part_resol'] >3:
         print('Loading very low resolution particle data!!')
         
         from cdasws import CdasWs
@@ -104,10 +90,10 @@ def LoadTimeSeriesWind_particles(start_time,
         dfpar = pd.DataFrame(
             index = data['Epoch'],
             data = {
-                'Vr': data['MOM$P$VELOCITY'].T[0],
-                'Vt': data['MOM$P$VELOCITY'].T[1],
-                'Vn': data['MOM$P$VELOCITY'].T[2],
-                'np': data['MOM$P$DENSITY'],
+                'Vr' : data['MOM$P$VELOCITY'].T[0],
+                'Vt' : data['MOM$P$VELOCITY'].T[1],
+                'Vn' : data['MOM$P$VELOCITY'].T[2],
+                'np' : data['MOM$P$DENSITY'],
                 'Vth': data['MOM$P$VTHERMAL']
             }
         )
@@ -117,8 +103,7 @@ def LoadTimeSeriesWind_particles(start_time,
 
         length = len(data['MOM$P$VELOCITY'].T[0][::2])
         
-        
-        
+
     dfdis = pd.DataFrame(
         index = data['Epoch'][::2],
         data = {
@@ -136,15 +121,15 @@ def LoadTimeSeriesWind_particles(start_time,
 
 def LoadHighResMagWind(start_time,
                        end_time,
-                       three_sec_resol= False,
-                       verbose = True):
+                       settings,
+                       verbose         = True):
     """ 
     Load Wind Plasma Data 
     start_time: pd.Timestamp
     end_time: pd.Timestamp
     """
 
-    if three_sec_resol== True:
+    if settings['MAG_resol'] == 3:
 
         vars = ['B3GSE','B3F1']
         time = [start_time.to_pydatetime( ).replace(tzinfo=pytz.UTC), end_time.to_pydatetime( ).replace(tzinfo=pytz.UTC)]
@@ -153,27 +138,23 @@ def LoadHighResMagWind(start_time,
         if verbose:
             print("Done.")
 
-        dfmag = pd.DataFrame({'Epoch':data['Epoch3'],
-                                'Br': data['B3GSE'][:,0],
-                                'Bt': data['B3GSE'][:,1],
-                                'Bn': data['B3GSE'][:,2],
-                                'Btot': data['B3F1']
+        dfmag = pd.DataFrame({'Epoch'  : data['Epoch3'],
+                                'Br'   : data['B3GSE'][:,0],
+                                'Bt'   : data['B3GSE'][:,1],
+                                'Bn'   : data['B3GSE'][:,2],
+                                'Btot' : data['B3F1']
             }
         ).set_index('Epoch')
         
         dfmag[(np.abs(dfmag['Btot']) > 1e3)] = np.nan
 
-        dfmag1 = dfmag.resample('1s').mean()
 
         if verbose:
             print("Input tstart = %s, tend = %s" %(time[0], time[1]))
             print("Returned tstart = %s, tend = %s" %(data['Epoch3'][0], data['Epoch3'][-1]))
 
-        infos = {
-            'resolution': 1
-        }
 
-    elif three_sec_resol == False:
+    elif settings['MAG_resol'] < 3:
         
         
         vars = ['BGSE','BF1']
@@ -183,28 +164,23 @@ def LoadHighResMagWind(start_time,
         if verbose:
             print("Done.")
 
-        dfmag = pd.DataFrame({'Epoch':data['Epoch'],
-                'Br': data['BGSE'][:,0],
-                'Bt': data['BGSE'][:,1],
-                'Bn': data['BGSE'][:,2],
-                'Btot': data['BF1']
+        dfmag = pd.DataFrame({'Epoch'  : data['Epoch'],
+                                 'Br'  : data['BGSE'][:,0],
+                                 'Bt'  : data['BGSE'][:,1],
+                                 'Bn'  : data['BGSE'][:,2],
+                                 'Btot': data['BF1']
             }
         ).set_index('Epoch')
         
         
         dfmag[(np.abs(dfmag['Btot']) > 1e3)] = np.nan
 
-        dfmag1 = dfmag.resample('1s').mean()
 
         if verbose:
             print("Input tstart = %s, tend = %s" %(time[0], time[1]))
             print("Returned tstart = %s, tend = %s" %(data['Epoch'][0], data['Epoch'][-1]))
 
-        infos = {
-            'resolution': 1
-        }
-    
-    elif three_sec_resol =='Very_low_res':
+    else:
         print('Loading very low resolution magnetic field data!!')
         
         try:
@@ -226,30 +202,25 @@ def LoadHighResMagWind(start_time,
 
             dfmag[(np.abs(dfmag['Br']) > 1e3)] = np.nan
 
-            dfmag1 = dfmag.resample('500s').mean()
-
             if verbose:
                 print("Input tstart = %s, tend = %s" %(time[0], time[1]))
                 print("Returned tstart = %s, tend = %s" %(data['Epoch'][0], data['Epoch'][-1]))
 
-            infos = {
-                'resolution': 500
-            }
+
         except:
-            print('Somthing wrong')
+            print('Something wrong')
             traceback.print_exc()
 
 
-    return dfmag, dfmag1, infos
+    return dfmag
 
 
 def LoadTimeSeriesWIND(start_time, 
                       end_time, 
                       settings, 
-                      gap_time_threshold=10,
-                      time_amount =4,
-                      time_unit ='h',
-                      three_sec_resol= False
+                      gap_time_threshold  =  10,
+                      time_amount         =  4,
+                      time_unit           =  'h'
                      ):
     """" 
     Load Time Series from WIND sc
@@ -266,22 +237,10 @@ def LoadTimeSeriesWIND(start_time,
     Note that the priority is using SPAN
     """
 
-    # default settings
-    default_settings = {
-        'apply_hampel'    : True,
-        'hampel_params'   : {'w':100, 'std':3},
-        'part_resol'   : 3000,
-        'MAG_resol'    : 1
-
-    }
-
-    settings = {**default_settings, **settings}
-    
 
     
     # Ensure the dates have appropriate format
     t0i, t1i = func.ensure_time_format(start_time, end_time)
-    
     
     
     # Since pyspedas does not always return what tou ask for we have to enforce it
@@ -292,28 +251,31 @@ def LoadTimeSeriesWIND(start_time,
     ind1  = func.string_to_datetime_index(t0i)
     ind2  = func.string_to_datetime_index(t1i)
     
-    
-   
 
     try:
         # Download Magnetic field data
 
-        dfmag, dfmag1, infos = LoadHighResMagWind(pd.Timestamp(t0),
+        dfmag                = LoadHighResMagWind(pd.Timestamp(t0),
                                                   pd.Timestamp(t1),
-                                                  three_sec_resol= three_sec_resol,
-                                                  verbose = True)
+                                                  settings,
+                                                  verbose          = True)
 
-        print('Not ok!!')
+        
         # Return the originaly requested interval
         try:
-            dfmag                 = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfmag)
-        except:
-            dfmag.index = pd.to_datetime(dfmag.index, format='%Y-%m-%d %H:%M:%S.%f')
+            dfmag                 = func.use_dates_return_elements_of_df_inbetween(ind1,
+                                                                                   ind2,
+                                                                                   dfmag)
             
-            dfmag                 = func.use_dates_return_elements_of_df_inbetween(pd.to_numeric(ind1), pd.to_numeric(ind2), dfmag)
+        except:
+            dfmag.index           = pd.to_datetime(dfmag.index, format='%Y-%m-%d %H:%M:%S.%f')
+            dfmag                 = func.use_dates_return_elements_of_df_inbetween(pd.to_numeric(ind1),
+                                                                                   pd.to_numeric(ind2),
+                                                                                   dfmag)
 
-         # Identify big gaps in timeseries
-        big_gaps              = func.find_big_gaps(dfmag , gap_time_threshold)        
+        # Identify big gaps in timeseries
+        big_gaps = func.find_big_gaps(dfmag, settings['Big_Gaps']['Mag_big_gaps']) 
+        
         # Resample the input dataframes
         diagnostics_MAG       = func.resample_timeseries_estimate_gaps(dfmag , settings['MAG_resol']  , large_gaps=10)      
         
@@ -329,10 +291,15 @@ def LoadTimeSeriesWIND(start_time,
         # Download particle data
         dfpar, dfdis     = LoadTimeSeriesWind_particles(pd.Timestamp(t0),
                                                         pd.Timestamp(t1),
-                                                        three_sec_resol =three_sec_resol )
+                                                        settings)
         
         # Return the originaly requested interval
-        dfpar                 = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfpar)       
+        dfpar                 = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfpar) 
+        
+        
+        # Identify big gaps in timeseries
+        big_gaps_par = func.find_big_gaps(dfpar, settings['Big_Gaps']['Par_big_gaps'])
+        
         # Resample the input dataframes
         diagnostics_PAR = func.resample_timeseries_estimate_gaps(dfpar, settings['part_resol'] , large_gaps=10)
         
@@ -374,6 +341,6 @@ def LoadTimeSeriesWIND(start_time,
 
         }
 
-        return diagnostics_MAG["resampled_df"].interpolate().dropna(), dfpar.interpolate().dropna(), dfdis, big_gaps, misc
+        return diagnostics_MAG["resampled_df"], None, dfpar, dfdis, big_gaps, big_gaps_par, None, misc
     except:
         traceback.print_exc()

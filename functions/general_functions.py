@@ -2150,18 +2150,6 @@ def savepickle(df_2_save, save_path, filename):
     This function creates the specified directory (`save_path`) if it doesn't exist and saves the data or variables (`df_2_save`)
     into a single pickle file with the provided filename.
 
-    Example
-    --------
-    >>> import pickle
-    >>> from pathlib import Path
-
-    >>> def savepickle(df_2_save, save_path, filename):
-    ...     # (Your function implementation here)
-
-    >>> data_to_save = [1, 2, 3, 4, 5]
-    >>> save_path = './data_folder'
-    >>> filename = 'saved_data.pkl'
-    >>> savepickle(data_to_save, save_path, filename)
     """
     
     # Ensure the directory exists
@@ -2172,8 +2160,79 @@ def savepickle(df_2_save, save_path, filename):
     file_path = Path(save_path).joinpath(filename)
     with open(file_path, 'wb') as file:
         pickle.dump(df_2_save, file, protocol=pickle.HIGHEST_PROTOCOL)
+        
+      
+
+# def savefeather(df, path_to_save, filename, include_index= True):
+#     """
+#     Saves a DataFrame to a Feather file.
+
+#     Parameters:
+#     - df: pandas.DataFrame, the DataFrame to save.
+#     - path_to_save: str, the directory path where the Feather file will be saved.
+#     - filename: str, the name of the Feather file to be saved.
+
+#     Returns:
+#     - None, saves the file to the specified path.
+#     """
+#     if include_index:
+#         df.reset_index(inplace=True)
+        
+#     # Construct the full file path
+#     full_file_path = f"{path_to_save}/{filename}"
     
+#     # Save the DataFrame to a Feather file
+#     df.to_feather(full_file_path)
     
+def saveparquet(df, path_to_save, filename, column_names=None):
+    """
+    Saves a DataFrame to a Parquet file, with an option to save only specified columns.
+    Checks if the save path exists, and creates it if it doesn't.
+
+    Parameters:
+    - df            : pandas.DataFrame, the DataFrame to save.
+    - path_to_save  : str, the directory path where the Parquet file will be saved.
+    - filename      : str, the name of the Parquet file to be saved.
+    - column_names  : list (optional), a list of column names to save from the DataFrame. If None, all columns are saved.
+
+    Returns:
+    - None, saves the file to the specified path.
+    """
+    # Check if the path exists, create it if it doesn't
+    if not os.path.exists(path_to_save):
+        os.makedirs(path_to_save, exist_ok=True)
+
+    # Construct the full file path
+    full_file_path = os.path.join(path_to_save, filename)
+    
+    # If column_names is specified, select only those columns
+    if column_names is not None:
+        df_to_save = df[column_names]
+    else:
+        df_to_save = df
+    
+    # Save the DataFrame (or the subset) to a Parquet file
+    df_to_save.to_parquet(full_file_path)
+    
+def load_parquet(path_to_save, filename, column_names):
+    """
+    Reads specific columns from a Parquet file.
+
+    Parameters:
+    - path_to_save: str, the directory path where the Parquet file is saved.
+    - filename: str, the name of the Parquet file.
+    - column_names: list, a list of column names to read from the Parquet file.
+
+    Returns:
+    - A pandas DataFrame containing only the specified columns.
+    """
+    # Construct the full file path
+    full_file_path = f"{path_to_save}/{filename}"
+    
+    # Read specific columns from the Parquet file
+    df = pd.read_parquet(full_file_path, columns=column_names)
+    
+    return df
 
 def replace_filename_extension(oldfilename, newextension, addon=False):
     """

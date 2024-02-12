@@ -58,13 +58,10 @@ def download_files( ok,
                     vars_2_downnload,
                     cdf_lib_path,
                     credentials,
-                    save_path,
-                    three_sec_resol    = False):
+                    save_path):
     
     try:
-#         if ok==0:
-#             os.chdir(settings['Data_path'])
-        
+
         t0 = df['Start'][ok]
         t1 = df['End'][ok]
 
@@ -99,8 +96,7 @@ def download_files( ok,
                                                                                                     settings           , 
                                                                                                     vars_2_downnload   ,
                                                                                                     cdf_lib_path       ,
-                                                                                                    credentials        ,
-                                                                                                    three_sec_resol    = three_sec_resol)
+                                                                                                    credentials)
 
             try:
                 final['Par']['V_resampled'] = final['Par']['V_resampled'].join(func.newindex(dfdis[['sc_vel_r', 'sc_vel_t', 'sc_vel_n']],
@@ -213,8 +209,7 @@ def main_function(
                 settings           , 
                 vars_2_downnload   ,
                 cdf_lib_path       ,
-                credentials        ,  
-                three_sec_resol    = True
+                credentials
               ):
 
     
@@ -292,12 +287,13 @@ def main_function(
 
         print('Working on WIND data')
         try:
-            mag_flag = None
-            dfmag, dfpar, dfdis, big_gaps, misc =  LoadTimeSeriesWIND(
-                                                                          start_time, 
-                                                                          end_time, 
-                                                                          settings, 
-                                                                          three_sec_resol= three_sec_resol) 
+            
+            
+            
+            dfmag, mag_flag, dfpar, dfdis, big_gaps, big_gaps_qtn,  big_gaps_par, misc=  LoadTimeSeriesWIND(
+                                                                                                              start_time, 
+                                                                                                              end_time, 
+                                                                                                              settings) 
         except:
             traceback.print_exc()
 

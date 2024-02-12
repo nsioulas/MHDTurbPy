@@ -118,7 +118,7 @@ def calculate_energies_sigmas(Zp, Zm, dv, dva):
 
 
 
-def estimate_magnetic_field_psd(mag_resampled, dtb, settings, diagnostics, return_mag_df= True):
+def estimate_magnetic_field_psd(mag_resampled, mag_low_res, dtb, settings, diagnostics, return_mag_df= True):
     """
     Estimate the Power Spectral Density (PSD) of the magnetic field, perform optional smoothing,
     and return a dictionary containing the PSD information and diagnostics.
@@ -186,7 +186,7 @@ def estimate_magnetic_field_psd(mag_resampled, dtb, settings, diagnostics, retur
 
     if return_mag_df:
         
-         mag_dict["B_resampled"]  =  mag_resampled
+         mag_dict["B_resampled"]  =  mag_low_res
     return mag_dict
 
 
@@ -374,19 +374,26 @@ def calculate_diagnostics(
 
     # Estimate sigmas and elssaser variable fluctuations
     signB            = calculate_signB(f_df)                         # Calculate sign of B
-    Zp, Zm           = calculate_components(dv, dva, signB)          # Calculate Zp and Zm components
-    sigma_r, sigma_c = calculate_energies_sigmas(Zp, Zm, dv, dva)    # Calculate energies and normalized residual energies
+    dZp, dZm         = calculate_components(dv, dva, signB)          # Calculate Zp and Zm components
+    Zp, Zm           = calculate_components(V_ts, Va_ts, signB)
+    sigma_r, sigma_c = calculate_energies_sigmas(dZp, dZm, dv, dva)    # Calculate energies and normalized residual energies
 
     
     sigs_df              = pd.DataFrame({'DateTime' : f_df.index.values,
-                                         'Zpr'      : Zp[0],   'Zpt'  : Zp[1],  'Zpn'    : Zp[2],
-                                         'Zmr'      : Zm[0],   'Zmt'  : Zm[1],  'Zmn'    : Zm[2], 
-                                         'va_r'     : dva[0],  'va_t' : dva[1], 'va_n'   : dva[2],
-                                         'v_r'      : dv[0],   'v_t'  : dv[1],  'v_n'    : dv[2],
-                                         'beta'     : beta,    'np'   : Np,     'Tp'     : temp/kb,
-                                         'VB'       : vbang,   'd_i'  : di,     'Ma'     : Ma_ts, 
-                                         'Vsw'      : Vsw,     'kin_norm': kinet_normal, 'Ma_r_ts': Ma_r_ts,
-                                         'sigma_c'  : sigma_c, 'Va'   : alfv_speed,'sigma_r': sigma_r}).set_index('DateTime')
+                                         'dZpr'      : dZp[0],  'dZpt'  : dZp[1],  'dZpn'    : dZp[2],
+                                         'dZmr'      : dZm[0],  'dZmt'  : dZm[1],  'dZmn'    : dZm[2], 
+                                         'dva_r'     : dva[0],  'dva_t' : dva[1],  'dva_n'   : dva[2],
+                                         'dv_r'      : dv[0],   'dv_t'  : dv[1],   'dv_n'    : dv[2],
+                                         
+                                         'Zpr'      : Zp[0],    'Zpt'  : Zp[1],     'Zpn'    : Zp[2],
+                                         'Zmr'      : Zm[0],    'Zmt'  : Zm[1],     'Zmn'    : Zm[2], 
+                                         'va_r'     : Va_ts[0], 'va_t' : Va_ts[1],  'va_n'   : Va_ts[2],
+                                         'v_r'      : V_ts[0],  'v_t'  : V_ts[1],   'v_n'    : V_ts[2],
+                                         
+                                         'beta'     : beta,     'np'   : Np,        'Tp'     : temp/kb,
+                                         'VB'       : vbang,    'd_i'  : di,        'Ma'     : Ma_ts, 
+                                         'Vsw'      : Vsw,      'kin_norm': kinet_normal, 'Ma_r_ts': Ma_r_ts,
+                                         'sigma_c'  : sigma_c,  'Va'   : alfv_speed,'sigma_r': sigma_r}).set_index('DateTime')
     sigs_df              = sigs_df.dropna().interpolate()
     
     
@@ -401,12 +408,15 @@ def calculate_diagnostics(
 
     
     # Estimate the Power Spectral Density (PSD) of the magnetic field and optionally smooth it
-    mag_dict = estimate_magnetic_field_psd(df_mag, dtb, settings, diagnostics)
+    mag_dict = estimate_magnetic_field_psd(df_mag, mag_resampled,  dtb, settings, diagnostics)
 
     # Also keep a dict containing psd_vv, psd_bb, psd_zp, psd_zm
     dict_psd, _ = estimate_psd_dict(settings, sigs_df, dtb)
 
-
+    del sigs_df['Zpr'], sigs_df['Zpt'], sigs_df['Zpn']
+    del sigs_df['Zmr'], sigs_df['Zmt'], sigs_df['Zmn']
+    del sigs_df['v_r'], sigs_df['v_t'], sigs_df['v_n']
+    del sigs_df['va_r'], sigs_df['va_t'], sigs_df['va_n']
     
     part_dict =  {
 

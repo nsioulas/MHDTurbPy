@@ -53,7 +53,7 @@ import general_functions as func
 
 # Some constants
 from scipy import constants
-au_to_km       = 1.496e8  # Conversion factor
+au_to_km        = 1.496e8  # Conversion factor
 rsun            = 696340   # Sun radius in units of  [km]
 mu0             =  constants.mu_0  # Vacuum magnetic permeability [N A^-2]
 mu_0            =  constants.mu_0  # Vacuum magnetic permeability [N A^-2]
