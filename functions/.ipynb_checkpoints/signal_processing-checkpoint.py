@@ -13,8 +13,6 @@ import pandas as pd
 from scipy import signal
 from scipy.signal import butter, filtfilt
 
-#Important!! Make sure your current directory is the MHDTurbPy folder!
-os.chdir("/Users/nokni/work/MHDTurbPy/")
 
 
 """ Import manual functions """
