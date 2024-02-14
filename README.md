@@ -36,7 +36,7 @@ virtualenv MHDTurbPy
 
 Install the required packages from your environment file. Don't forget to change the path to your downloaded .txt file: 
 ```bash
-pip install -r path/to/file/filtered_requirements.txt
+pip install -r path/to/file/requirements.txt
  ```
  
  To continue installing packages even if some fail, you can use a bash loop to try installing each package individually. This way, even if one package fails to install, the loop will proceed to the next package in the list. 
@@ -45,7 +45,7 @@ pip install -r path/to/file/filtered_requirements.txt
 
 while read p; do
     pip install "$p" || (echo "Trying to install $p with conda" && conda install "$p" -y || echo "Failed to install $p with both pip and conda")
-done < /path/to/file/filtered_requirements.txt
+done < /path/to/file/requirements.txt
  ```
 
  - Download the package

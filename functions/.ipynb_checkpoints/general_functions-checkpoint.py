@@ -23,6 +23,7 @@ import sys
 # Import TurbPy
 sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
 
+
 from plasma_params import*
 import signal_processing 
 
@@ -1093,8 +1094,7 @@ def line_annotate(ax, text, line, x, font_size=None, *args, **kwargs):
     return a
 
 
-import numpy as np
-from numba import jit, prange
+
 
 @jit(nopython=True, parallel=True)
 def smoothing_function(x, y, mean=True, window=2):

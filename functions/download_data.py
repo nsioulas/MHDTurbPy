@@ -142,6 +142,7 @@ def download_files( ok,
 
                                 # Estimate the Power Spectral Density (PSD) of the magnetic field and optionally smooth it
                                 mag_dict = calc.estimate_magnetic_field_psd(Bdf,
+                                                                            None,
                                                                             dtb,
                                                                             settings, 
                                                                             diagnostics, 

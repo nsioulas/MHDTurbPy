@@ -186,7 +186,8 @@ def estimate_magnetic_field_psd(mag_resampled, mag_low_res, dtb, settings, diagn
 
     if return_mag_df:
         
-         mag_dict["B_resampled"]  =  mag_low_res
+        mag_dict["B_resampled_part_res"]  =  mag_low_res
+        mag_dict["B_resampled"]           =  mag_resampled
     return mag_dict
 
 
@@ -419,10 +420,11 @@ def calculate_diagnostics(
                                     sigs_df,
                                     func.find_cadence(sigs_df))
 
-    del sigs_df['Zpr'], sigs_df['Zpt'], sigs_df['Zpn']
-    del sigs_df['Zmr'], sigs_df['Zmt'], sigs_df['Zmn']
-    del sigs_df['v_r'], sigs_df['v_t'], sigs_df['v_n']
-    del sigs_df['va_r'], sigs_df['va_t'], sigs_df['va_n']
+    if settings['cut_in_small_windows']['flag'] == False:
+        del sigs_df['Zpr'], sigs_df['Zpt'], sigs_df['Zpn']
+        del sigs_df['Zmr'], sigs_df['Zmt'], sigs_df['Zmn']
+        del sigs_df['v_r'], sigs_df['v_t'], sigs_df['v_n']
+        del sigs_df['va_r'], sigs_df['va_t'], sigs_df['va_n']
     
     part_dict =  {
 
