@@ -704,31 +704,20 @@ def visualize_downloaded_intervals(
                                   final_Par,
                                   final_Mag,
                                   nn_df,
-                                  rolling_window,
-                                  res_rate,
                                   my_dir,
-                                  format_2_return ="%Y_%m_%d",
+                                  format_2_return  ="%Y_%m_%d",
                                   size             = 21,
-                                  inset_f_size     = 20,
                                   numb_subplots    = 7,
                                   join_path_figs   = True,
                                   save_fig         = True 
 
                                  ):
 
-    spacecraft = 'PSP' if sc ==0 else 'SolO'
     # Creat figure name using start, end date and sc.
     f1          = format_timestamp(final_Mag.index[0], format_2_return)
     f2          = format_timestamp(final_Mag.index[-1], format_2_return)
     figure_name = f1+"_"+f2+"_"+str(sc) + '.png'
 
-    # Resample to desired rate
-    final_Mag = final_Mag.resample(f'{str(res_rate)}s').mean()
-    final_Par = final_Par.resample(f'{str(res_rate)}s').mean()
-    nn_df     = nn_df.resample(f'{str(res_rate)}s').mean()
-    # Estimate relevant quantitities
-   # nn_df       = calc.prepare_particle_data_for_visualization( final_Par, final_Mag, rolling_window)
-   # nn_df       = nn_df.resample(f'{str(res_rate)}s').mean()
 
     # Choose limiting dates
     start_date_lim  = final_Par.index[0]
@@ -742,27 +731,33 @@ def visualize_downloaded_intervals(
 
     #Now plot
     """1st plot"""
+    
+    index     = final_Mag.index
+    par_index = final_Par.index
+    sig_index = nn_df.index
     try:
         final_Mag['B_RTN'] = np.sqrt(final_Mag.Br**2 + final_Mag.Bt**2 + final_Mag.Bn**2)
 
-        axs[0].plot(final_Mag['Br'],linewidth=0.4,ls='-', ms=0,color ='darkblue')
-        axs[0].plot(final_Mag['Bt'],linewidth=0.4,ls='-', ms=0,color ='darkred')
-        axs[0].plot(final_Mag['Bn'],linewidth=0.4,ls='-', ms=0,color ='darkgreen')
-        axs[0].plot(final_Mag['B_RTN'],linewidth=0.4,ls='-', ms=0,color ='k')
+        
+        
+        axs[0].plot(index, final_Mag['Br'].values,linewidth=0.4,ls='-', ms=0,color ='darkblue')
+        axs[0].plot(index, final_Mag['Bt'].values,linewidth=0.4,ls='-', ms=0,color ='darkred')
+        axs[0].plot(index, final_Mag['Bn'].values,linewidth=0.4,ls='-', ms=0,color ='darkgreen')
+        axs[0].plot(index, final_Mag['B_RTN'].values,linewidth=0.4,ls='-', ms=0,color ='k')
 
         RTN_Flag =1
 
         """2nd plot"""
-        axs[1].plot(np.sqrt(final_Par.Vr**2 + final_Par.Vt**2 + final_Par.Vn**2),linewidth=0.8,ls='-', ms=0,color ='C0')#,label='$|B|$')
+        axs[1].plot(par_index, np.sqrt(final_Par.Vr**2 + final_Par.Vt**2 + final_Par.Vn**2).values,linewidth=0.8,ls='-', ms=0,color ='C0')#,label='$|B|$')
         ax2 = axs[1].twinx()
 
     except:
         final_Mag['B_RTN'] = np.sqrt(final_Mag.Bx**2 + final_Mag.By**2 + final_Mag.Bz**2)
 
-        axs[0].plot(final_Mag['Bx'],linewidth=0.4,ls='-', ms=0,color ='darkblue')
-        axs[0].plot(final_Mag['By'],linewidth=0.4,ls='-', ms=0,color ='darkred')
-        axs[0].plot(final_Mag['Bz'],linewidth=0.4,ls='-', ms=0,color ='darkgreen')
-        axs[0].plot(final_Mag['B_RTN'],linewidth=0.4,ls='-', ms=0,color ='k')
+        axs[0].plot(index, final_Mag['Bx'].values,linewidth=0.4,ls='-', ms=0,color ='darkblue')
+        axs[0].plot(index, final_Mag['By'].values,linewidth=0.4,ls='-', ms=0,color ='darkred')
+        axs[0].plot(index, final_Mag['Bz'].values,linewidth=0.4,ls='-', ms=0,color ='darkgreen')
+        axs[0].plot(index, final_Mag['B_RTN'].values,linewidth=0.4,ls='-', ms=0,color ='k')
 
         RTN_Flag =0
 
@@ -772,28 +767,28 @@ def visualize_downloaded_intervals(
 
 
 
-    ax2.plot(final_Par['Vth'],linewidth=0.8,ls='-', ms=0,color ='k')#,label='$|B|$')
-    #dfts[['Vth']].plot(ax = ax, legend=False, style=['C1'], lw = 0.6, alpha = 0.6)
+    ax2.plot(par_index, final_Par['Vth'].values,linewidth=0.8,ls='-', ms=0,color ='k')#,label='$|B|$')
+
     ax2.legend(['$V_{th}~ [km/s]$'], fontsize='large', frameon=False, bbox_to_anchor=(1.01, 0.6), loc = 2)
 
 
     """3rd plot"""
-    axs[2].plot(final_Par.np,linewidth=0.8,ls='-', ms=0,color ='darkred')#,label='$|B|$')
+    axs[2].plot(par_index, final_Par.np.values,linewidth=0.8,ls='-', ms=0,color ='darkred')#,label='$|B|$')
 
     """3rd plot"""
-    axs[3].plot(nn_df.sigma_c, linewidth=0.8,ls='-', ms=0,color ='darkblue')#,label='$|B|$')
+    axs[3].plot(sig_index, nn_df.sigma_c.values, linewidth=0.8,ls='-', ms=0,color ='darkblue')#,label='$|B|$')
 
     """3rd plot"""
-    axs[3].plot(nn_df.sigma_r, linewidth=0.8,ls='-', ms=0,color ='darkred')#,label='$|B|$')
+    axs[3].plot(sig_index, nn_df.sigma_r.values, linewidth=0.8,ls='-', ms=0,color ='darkred')#,label='$|B|$')
 
     """3rd plot"""
-    axs[4].plot(nn_df.beta, linewidth=0.8,ls='-', ms=0,color ='black')#,label='$|B|$')
+    axs[4].plot(sig_index, nn_df.beta.values, linewidth=0.8,ls='-', ms=0,color ='black')#,label='$|B|$')
 
     """3rd plot"""
-    axs[5].plot(nn_df.VB, linewidth=0.8,ls='-', ms=0,color ='black')#,label='$|B|$')
+    axs[5].plot(sig_index, nn_df.VB.values, linewidth=0.8,ls='-', ms=0,color ='black')#,label='$|B|$')
 
     """4th plot"""
-    axs[6].plot(final_Par.Dist_au, linewidth=0.8,ls='-', ms=0,color ='black')#,label='$|B|$')
+    axs[6].plot(par_index, final_Par.Dist_au.values, linewidth=0.8,ls='-', ms=0,color ='black')#,label='$|B|$')
     try:
         ax3 = axs[6].twinx()
         ax3.plot(final_Par['carr_lon'],linewidth=0.8,ls='-', ms=0,color ='darkred')#,label='$|B|$')
