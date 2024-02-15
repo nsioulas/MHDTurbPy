@@ -194,7 +194,7 @@ def download_MAG_FIELD_PSP(t0, t1, mag_resolution, credentials, varnames, settin
                 username = credentials['psp']['fields']['username']
                 password = credentials['psp']['fields']['password']
                 MAGdata = pyspedas.psp.fields(trange=[t0, t1], datatype=datatype, level='l2', 
-                                              time_clip=True, username=username, password=password, no_update=settings['use_local_data'])
+                                              time_clip=True, username=username, password=password, no_update=np.invert(settings['use_local_data']))
                 
 
                
@@ -214,7 +214,7 @@ def download_MAG_FIELD_PSP(t0, t1, mag_resolution, credentials, varnames, settin
                         datatype = 'mag_sc_4_per_cycle'
                     else:
                         datatype = 'mag_sc'
-                MAGdata = pyspedas.psp.fields(trange=[t0, t1], datatype=datatype, level='l2', time_clip=True, no_update=settings['use_local_data'])           
+                MAGdata = pyspedas.psp.fields(trange=[t0, t1], datatype=datatype, level='l2', time_clip=True, no_update=np.invert(settings['use_local_data']))           
                 
 
 
@@ -289,7 +289,7 @@ def download_SPC_PSP(t0, t1, credentials, varnames, settings):
 
             spcdata = pyspedas.psp.spc(trange=[t0, t1], datatype='l3i', level='L3', 
                                         varnames=varnames, time_clip=True, 
-                                        username=username, password=password, no_update=settings['use_local_data'])
+                                        username=username, password=password, no_update=np.invert(settings['use_local_data']))
             if len(spcdata)==0:
                 print("No data available for this interval.")
                 return None, None
@@ -298,7 +298,7 @@ def download_SPC_PSP(t0, t1, credentials, varnames, settings):
                 print("No credentials were provided. Attempting to utilize publicly accessible data.")
 
             spcdata = pyspedas.psp.spc(trange=[t0, t1], datatype='l3i', level='l3', 
-                                        varnames=varnames, time_clip=True, no_update=settings['use_local_data'])
+                                        varnames=varnames, time_clip=True, no_update=np.invert(settings['use_local_data']))
 
         col_names = map_col_names_PSP('SPC', varnames)
         dfs = [pd.DataFrame(index=get_data(data).times, 
@@ -367,10 +367,10 @@ def download_SPAN_PSP(t0, t1, credentials, varnames, varnames_alpha, settings ):
             
 
             spandata = pyspedas.psp.spi(trange=[t0, t1], datatype='spi_sf00', level='L3', 
-                varnames = varnames, time_clip=True, username=username, password=password, no_update=settings['use_local_data'])
+                varnames = varnames, time_clip=True, username=username, password=password, no_update=np.invert(settings['use_local_data']))
 
             spandata_alpha = pyspedas.psp.spi(trange=[t0, t1], datatype='spi_sf0a', level='L3', 
-                varnames=varnames_alpha, time_clip=True, username=username, password=password, no_update=settings['use_local_data'])
+                varnames=varnames_alpha, time_clip=True, username=username, password=password, no_update=np.invert(settings['use_local_data']))
             
             if len(spandata)==0:
                 print("No data available for this interval.")
@@ -380,10 +380,10 @@ def download_SPAN_PSP(t0, t1, credentials, varnames, varnames_alpha, settings ):
                 print("No credentials were provided. Attempting to utilize publicly accessible data.")
                 
             spandata = pyspedas.psp.spi(trange=[t0, t1], datatype='spi_sf00_l3_mom', level='l3', 
-                varnames=varnames, time_clip=True, no_update=settings['use_local_data'])
+                varnames=varnames, time_clip=True, no_update=np.invert(settings['use_local_data']))
 
             spandata_alpha = pyspedas.psp.spi(trange=[t0, t1], datatype='spi_sf0a_l3_mom', level='l3', 
-                varnames=varnames_alpha, time_clip=True, no_update=settings['use_local_data'])
+                varnames=varnames_alpha, time_clip=True, no_update=np.invert(settings['use_local_data']))
 
         #SPAN protons
         col_names = map_col_names_PSP('SPAN', varnames)
@@ -476,7 +476,7 @@ def download_QTN_PSP(t0, t1, credentials, varnames, settings):
             
             qtndata = pyspedas.psp.fields(trange=[t0, t1], datatype='sqtn_rfs_V1V2', level='l3',
                                         varnames=varnames,
-                                        time_clip=True, username=username, password=password, no_update=settings['use_local_data'])
+                                        time_clip=True, username=username, password=password, no_update=np.invert(settings['use_local_data']))
             
             if len(qtndata)==0:
                 print("No data available for this interval.")
@@ -549,7 +549,7 @@ def download_ephemeris_PSP(t0, t1, credentials, varnames, settings):
         password = credentials['psp']['fields']['password']
         
         ephemdata = pyspedas.psp.fields(trange=[t0, t1], datatype='ephem_spp_rtn', level='l1', 
-                                         varnames=varnames, time_clip=True, username=username, password=password, no_update=settings['use_local_data'])
+                                         varnames=varnames, time_clip=True, username=username, password=password, no_update=np.invert(settings['use_local_data']))
         
         if len(ephemdata)==0:
             print("No data available for this interval.")
@@ -810,12 +810,12 @@ def LoadSCAMFromSPEDAS_PSP(in_RTN, start_time, end_time, credentials = None):
             scam_vars = pyspedas.psp.fields(
                 trange=[t0, t1], datatype='merged_scam_wf',
                         varnames = ['psp_fld_l3_merged_scam_wf_RTN'], level='l3', time_clip=1, downloadonly = False,
-                username = credentials['username'], password = credentials['password'], no_update=settings['use_local_data'])
+                username = credentials['username'], password = credentials['password'], no_update=np.invert(settings['use_local_data']))
         else:
             scam_vars = pyspedas.psp.fields(
                 trange=[t0, t1], datatype='merged_scam_wf',
                         varnames = ['psp_fld_l3_merged_scam_wf_SC'], level='l3', time_clip=1, downloadonly = False,
-                username = credentials['username'], password = credentials['password'], no_update=settings['use_local_data'])                
+                username = credentials['username'], password = credentials['password'], no_update=np.invert(settings['use_local_data']))                
             
             
         if scam_vars == []:

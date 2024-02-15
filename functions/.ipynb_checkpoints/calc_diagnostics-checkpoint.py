@@ -25,7 +25,6 @@ from pytplot import get_data
 sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
 import TurbPy as turb
 import general_functions as func
-import LoadData
 import plasma_params as plasma
 import signal_processing 
 
@@ -315,28 +314,33 @@ def calculate_diagnostics(
     # Create final dataframe by joining and cleaning up the data
     f_df = mag_resampled.join(df_part_aligned).dropna().interpolate()
     
-    if settings.get('rol_mean'):
-        f_df, columns_b, columns_v = apply_rolling_mean_and_get_columns(f_df, settings)
+   
+    # Estimate fluctuations
+    f_df, columns_b, columns_v = apply_rolling_mean_and_get_columns(f_df, settings)
 
-        # Extracting values more cleanly
-        vx, vy, vz      = f_df[columns_v].to_numpy().T
-        bx, by, bz      = f_df[columns_b].to_numpy().T
-        
-        # Const to normalize mag field in vel units
-        f_df['np_mean'] = f_df['np'].rolling('10s', center=True).mean().interpolate()
-        kinet_normal    = 1e-15 / np.sqrt(mu0 * f_df['np_mean'].values * m_p)
+    # Extracting values more cleanly
+    vx, vy, vz      = f_df[columns_v].to_numpy().T
+    bx, by, bz      = f_df[columns_b].to_numpy().T
 
-        # Estimate Alfvén speed and SW speed
-        Va_ts           = np.vstack([bx, by, bz]) * kinet_normal
-        V_ts            = np.vstack([vx, vy, vz])  # Fixed to use vy instead of repeating vx
+    # Const to normalize mag field in vel units
+    f_df['np_mean'] = f_df['np'].rolling('10s', center=True).mean().interpolate()
+    kinet_normal    = 1e-15 / np.sqrt(mu0 * f_df['np_mean'].values * m_p)
 
-        # Estimate fluctuations
-        mean_columns_b  = [f"{col}_mean" for col in columns_b]
-        mean_columns_v  = [f"{col}_mean" for col in columns_v]
- 
+    # Estimate Alfvén speed and SW speed
+    Va_ts           = np.vstack([bx, by, bz]) * kinet_normal
+    V_ts            = np.vstack([vx, vy, vz])  # Fixed to use vy instead of repeating vx
 
-        dva             = Va_ts - f_df[mean_columns_b].to_numpy().T * kinet_normal
-        dv              = V_ts  - f_df[mean_columns_v].to_numpy().T
+    # Estimate fluctuations
+    mean_columns_b  = [f"{col}_mean" for col in columns_b]
+    mean_columns_v  = [f"{col}_mean" for col in columns_v]
+
+
+    dva             = Va_ts - f_df[mean_columns_b].to_numpy().T * kinet_normal
+    dv              = V_ts  - f_df[mean_columns_v].to_numpy().T
+    
+    
+    
+    
     
     # Calculate magnetic field magnitude and solar wind speed
     Bmag                = np.sqrt(bx**2 + by**2 + bz**2)
