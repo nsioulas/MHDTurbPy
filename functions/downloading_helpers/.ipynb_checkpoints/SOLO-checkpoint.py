@@ -53,7 +53,7 @@ import general_functions as func
 
 # Some constants
 from scipy import constants
-au_to_km       = 1.496e8  # Conversion factor
+au_to_km        = 1.496e8  # Conversion factor
 rsun            = 696340   # Sun radius in units of  [km]
 mu0             =  constants.mu_0  # Vacuum magnetic permeability [N A^-2]
 mu_0            =  constants.mu_0  # Vacuum magnetic permeability [N A^-2]
@@ -148,12 +148,14 @@ def map_col_names_SOLO(instrument, varnames):
 
 from dateutil import parser
 
-def download_MAG_SOLO(t0, t1, mag_resolution, varnames):
+def download_MAG_SOLO(t0, t1, settings, varnames):
     def retrieve_mag_data(datatype):
-        MAGdata = pyspedas.solo.mag(trange=[t0, t1], datatype=datatype, level='l2', time_clip=True)
+        MAGdata = pyspedas.solo.mag(trange=[t0, t1], datatype=datatype, level='l2', time_clip=True, no_update=np.invert(settings['use_local_data']))
         col_names = map_col_names_SOLO('MAG', [datatype])
         df = pd.DataFrame(index=get_data(MAGdata[0]).times, data=get_data(MAGdata[0]).y, columns=col_names[0])
         return df
+    
+    
 
     try:
         dfmag = pd.DataFrame()
@@ -161,14 +163,14 @@ def download_MAG_SOLO(t0, t1, mag_resolution, varnames):
 
         for varname in varnames: 
             if varname == 'B_RTN':
-                if mag_resolution > 230:
+                if settings['MAG_resol'] > 230:
                     datatype = 'rtn-normal' 
                     mag_flag ='Regular'
                     print('Using normal-resol data!')
                 else:
                     datatype = 'rtn-burst'
             else:
-                datatype = 'srf-normal' if mag_resolution > 230 else 'srf-burst'
+                datatype = 'srf-normal' if settings['MAG_resol'] > 230 else 'srf-burst'
 
             df = retrieve_mag_data(datatype)
             dfmag = dfmag.join(df, how='outer')
@@ -221,9 +223,9 @@ def download_ephem_SOLO(t0, t1, cdf_lib_path):
     
     return dfdis
 
-def download_SWA_SOLO(t0, t1, varnames):   
+def download_SWA_SOLO(t0, t1, settings,  varnames):   
     try:
-        swadata = pyspedas.solo.swa(trange=[t0, t1],varnames = varnames, datatype='pas-grnd-mom')
+        swadata = pyspedas.solo.swa(trange=[t0, t1],varnames = varnames, datatype='pas-grnd-mom', no_update=np.invert(settings['use_local_data']))
 
         #SWA protons
         col_names = map_col_names_SOLO('SWA', varnames)
@@ -253,6 +255,7 @@ def download_SWA_SOLO(t0, t1, varnames):
     
 def download_RPW_SOLO(t0, 
                       t1, 
+                      settings, 
                       varnames):   
     
     for varname in varnames: 
@@ -263,12 +266,12 @@ def download_RPW_SOLO(t0,
             datatype = 'bia-density'
             varname  = ['DENSITY']
 
-        MAGdata = pyspedas.solo.mag(trange=[t0, t1], datatype=datatype, level='l2', time_clip=True)
+        MAGdata = pyspedas.solo.mag(trange=[t0, t1], datatype=datatype, level='l2', time_clip=True, no_update=np.invert(settings['use_local_data']))
         
         col_names = map_col_names_SOLO('RPW', [datatype])
 
     try:
-        rpwdata = pyspedas.solo.rpw(trange=[t0, t1], level='l3', varnames = varname, datatype=datatype)
+        rpwdata = pyspedas.solo.rpw(trange=[t0, t1], level='l3', varnames = varname, datatype=datatype, no_update=np.invert(settings['use_local_data']))
 
 
         dfs       = [pd.DataFrame(index=get_data(data).times, 
@@ -313,9 +316,10 @@ def LoadTimeSeriesSOLO(start_time,
 
     # default settings
     default_settings = {
-        'use_hampel'   : False,
-        'part_resol'   : 900,
-        'MAG_resol'    : 1
+        'use_hampel'    : False,
+        'part_resol'    : 900,
+        'MAG_resol'     : 1,
+        'use_local_data': True
 
     }
  
@@ -339,7 +343,7 @@ def LoadTimeSeriesSOLO(start_time,
 
         # Load rpw data
         try:
-            dfrpw = download_RPW_SOLO(t0, t1, varnames_RPW)
+            dfrpw = download_RPW_SOLO(t0, t1, settings, varnames_RPW)
 
             # Return the originaly requested interval
             dfrpw = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfrpw)
@@ -372,7 +376,7 @@ def LoadTimeSeriesSOLO(start_time,
 
             # Load particle data
             try:
-                dfpar = download_SWA_SOLO(t0, t1, varnames_SWA)
+                dfpar = download_SWA_SOLO(t0, t1, settings, varnames_SWA)
 
                 # Return the originaly requested interval
                 dfpar = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfpar)
@@ -418,7 +422,7 @@ def LoadTimeSeriesSOLO(start_time,
 
                 # Load Magnetic field data
                 try:
-                    dfmag, mag_flag       = download_MAG_SOLO(t0, t1, settings['MAG_resol'], varnames_MAG)
+                    dfmag, mag_flag       = download_MAG_SOLO(t0, t1, settings, varnames_MAG)
 
                     # Return the originaly requested interval
                     dfmag                 = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfmag)
