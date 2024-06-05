@@ -263,6 +263,8 @@ def spc(trange=['2018-11-5', '2018-11-6'],
         get_support_data=get_support_data, varformat=varformat, varnames=varnames, downloadonly=downloadonly, 
         notplot=notplot, time_clip=time_clip, no_update=no_update, username=username, password=password)
 
+
+
 def spe(trange=['2018-11-5', '2018-11-6'], 
         datatype='spa_sf1_32e', 
         level='l2',

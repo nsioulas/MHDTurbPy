@@ -117,7 +117,7 @@ def initializeFigure(xlabel, ylabel, scale= 'loglog',width='1col', height=None):
 
 
     # Get figure height in inch
-    figHeight = figWidth * (7.5/10.) if height is None else height * cm_to_inch
+    figHeight = figWidth * (8.35/10.) if height is None else height * cm_to_inch
     # Create figure with right resolution for publication
     fig = plt.figure(figsize=(figWidth, figHeight), dpi=300)
 
@@ -153,6 +153,8 @@ def create_colors(hmany, which=None):
     if which is None:
         interval = np.hstack([np.linspace(0, 0.45), np.linspace(0.55, 1)])
         colors   = cmaps.w5m4(interval)
+        
+
     elif which=='bone':
         interval = np.hstack([np.linspace(0, 0.35), np.linspace(0.65, 1)])
         colors   = plt.cm.OrRd(interval)
@@ -160,6 +162,12 @@ def create_colors(hmany, which=None):
 
 
     cmap     = LinearSegmentedColormap.from_list('name', colors)
+    
+#     import seaborn as sns
+#     cmap = sns.color_palette("vlag", as_cmap=True)
+    
+#     # from tol_colors import tol_cmap, tol_cset
+#     # cmap = tol_cmap('sunset')
 
     return cmap(np.linspace(0,1,hmany))
 
@@ -171,7 +179,7 @@ def heatmap_func(x,  y, z,
                  numb_bins, xlabel, ylabel, colbar_label, min_counts =10, what ='mean', ax_scale ='loglog',
                  min_x= -1e10, min_y= -1e10, min_z= -1e10, 
                  max_x= 1e10, max_y= 1e10, max_z= 1e10, min_col = None, max_col =None,
-                 log_colorbar=True,fig_size =(20,18), f_size =35, specify_edges= False, xedges =None, yedges =None,plot_contours=True, estimate_mean_median= True, return_figure =False):
+                 log_colorbar=True,fig_size =(20,18), f_size =35, specify_edges= False, xedges =None, yedges =None,plot_contours=True, estimate_mean_median= True, return_figure =False,  norm_2_max = False):
 
 
     """Quantities we want to plot"""
@@ -260,6 +268,9 @@ def heatmap_func(x,  y, z,
     xvals  = xf1_bins
     yvals  = yf1_bins
     zvals  = means.T
+    
+    if norm_2_max:
+        zvals  =zvals/np.nanmax(np.nanmax(zvals))
     counts = counts.T
 
     if return_figure:
@@ -320,6 +331,9 @@ def heatmap_func(x,  y, z,
         elif ax_scale == 'symlogy':
             ax.set_xscale('log')
             ax.set_yscale('symlog')
+        elif ax_scale == 'linear':
+            ax.set_xscale('linear')
+            ax.set_yscale('linear')
 
     if  return_figure:
         return fig, ax, xvals, yvals,  zvals, cmap, c, normi

@@ -7,7 +7,7 @@
 #                                                                         #
 #    This file is part of MHDTurbPy toolbox.                              #
 #                                                                         #
-#    MHDTurbPy toolbox is free software: you can redistribute it          #
+#    MHDTurbPy toolbox is free software: you can reFTRAdistribute it          #
 #    and/or modify it under the terms of the GNU General Public           #
 #    License as published by the Free Software Foundation, either         #
 #    version 3 of the License, or (at your option) any later version.     #
@@ -64,6 +64,9 @@ import  modwt
 
 
 
+
+
+
 def shifted_df_calcs(B, lag_coefs, coefs, return_df=False):    
     
     """
@@ -105,7 +108,7 @@ def flucts(tau,
            B,
            five_points_sfunc   = True,
            return_dataframe    = False,
-           estimate_mod_flucts = False ):
+           estimate_mod_flucts = False,):
     """
     Calculate increments for structure functions.
 
@@ -161,7 +164,8 @@ def flucts(tau,
             df_keys    = list(B.keys())
             B_mod      = pd.DataFrame({'DateTime': B.index, 
                                        'B_mod'   : np.sqrt(B[df_keys[0]]**2 + B[df_keys[1]]**2 + B[df_keys[2]]**2)}).set_index('DateTime')
-            
+                         
+                
             if return_dataframe:
                 dB                      = (B_mod.iloc[:-tau].values - B_mod.iloc[tau:].values)
                 dB_shape                = B_mod.shape
@@ -179,7 +183,12 @@ def flucts(tau,
                 dB_filled.iloc[:-tau,:] = dB
                 dB                      = dB_filled#.iloc[tau:,:]
             else:
-                dB                      = (B.iloc[:-tau].values - B.iloc[tau:].values)
+                B_values = B.values if isinstance(B, pd.DataFrame) else B
+                dB = (B_values[:-tau] - B_values[tau:])
+                dB_filled = np.full(B_values.shape, np.nan)
+                dB_filled[:-tau, :] = dB
+                dB = dB_filled
+
 
     return dB
 
@@ -294,8 +303,7 @@ def structure_functions_parallel(B,
                                return_components = return_components,
                                return_compress   = return_compress,
                                return_Bmod       = return_Bmod,
-                               return_flucts     = return_flucts) for tau in scales
-    )
+                               return_flucts     = return_flucts) for tau in scales)
     
     # Now for the final return
     if return_flucts:
@@ -367,7 +375,7 @@ def trace_PSD_wavelet(x,
                       y,
                       z, 
                       dt, 
-                      dj         =1,
+                      dj         =1/2,
                       mother_wave='morlet'):
     """
     Method to calculate the  power spectral density using wavelet method.
@@ -420,10 +428,60 @@ def trace_PSD_wavelet(x,
     PSD = (np.nanmean(np.abs(db_x)**2, axis=1) + np.nanmean(np.abs(db_y)**2, axis=1) + np.nanmean(np.abs(db_z)**2, axis=1)   )*( 2*dt)
     
     # Remember!
-    scales = (1/freqs)/dt
+    scales = (1/(freqs))/dt
     
     
-    return db_x, db_y, db_z, freqs, PSD, scales
+    return db_x, db_y, db_z, freqs[1:], PSD[1:], scales
+
+
+from scipy.stats import pearsonr
+def scale_dep_pearson_coeff_with_CWT_arr(B, V, dt):
+    
+    
+    #if V.index!= B.index:
+    #V = func.newindex(V, B.index)
+
+    # Find cadence
+   # dt = func.find_cadence(B)
+
+
+    Bx, By, Bz, _,  freqs, _, _, _ = trace_PSD_cwt_ssqueezepy(B[0], B[1], B[2], dt)
+    Vx, Vy, Vz, _,  _, _, _, _     = trace_PSD_cwt_ssqueezepy(V[0], V[1], V[2], dt)
+    
+    
+    coeffs_B = np.array([Bx.T, By.T, Bz.T]).T
+    coeffs_V = np.array([Vx.T, Vy.T, Vz.T]).T
+    
+    # Using list comprehension
+    pear_coeff = np.array([pearsonr(np.abs(coeffs_V[i, :].flatten()), np.abs(coeffs_B[i, :].flatten()))[0] for i in range(len(coeffs_V))])
+
+    
+    return freqs, pear_coeff
+
+
+from scipy.stats import pearsonr
+def scale_dep_pearson_coeff_with_CWT(B, V):
+    
+    
+    #if V.index!= B.index:
+    V = func.newindex(V, B.index)
+
+    # Find cadence
+    dt = func.find_cadence(B)
+
+
+    Bx, By, Bz, _,  freqs, _, _, _ = trace_PSD_cwt_ssqueezepy(B.Br.values, B.Bt.values, B.Bn.values,dt)
+    Vx, Vy, Vz, _,  _, _, _, _     = trace_PSD_cwt_ssqueezepy(V.Vr.values, V.Vt.values, V.Vn.values,dt)
+    
+    
+    coeffs_B = np.array([Bx.T, By.T, Bz.T]).T
+    coeffs_V = np.array([Vx.T, Vy.T, Vz.T]).T
+    
+    # Using list comprehension
+    pear_coeff = np.array([pearsonr(np.abs(coeffs_V[i, :].flatten()), np.abs(coeffs_B[i, :].flatten()))[0] for i in range(len(coeffs_V))])
+
+    
+    return freqs, pear_coeff
 
 
 def trace_PSD_cwt_ssqueezepy(x, 
@@ -498,7 +556,9 @@ def trace_PSD_cwt_ssqueezepy(x,
         PSD_mod     = None
     
 
-    return Wx, Wy, Wz, Wmod,  freqs, PSD, PSD_mod, scales
+    return Wx, Wy, Wz, Wmod,  freqs, PSD, PSD_mod, scales # On purpose! only 
+
+
 
 
 
@@ -562,7 +622,8 @@ def psd_waveletes_anisotropic_analysis(
             J              = -1, 
             alpha          =  3,
             omega0         =  6,
-            estimate_pywt  = False
+            estimate_pywt  = False,
+            njobs          = -1
            ):
 
         # Perform CWT
@@ -703,68 +764,245 @@ def psd_waveletes_anisotropic_analysis(
 
 
 
-def TracePSD(x, 
-             y,
-             z,
-             dt,
+
+def psd_waveletes_anisotropic_analysis_mod(
+                                           B_df,
+                                           V_df, 
+                                           dj,  
+                                           alpha            = 3, 
+                                           per_thresh       = 80,
+                                           par_thresh       = 10,
+                                           njobs            = -1,
+                                           est_mod          = True,
+                                           estimate_local_V = False,
+                                           estimate_pywt    = False
+                                          ):
+    """
+    Method to calculate the 1) wavelet coefficients in RTN 2) The scale dependent angle between Vsw and Β.
+
+    Parameters:
+        B_df (pandas.DataFrame): Magnetic field timeseries dataframe.
+        V_df (pandas.DataFrame): Velocity timeseries dataframe.
+        dj (float): The time resolution.
+        alpha (float, optional): Gaussian parameter. Default is 3.
+        pycwt (bool, optional): Use the PyCWT library for wavelet transform. Default is False.
+
+    Returns:
+        tuple: A tuple containing the following elements:
+            np.ndarray: Frequencies in the x-direction.
+            np.ndarray: Frequencies in the y-direction.
+            np.ndarray: Frequencies in the z-direction.
+            pandas.DataFrame: Angles between magnetic field and scale dependent background in degrees.
+            pandas.DataFrame: Angles between velocity and scale dependent background in degrees.
+            np.ndarray: Frequencies in Hz.
+            np.ndarray: Power spectral density.
+            np.ndarray: Physical space scales in seconds.
+            np.ndarray: Wavelet scales.
+    """
+    
+
+    def estimate_cwt(signal, 
+            dt,
+            dj             =  1/12,
+            s0             = -1,
+            J              = -1, 
+            alpha          =  3,
+            omega0         =  6,
+            estimate_pywt  = False,
+            njobs          = -1
+           ):
+
+        # Perform CWT
+
+
+        # Calculate local average using Gaussian windows
+        if estimate_pywt:
+            mother = pycwt.Morlet(omega0)
+            W, scales, freqs, coi, signal_ft, ftfreqs = pycwt.cwt(signal, dt, dj, s0, J, wavelet=mother)
+        else:
+            
+            wavelet    = ssqueezepy.Wavelet(('morlet', {'mu': 13.4}))
+            W, scales  = ssqueezepy.cwt(signal, wavelet,  'log-piecewise' , 1/dt, l1_norm=False, nv=int(2/dj))
+            freqs      = ssqueezepy.experimental.scale_to_freq(scales, wavelet, len(signal), 1/dt)
+            coi        = None
+        return W, scales, freqs, coi
+    
+    def process_scale(ii, 
+                      fe,
+                      dt,
+                      Br, Bt, Bn,
+                      Vr, Vt, Vn, 
+                      mag_b, mag_v,
+                      db_x, db_y, db_z, 
+                      db_mod,
+                      alpha,
+                      per_thresh,
+                      par_thresh,
+                      njobs            = -1,
+                      est_mod          = False,
+                      estimate_local_V = False):
+        try:
+
+            Br_0    = local_gaussian_averaging(Br,  fe,  alpha, dt)
+            Bt_0    = local_gaussian_averaging(Bt,  fe,  alpha, dt)
+            Bn_0    = local_gaussian_averaging(Bn,  fe,  alpha, dt)
+            
+            if estimate_local_V:
+                Vr      = local_gaussian_averaging(Vr,  fe,  alpha, dt)
+                Vt      = local_gaussian_averaging(Vt,  fe,  alpha, dt)
+                Vn      = local_gaussian_averaging(Vn,  fe,  alpha, dt)
+                
+                mag_V_0 = np.sqrt( Vr**2  +  Vt**2 +  Vn**2  )
+
+          
+            mag_b_0 = np.sqrt( Br_0**2  +  Bt_0**2 +  Bn_0**2  )
+            
+            VBangles                = np.arccos((Vr * Br_0 + Vt * Bt_0 + Vn * Bn_0) / (mag_b_0 * mag_v)) * 180 / np.pi
+            VBangles[VBangles > 90] = 180 - VBangles[VBangles > 90]
+
+            index_per   = (np.where(VBangles > per_thresh)[0]).astype(np.int64)
+            index_par   = (np.where(VBangles < par_thresh)[0]).astype(np.int64)
+
+            PSD_par_val = (np.nanmean(np.abs(np.array(db_x[ii])[index_par])**2) + 
+                          np.nanmean(np.abs(np.array(db_y[ii])[index_par])**2) + 
+                          np.nanmean(np.abs(np.array(db_z[ii])[index_par])**2) ) * ( 2 * dt)
+
+            PSD_per_val = (np.nanmean(np.abs(np.array(db_x[ii])[index_per])**2) + 
+                          np.nanmean(np.abs(np.array(db_y[ii])[index_per])**2) + 
+                          np.nanmean(np.abs(np.array(db_z[ii])[index_per])**2) ) * ( 2 * dt)
+            
+            if est_mod:
+                PSD_par_mod_val = (np.nanmean(np.abs(np.array(db_mod[ii])[index_par])**2) ) * ( 2 * dt)
+
+                PSD_per_mod_val = (np.nanmean(np.abs(np.array(db_mod[ii])[index_per])**2) ) * ( 2 * dt)
+            else:
+                PSD_par_mod_val = np.nan
+
+                PSD_per_mod_val = np.nan             
+
+            return PSD_par_val, PSD_per_val, PSD_par_mod_val, PSD_per_mod_val
+        except Exception as e:
+            traceback.print_exc()
+            return np.nan, np.nan
+
+    # Estimate sampling time of timeseries
+    dt_B = func.find_cadence(B_df)
+    dt_V = func.find_cadence(V_df)
+
+    if dt_V != dt_B:
+        V_df = func.newindex(V_df, B_df.index, interp_method='linear')
+
+    # Common dt
+    dt = dt_B
+
+    # Turn columns of df into arrays
+    Br, Bt, Bn = B_df.Br.values, B_df.Bt.values, B_df.Bn.values
+    Vr, Vt, Vn = V_df.Vr.values, V_df.Vt.values, V_df.Vn.values
+    del B_df, V_df
+    
+    # Estimate magnitude of magnetic field
+    mag_b = np.sqrt(Br ** 2 + Bt ** 2 + Bn ** 2)
+
+    # Estimate the magnitude of V vector
+    mag_v = np.sqrt(Vr ** 2 + Vt ** 2 + Vn ** 2)
+
+
+    Wr, scales, freqs, coi       = estimate_cwt(Br, dt, dj = dj, estimate_pywt = estimate_pywt)
+    Wt, scales, freqs, coi       = estimate_cwt(Bt, dt, dj = dj, estimate_pywt = estimate_pywt)
+    Wn, scales, freqs, coi       = estimate_cwt(Bn, dt, dj = dj, estimate_pywt = estimate_pywt)
+    
+    if est_mod:
+        Wmod, scales, freqs, coi = estimate_cwt(mag_b.values, dt, dj = dj, estimate_pywt = estimate_pywt)
+    else:
+        Wmod = np.nan
+        
+    
+    PSD_par = np.zeros(len(freqs))
+    PSD_per = np.zeros(len(freqs)) 
+ 
+    PSD_par_mod = np.zeros(len(freqs))
+    PSD_per_mod = np.zeros(len(freqs))
+    
+    # Use joblib for parallel processing
+    results = Parallel(n_jobs=njobs)(delayed(process_scale)(
+                                                              ii, 
+                                                              fe,
+                                                              dt,
+                                                              Br, Bt, Bn,
+                                                              Vr, Vt, Vn, 
+                                                              mag_b, mag_v,
+                                                              Wr, Wt, Wn, 
+                                                              Wmod,
+                                                              alpha,
+                                                              per_thresh,
+                                                              par_thresh,
+                                                              njobs            = njobs,
+                                                              est_mod          = est_mod,
+                                                              estimate_local_V = estimate_local_V
+    ) for ii, fe in enumerate(freqs))
+
+    
+    # Unpack results
+    PSD_par, PSD_per, PSD_par_mod, PSD_per_mod = zip(*results)
+
+    return freqs, PSD_par, PSD_per, PSD_par_mod, PSD_per_mod, scales
+
+
+
+
+import numpy as np
+
+def TracePSD(x, y, z, dt, 
              remove_mean       = False,
              return_components = False,
-             return_mod        = False,
-            ):
-    """ 
-    Estimate Fourier Power Spectral Density (PSD).
+             return_mod        = False):
+    """
+    Estimate Fourier Power Spectral Density (PSD) for a trace composed of three orthogonal components.
 
     Parameters:
         x, y, z (np.ndarray or pandas.Series): Timeseries data for the three components.
         dt (float): Time step (1/sampling frequency).
         remove_mean (bool, optional): If True, remove the mean from the input timeseries. Default is False.
+        return_components (bool, optional): If True, return the PSD for individual components. Default is False.
+        return_mod (bool, optional): If True, return the modulus PSD. Default is False.
 
     Returns:
-        tuple: A tuple containing:
-            freqs (np.ndarray): Array of frequencies.
-            B_pow (np.ndarray): Power spectral density estimates.
+        tuple: Depending on `return_components` and `return_mod`, a tuple containing:
+               - freqs (np.ndarray): Array of frequencies.
+               - B_pow (np.ndarray): Power spectral density estimates of the trace or individual components and/or modulus.
     """
-    
-    freqs, p_Trace, p_X, p_Y, p_Z, p_mod = (None,) * 6
-    
-    
     if not isinstance(x, np.ndarray):
         x = x.values
         y = y.values
         z = z.values
 
     if remove_mean:
-        x = x - np.nanmean(x)
-        y = y - np.nanmean(y)
-        z = z - np.nanmean(z)
+        x -= np.nanmean(x)
+        y -= np.nanmean(y)
+        z -= np.nanmean(z)
 
-    N      = len(x)
-    
-    if return_mod:
-        mod     = np.sqrt(x**2 + y**2 + z**2)
-        p_Mod   = 2 * (np.abs(np.fft.rfft(mod)) ** 2)/ N * dt
+    N = len(x)
 
-    xf     = np.fft.rfft(x)
-    yf     = np.fft.rfft(y)
-    zf     = np.fft.rfft(z)
-    
-    
+    xf = np.fft.rfft(x)
+    yf = np.fft.rfft(y)
+    zf = np.fft.rfft(z)
 
-    p_X     = 2 * (np.abs(xf) ** 2)/ N * dt
-    p_Y     = 2 * (np.abs(yf) ** 2)/ N * dt
-    p_Z     = 2 * (np.abs(zf) ** 2)/ N * dt
-              
-    p_Trace  = p_X + p_Y + p_Z
+    p_X     = 2 * (np.abs(xf) ** 2) / N * dt
+    p_Y     = 2 * (np.abs(yf) ** 2) / N * dt
+    p_Z     = 2 * (np.abs(zf) ** 2) / N * dt
+    p_Trace = p_X + p_Y + p_Z
 
-    freqs    = np.fft.fftfreq(len(x), dt)
-    freqs    = freqs[freqs > 0]
-    idx      = np.argsort(freqs)
+    freqs = np.fft.rfftfreq(N, dt)
 
     if return_mod:
-        return freqs[idx], p_Trace[idx], p_X[idx], p_Y[idx], p_Z[idx], p_Mod[idx]
-    else:
-        return freqs[idx], p_Trace[idx], p_X[idx], p_Y[idx], p_Z[idx], None        
-              
+        mod = np.sqrt(x**2 + y**2 + z**2)
+        p_Mod = 2 * (np.abs(np.fft.rfft(mod)) ** 2) / N * dt
+        return freqs, p_Trace, p_X, p_Y, p_Z, p_Mod
+
+    if return_components:
+        return freqs, p_Trace, p_X, p_Y, p_Z
+
+    return freqs, p_Trace
 
 
 
@@ -941,7 +1179,7 @@ def power_spec(signal,npoints):
 
 
 @jit( parallel =True, nopython=True)
-def structure_functions_wavelets(db_x, db_y, db_z, angles,  scales, dt, max_moment, per_thresh, par_thresh):
+def structure_functions_wavelets_per_par(db_x, db_y, db_z, angles,  scales, dt, max_moment, per_thresh, par_thresh):
     
     tau = scales*dt
     m_vals = np.arange(1, max_moment+1)
@@ -966,6 +1204,32 @@ def structure_functions_wavelets(db_x, db_y, db_z, angles,  scales, dt, max_mome
             counts_par[j, m] = len(index_par)#.astype('float')
             counts_per[j, m] = len(index_per)#.astype('float')
     return tau, sfunc_par, sfunc_per, counts_par, counts_per
+
+
+
+@jit( parallel =True, nopython=True)
+def structure_functions_wavelets(db_x, db_y, db_z,   scales, dt, max_moment):
+    
+    tau = scales*dt
+    m_vals = np.arange(1, max_moment+1)
+
+    
+    sfunc  = np.zeros((len(tau), len(m_vals))) 
+    counts = np.zeros((len(tau), len(m_vals))) 
+
+
+    for j in prange(len(tau)):
+        
+        dbtot     = (db_x[j]*np.conjugate(db_x[j]) + db_y[j]*np.conjugate(db_y[j])  +db_z[j]*np.conjugate(db_z[j]) )**(1/2)
+
+        for m in prange(len( m_vals)):
+            
+            #sfunc[j, m]  = np.nanmean(np.abs(dbtot/np.sqrt(tau[j]))**m_vals[m])
+            sfunc[j, m]  = np.nanmean(np.abs(dbtot)**m_vals[m])
+         
+            counts[j, m] = len(dbtot)#.astype('float')
+    return scales, sfunc,counts
+
 
 
 
@@ -1128,16 +1392,9 @@ def remove_wheel_noise(signal,
     # Calculate empirical threshold based on the mean value of z(f)
     z_cutoff =  empirical_threshold* np.mean(z_f)
 
-    # Identify noise frequencies
-#     median_freqs, roling_median = func.smoothing_function(frequencies_filtered, z_f, window= rolling_median_window, mean =0)
 
-    #roling_median       = turb.moving_median(z_f, 7*window_size_samples)
-#     noise_mask           = (z_f > empirical_threshold* roling_median) |(np.isnan(roling_median) & (z_f > z_cutoff))
-#     f_noise              = frequencies_filtered[noise_mask]
-    
     
     roling_median        = func.simple_python_rolling_median(z_f, 10*window_size_samples)
-    #roling_median       = moving_median(z_f, 7*window_size_samples)
     noise_mask           = (z_f > empirical_threshold* roling_median) |( np.isnan(roling_median) & (frequencies_filtered > 3*freq_threshold) & (z_f > z_cutoff))
     f_noise              = frequencies_filtered[noise_mask]
 
@@ -1183,7 +1440,97 @@ def remove_wheel_noise(signal,
     # Perform the inverse Fourier transform to get the noise-removed signal
     signal_noise_removed = np.fft.irfft(noise_removed_fft, n=N)
 
+
+
     return signal_noise_removed#, z_f, frequencies_filtered, noise_mask, z_cutoff
+
+
+
+# def remove_wheel_noise(signal,
+#                    fs, 
+#                    freq_threshold         = 2.8,
+#                    window_width_hz        = 0.4,
+#                    empirical_threshold    = 1.3,
+#                    rolling_median_window  = 2,
+#                   ):
+#     # Calculate the Fourier transform and power spectrum of the signal
+#     N = len(signal)
+#     signal_fft = np.fft.rfft(signal)
+#     power_spec = np.abs(signal_fft)**2
+#     frequencies = np.fft.rfftfreq(N, d=1/fs)
+
+#     # Filter frequencies higher than the threshold
+#     valid_indices        = frequencies > freq_threshold
+#     frequencies_filtered = frequencies[valid_indices]
+#     power_spec_filtered  = power_spec[valid_indices]
+
+#     # Calculate moving-window mean and standard deviation
+#     window_size_samples  = int(np.ceil(window_width_hz / (frequencies[1] - frequencies[0])))*2 + 1
+#     moving_mean          = np.convolve(power_spec_filtered, np.ones(window_size_samples)/window_size_samples, mode='same')
+#     moving_std           = np.sqrt(np.convolve((power_spec_filtered - moving_mean)**2, np.ones(window_size_samples)/window_size_samples, mode='same'))
+
+#     # Define z(f)
+#     z_f = moving_std / moving_mean
+
+#     # Calculate empirical threshold based on the mean value of z(f)
+#     z_cutoff =  empirical_threshold* np.mean(z_f)
+
+#     # Identify noise frequencies
+#     median_freqs, roling_median = func.smoothing_function(frequencies_filtered, z_f, window= rolling_median_window, mean =0)
+
+#     #roling_median       = turb.moving_median(z_f, 7*window_size_samples)
+# #     noise_mask           = (z_f > empirical_threshold* roling_median) |(np.isnan(roling_median) & (z_f > z_cutoff))
+# #     f_noise              = frequencies_filtered[noise_mask]
+    
+    
+#     #roling_median        = func.simple_python_rolling_median(z_f, 10*window_size_samples)
+#     #roling_median       = moving_median(z_f, 7*window_size_samples)
+#     noise_mask           = (z_f > empirical_threshold* roling_median) |( np.isnan(roling_median) & (frequencies_filtered > 3*freq_threshold) & (z_f > z_cutoff))
+#     f_noise              = frequencies_filtered[noise_mask]
+
+
+#     # Mask for frequencies without noise
+#     no_noise_mask = ~np.isin(frequencies, f_noise)
+
+#     # Calculate moving-window mean for no-noise frequencies
+#     power_spec_no_noise = power_spec_filtered[~noise_mask]
+#     frequencies_no_noise = frequencies_filtered[~noise_mask]
+#     moving_mean_no_noise = np.convolve(power_spec_no_noise, np.ones(window_size_samples)/window_size_samples, mode='same')
+
+#     #frequencies_no_noise, _, moving_mean_no_noise = func.smoothing_function(frequencies_no_noise, power_spec_no_noise, 2)
+    
+#     # Interpolate moving-window mean for the noise frequencies
+#     moving_mean_interpolated = np.interp(frequencies_filtered, frequencies_no_noise, moving_mean_no_noise)
+
+#     # Replace power spectrum values at noise frequencies with interpolated moving mean
+#     power_spec_noise_removed                                     = power_spec.copy()
+
+#     # First, find the indices in the full frequency array where noise is present
+#     noise_indices = np.where(frequencies > freq_threshold)[0][noise_mask]
+
+#     # Now update the power_spec_noise_removed at those indices with the interpolated values
+#     power_spec_noise_removed[noise_indices] = moving_mean_interpolated[noise_mask]
+
+#     # Recalculate magnitude for noise-removed Fourier transform
+#     magnitude_noise_removed = np.sqrt(power_spec_noise_removed)
+
+#     # Retain phases for no-noise frequencies, randomize for noise frequencies
+#     phases = np.angle(signal_fft)
+#     # Generate random phases only for the noise frequencies
+#     random_phases = np.random.uniform(-np.pi, np.pi, len(f_noise))
+
+#     # Assign random phases only to the noise frequencies
+#     phases_noise_indices = np.where(np.isin(frequencies, f_noise))[0]
+#     phases[phases_noise_indices] = random_phases
+    
+    
+#     # Construct the noise-removed Fourier transform
+#     noise_removed_fft = magnitude_noise_removed * np.exp(1j * phases)
+
+#     # Perform the inverse Fourier transform to get the noise-removed signal
+#     signal_noise_removed = np.fft.irfft(noise_removed_fft, n=N)
+
+#     return signal_noise_removed#, z_f, frequencies_filtered, noise_mask, z_cutoff
 
 
 
@@ -1288,8 +1635,8 @@ def select_intervals_WIND_analysis(E, thresh_value, hours_needed,  min_toler =60
 
 def variance_anisotropy_verdini(av_window,
                                 B,
-                                av_hours=1,
-                                return_df =False):
+                                av_hours  ='2H',
+                                return_df = False):
     """
     Calculate variance anisotropy as defined by Verdini et al. (2018).
 
@@ -1302,11 +1649,12 @@ def variance_anisotropy_verdini(av_window,
         pandas.Series: The variance anisotropy values.
     """
     lag       = func.find_cadence(B)
-    av_window1 = int(av_hours * 3600 / lag)
+   
 
     # Calculate variance of components after applying moving average
-    b = np.sqrt(((B- B.rolling(av_window, center=True).mean()) ** 2)
-                      .rolling(av_window1, center=True).mean())
+    
+    dB_sq = (B- B.rolling(av_window, center = True).mean())**2
+    b     = np.sqrt( dB_sq.rolling(av_hours, center = True).mean())
                      
 
     # Calculate variance anisotropy
@@ -1345,7 +1693,7 @@ def exp_verdini_correct_scale_dependent(
     try:
 
         
-        dbs      = B - B.rolling(fluct_window, center=True).mean()
+        dbs      = B - B.rolling(fluct_window, center =True).mean()
         if use_av_hours:
             rms_db   = dbs.pow(2).rolling(str(av_hours)+"H",  center=True).mean().apply(np.sqrt, raw=True)
         else:
@@ -1545,6 +1893,96 @@ def calculate_compressibility(
 
 
     return pd.DataFrame((np.abs(dB['compress'])/np.sqrt((dB[keys[0]].values)**2 + (dB[keys[1]].values)**2 + (dB[keys[2]].values)**2))**2)
+
+
+
+def local_parker_spiral(B,
+                        V,
+                        r, 
+                        r0                 =  10, 
+                        av_window          = '60min',
+                        filter_type        = 'median',
+                        estimate_def_angle =  True):
+    """
+    Transform the magnetic field coordinates from RTN to Parker spiral coordinates.
+    
+    Parameters:
+    B (pd.DataFrame): DataFrame containing the magnetic field data with a datetime index.
+    V (pd.DataFrame): DataFrame containing the solar wind velocity data with a datetime index.
+    r (float): The distance of the spacecraft from the center of the Sun in AU.
+    r0 (float): The source distance in solar radii where the Parker spiral angle is measured.
+    av_window (str): Rolling window size for the low-pass filter.
+    filter_type (str): Type of the filter to apply ('mean' for rolling mean, 'butter' for Butterworth).
+    
+    Returns:
+    pd.DataFrame: The transformed magnetic field coordinates.
+    pd.Series: The Parker spiral angle for each timestamp.
+    pd.Series: The filtered timesries of Vr   
+    pd.Series: The deflection angle with respect to the  PS  
+    """
+    
+    if len(B)!= len(V):
+        V = func.newindex(V, B.index)
+    if len(B)!= len(r):
+        r = func.newindex(r, B.index)
+        
+    au_to_km           = 1.496e8  # Conversion from AU to kilometers.
+    solar_radius_to_km = 695700  # Conversion from solar radii to kilometers.
+    omega              = 2.9e-6  # The Sun's rotational frequency in rad/s.
+    
+    # Convert r0 from solar radii to kilometers
+    r0_km              = r0 * solar_radius_to_km
+    
+    # Convert r from AU to kilometers
+    r_km               = np.hstack(r.values)* au_to_km
+    
+    # Apply low-pass filter to the radial component of the solar wind velocity
+    if filter_type == 'median':
+        # Simple rolling mean
+        Vr_filtered = V['Vr'].rolling(window=av_window, center=True).median()
+    elif filter_type == 'mean':
+        Vr_filtered = V['Vr'].rolling(window=av_window, center=True).mean()
+    else:
+        raise ValueError("Invalid filter type. Choose 'mean' or 'median'.")
+
+    # Calculate the Parker spiral angle in radians using arctan2
+    alpha_p = np.arctan(-omega * (r_km - r0_km)/ Vr_filtered)
+    
+    
+    # Estimate magnitude of magnetic field timeseries
+    mag_B             = np.sqrt(
+                                B.Br**2 +
+                                B.Bt**2 +
+                                B.Bn**2 
+                               ).values
+
+
+    
+    sign = np.sign(B['Br'].rolling(window='2h', center=True).mean()).values
+    # Transform the magnetic field to Parker spiral coordinates
+    B_parker       =  B.copy()
+    B_parker['Br'] =  sign*mag_B * np.cos(alpha_p)
+    B_parker['Bt'] =  sign*mag_B * np.sin(alpha_p)
+    B_parker['Bn'] =  B['Bn']  # Bn remains unchanged
+    
+    
+    if estimate_def_angle:
+    
+        mag_B0            = np.sqrt(
+                                    B_parker['Br']**2 +
+                                    B_parker['Bn']**2 +
+                                    B_parker['Bn']**2 
+                                   ).values
+        
+
+        
+        def_angles   = np.arccos((B['Br'] * B_parker['Br']   + 
+                                  B['Bt'] * B_parker['Bt']   +
+                                  B['Bn'] * B_parker['Bn'])  / (mag_B0     * mag_B)) * 180 / np.pi
+    else:
+            def_angles =None
+    
+    return B_parker, alpha_p, Vr_filtered, def_angles
 
 
 def parallel_compress(lag,
@@ -1904,6 +2342,7 @@ def estimate_kurtosis_with_rand_samples(hmany_stds, di, vsw, xvals, yvals, nxbin
 
 
 
+
 def K41_linear_scaling(max_qorder):
     f              = lambda x: x/3
     xvals          = np.arange(1, max_qorder+1,1)
@@ -2051,12 +2490,14 @@ def calculate_angle(which_perihelion,
 
     varnames_MAG, varnames_QTN, varnames_SPAN, varnames_SPC,  varnames_SPAN_alpha, varnames_EPHEM = PSP.default_variables_to_download_PSP(vars_2_downnload)
 
+    settings ={ }
+    settings['use_local_data'] = False
     if use_span:
-        dfpar =  PSP.download_SPAN_PSP(t0i, t1i, credentials, varnames_SPAN, varnames_SPAN_alpha)
+        dfpar =  PSP.download_SPAN_PSP(t0i, t1i, credentials, varnames_SPAN, varnames_SPAN_alpha, settings)
         
     else:
-        dfephem     = PSP.download_ephemeris_PSP(t0i, t1i, credentials, ['position', 'velocity'])
-        dfpar       =  PSP.download_SPC_PSP(t0i, t1i, credentials, varnames_SPC)
+        dfephem     = PSP.download_ephemeris_PSP(t0i, t1i, credentials, ['position', 'velocity'], settings)
+        dfpar       =  PSP.download_SPC_PSP(t0i, t1i, credentials, varnames_SPC, settings)
    
         dfephem     = func.newindex(dfephem, dfpar.index)
         dfpar[['sc_vel_r', 'sc_vel_t', 'sc_vel_n']] = dfephem[['sc_vel_r', 'sc_vel_t', 'sc_vel_n']]
@@ -2065,5 +2506,7 @@ def calculate_angle(which_perihelion,
 
     # Calculate angles for each row
     angles = sc_sampling_angle(dfpar, window)
+    
+    func.savepickle(angles, str(Path(save_path).joinpath(f'E_{which_perihelion+1}')), 'angles.pkl')
 
     return angles, dfpar

@@ -82,10 +82,10 @@ def apply_rolling_mean_and_get_columns(f_df, settings):
 
 def calculate_signB(f_df, settings):
     """Calculate the sign of B based on available column."""
-    if settings['sc'] in ['PSP', 'SOLO']:
-        return -np.sign(f_df['Br_mean'])
+    if settings['sc'] in ['PSP', 'SOLO', 'HELIOS_A', 'HELIOS_B']:
+        return -np.sign(f_df['Br'].rolling('30min', center=True).mean())
     elif settings['sc'] in ['WIND']:
-        return np.sign(f_df['Br_mean'])
+        return np.sign(f_df['Br'].rolling('30min', center=True).mean())
     else:
         raise ValueError("Required column is missing in DataFrame.")
 
@@ -117,7 +117,12 @@ def calculate_energies_sigmas(Zp, Zm, dv, dva):
 
 
 
-def estimate_magnetic_field_psd(mag_resampled, mag_low_res, dtb, settings, diagnostics, return_mag_df= True):
+def estimate_magnetic_field_psd(mag_resampled,
+                                mag_low_res,
+                                dtb,
+                                settings,
+                                diagnostics,
+                                return_mag_df= True):
     """
     Estimate the Power Spectral Density (PSD) of the magnetic field, perform optional smoothing,
     and return a dictionary containing the PSD information and diagnostics.
@@ -165,28 +170,31 @@ def estimate_magnetic_field_psd(mag_resampled, mag_low_res, dtb, settings, diagn
 
     
     # Estimate the Power Spectral Density (PSD) of the magnetic field and optionally smooth it
-    f_B, psd_B, psd_B_R, psd_B_T, psd_B_N, f_B_mid, f_B_mean, psd_B_smooth, psd_Mod = estimate_B_psd_and_smooth(mag_resampled, dtb, settings)
+    f_B, psd_B, psd_B_R, psd_B_T, psd_B_N, f_B_mid, f_B_mean, psd_B_smooth, psd_Mod = estimate_B_psd_and_smooth(mag_resampled,
+                                                                                                                dtb, 
+                                                                                                                settings)
     
     # Organize the results and diagnostics into a dictionary
     mag_dict = {
         
+        "f_B_orig"         : f_B,
+        "f_B_mid"          : f_B_mid,
+        "f_B_mean"         : f_B_mean,
         "PSD_f_orig"       : psd_B,
         "PSD_f_orig_R"     : psd_B_R,
         "PSD_f_orig_T"     : psd_B_T,
         "PSD_f_orig_N"     : psd_B_N,
         "PSD_f_orig_Mod"   : psd_Mod,
-        "f_B_orig"         : f_B,
         "PSD_f_smoothed"   : psd_B_smooth,
-        "f_B_mid"          : f_B_mid,
-        "f_B_mean"         : f_B_mean,
         "Fraction_missing" : diagnostics['Mag']["Frac_miss"],
         "resolution"       : diagnostics['Mag']["resol"]
     }
 
     if return_mag_df:
         
-        mag_dict["B_resampled_part_res"]  =  mag_low_res
-        mag_dict["B_resampled"]           =  mag_resampled
+        if settings['upsample_low_freq_ts'] ==False:
+            mag_dict["B_resampled_part_res"]  =  mag_low_res.interpolate().dropna()
+        mag_dict["B_resampled"]               =  mag_resampled
     return mag_dict
 
 
@@ -208,6 +216,7 @@ def estimate_psd_dict(settings, sigs_df, dtb, estimate_means= False):
         values = [sigs_df[key].values for key in component_keys]
         return turb.TracePSD(*values, 
                              dtb, 
+                             remove_mean       = False,
                              return_components = settings['est_PSD_components'])
     
     # Initialize variables to None in case PSD estimation is not performed
@@ -220,20 +229,25 @@ def estimate_psd_dict(settings, sigs_df, dtb, estimate_means= False):
     if settings['estimate_psd_v']:
         # Define component keys for each signal
         components = {
-            'zp': ['Zpr', 'Zpt', 'Zpn'],
-            'zm': ['Zmr', 'Zmt', 'Zmn'],
-            'vv': ['v_r', 'v_t', 'v_n'],
-            'bb': ['va_r', 'va_t', 'va_n']
+            'zp': ['dZpr', 'dZpt', 'dZpn'],
+            'zm': ['dZmr', 'dZmt', 'dZmn'],
+            'vv': ['dv_r', 'dv_t', 'dv_n'],
+            'bb': ['dva_r', 'dva_t', 'dva_n']
+            
+            # 'zp': ['Zpr', 'Zpt', 'Zpn'],
+            # 'zm': ['Zmr', 'Zmt', 'Zmn'],
+            # 'vv': ['v_r', 'v_t', 'v_n'],
+            # 'bb': ['va_r', 'va_t', 'va_n']
         }
 
         # Estimate PSD for each set of components
         results = {key: estimate_psds(sigs_df, components[key], dtb, settings) for key in components}
 
         # Unpack results into individual variables
-        f_zp, psd_zp, psd_zp_R, psd_zp_T, psd_zp_N,_ = results['zp']
-        f_zm, psd_zm, psd_zm_R, psd_zm_T, psd_zm_N,_ = results['zm']
-        f_vv, psd_vv, psd_vv_R, psd_vv_T, psd_vv_N,_ = results['vv']
-        f_bb, psd_bb, psd_bb_R, psd_bb_T, psd_bb_N,_ = results['bb']
+        f_zp, psd_zp, psd_zp_R, psd_zp_T, psd_zp_N = results['zp']
+        f_zm, psd_zm, psd_zm_R, psd_zm_T, psd_zm_N = results['zm']
+        f_vv, psd_vv, psd_vv_R, psd_vv_T, psd_vv_N = results['vv']
+        f_bb, psd_bb, psd_bb_R, psd_bb_T, psd_bb_N = results['bb']
 
     # Create and return the dictionary containing PSD values and frequencies
     dict_psd = {
@@ -259,9 +273,14 @@ def estimate_psd_dict(settings, sigs_df, dtb, estimate_means= False):
         'mean_alfv_speed'   : np.nanmean(sigs_df['Va']),
         'std_alfv_speed'    : np.nanstd(sigs_df['Va']),
         
-        'median_MA_r'       : np.nanmedian(np.abs(sigs_df['Ma_r_ts'])),
-        'mean_MA_r'         : np.nanmean(np.abs(sigs_df['Ma_r_ts'])),
-        'std_MA_r'          : np.nanstd(np.abs(sigs_df['Ma_r_ts'])),
+        
+        'median_MA'         : np.nanmedian(np.abs(sigs_df['Ma'])),
+        'mean_MA'           : np.nanmean(np.abs(sigs_df['Ma'])),
+        'std_MA'            : np.nanstd(np.abs(sigs_df['Ma'])),
+        
+        'median_MA_r'       : np.nanmedian(np.abs(sigs_df['Ma_r'])),
+        'mean_MA_r'         : np.nanmean(np.abs(sigs_df['Ma_r'])),
+        'std_MA_r'          : np.nanstd(np.abs(sigs_df['Ma_r'])),
 
         'beta_mean'         : np.nanmean(sigs_df['beta']),
         'beta_std'          : np.nanstd(sigs_df['beta']),
@@ -297,34 +316,46 @@ def calculate_diagnostics(
                          ):     
             
     """ Interpolate gaps"""  
-    df_mag       =  df_mag.dropna().interpolate()
-    df_part      =  df_part.dropna().interpolate()
+    df_mag       =  df_mag.interpolate().dropna()
+    df_part      =  df_part.interpolate().dropna()
     
     # Reindex magnetic field data to particle data index
     dtv          = func.find_cadence(df_part)
-    dtb          = func.find_cadence(df_mag)
+    
 
 
     # Determine which dataframe has higher frequency based on dtv and dtb comparison
 
-    upsample                       = True if settings['upsample_low_freq_ts']  else False
-        
-    mag_resampled, df_part_aligned = func.synchronize_dfs(df_mag.copy(), df_part, upsample)
+    try:
+        upsample                       = True if settings['upsample_low_freq_ts']  else False
 
-    # Create final dataframe by joining and cleaning up the data
-    f_df = mag_resampled.join(df_part_aligned).dropna().interpolate()
-    
-   
+        mag_resampled, df_part_aligned = func.synchronize_dfs(df_mag.copy(), df_part, upsample)
+
+        # Create final dataframe by joining and cleaning up the data
+        f_df = mag_resampled.join(df_part_aligned).interpolate().dropna()
+        
+
+    except:
+
+        # Create final dataframe by joining and cleaning up the data
+        f_df = df_mag.join(df_part).interpolate().dropna()
+        
+        
+        
     # Estimate fluctuations
     f_df, columns_b, columns_v = apply_rolling_mean_and_get_columns(f_df, settings)
-
+    
     # Extracting values more cleanly
     vx, vy, vz      = f_df[columns_v].to_numpy().T
     bx, by, bz      = f_df[columns_b].to_numpy().T
 
     # Const to normalize mag field in vel units
-    f_df['np_mean'] = f_df['np'].rolling('10s', center=True).mean().interpolate()
-    kinet_normal    = 1e-15 / np.sqrt(mu0 * f_df['np_mean'].values * m_p)
+    f_df['np_mean'] = f_df['np'].rolling('10min', center=True).mean().interpolate()
+    
+    if settings['sc'] in ['WIND']:
+        kinet_normal    = 1e-15 / np.sqrt(1.16* mu0 * f_df['np_mean'].values * m_p)
+    else:
+        kinet_normal    = 1e-15 / np.sqrt(mu0 * f_df['np_mean'].values * m_p)
 
     # Estimate Alfvén speed and SW speed
     Va_ts           = np.vstack([bx, by, bz]) * kinet_normal
@@ -337,9 +368,6 @@ def calculate_diagnostics(
 
     dva             = Va_ts - f_df[mean_columns_b].to_numpy().T * kinet_normal
     dv              = V_ts  - f_df[mean_columns_v].to_numpy().T
-    
-    
-    
     
     
     # Calculate magnetic field magnitude and solar wind speed
@@ -385,37 +413,30 @@ def calculate_diagnostics(
 
     
     sigs_df              = pd.DataFrame({'DateTime' : f_df.index.values,
-                                         'dZpr'      : dZp[0],  'dZpt'  : dZp[1],  'dZpn'    : dZp[2],
-                                         'dZmr'      : dZm[0],  'dZmt'  : dZm[1],  'dZmn'    : dZm[2], 
-                                         'dva_r'     : dva[0],  'dva_t' : dva[1],  'dva_n'   : dva[2],
-                                         'dv_r'      : dv[0],   'dv_t'  : dv[1],   'dv_n'    : dv[2],
                                          
-                                         'Zpr'      : Zp[0],    'Zpt'  : Zp[1],     'Zpn'    : Zp[2],
-                                         'Zmr'      : Zm[0],    'Zmt'  : Zm[1],     'Zmn'    : Zm[2], 
-                                         'va_r'     : Va_ts[0], 'va_t' : Va_ts[1],  'va_n'   : Va_ts[2],
-                                         'v_r'      : V_ts[0],  'v_t'  : V_ts[1],   'v_n'    : V_ts[2],
+                                         'dZpr'     : dZp[0],  'dZpt'     : dZp[1],       'dZpn'    : dZp[2],
+                                         'dZmr'     : dZm[0],  'dZmt'     : dZm[1],       'dZmn'    : dZm[2], 
+                                         'dva_r'    : dva[0],  'dva_t'    : dva[1],       'dva_n'   : dva[2],
+                                         'dv_r'     : dv[0],   'dv_t'     : dv[1],        'dv_n'    : dv[2],
                                          
-                                         'beta'     : beta,     'np'   : Np,        'Tp'     : temp/kb,
-                                         'VB'       : vbang,    'd_i'  : di,        'Ma'     : Ma_ts, 
-                                         'Vsw'      : Vsw,      'kin_norm': kinet_normal, 'Ma_r_ts': Ma_r_ts,
-                                         'sigma_c'  : sigma_c,  'Va'   : alfv_speed,'sigma_r': sigma_r}).set_index('DateTime')
-    sigs_df              = sigs_df.dropna().interpolate()
+                                         'Zpr'      : Zp[0],    'Zpt'     : Zp[1],        'Zpn'     : Zp[2],
+                                         'Zmr'      : Zm[0],    'Zmt'     : Zm[1],        'Zmn'     : Zm[2], 
+                                         'va_r'     : Va_ts[0], 'va_t'    : Va_ts[1],     'va_n'    : Va_ts[2],
+                                         'v_r'      : V_ts[0],  'v_t'     : V_ts[1],      'v_n'     : V_ts[2],
+                                         
+                                         'beta'     : beta,     'np'      : Np,           'Tp'      : temp/kb,
+                                         'VB'       : vbang,    'd_i'     : di,           'Ma'      : Ma_ts, 
+                                         'Vsw'      : Vsw,      'kin_norm': kinet_normal, 'Ma_r'    : Ma_r_ts,
+                                         'sigma_c'  : sigma_c,  'Va'      : alfv_speed,   'sigma_r' : sigma_r}).set_index('DateTime')
+    sigs_df              = sigs_df.interpolate().dropna()
     
     
-#     def additional_diagnostics(df_mag,
-#                                vf_df
-#                                sigs_df
-#                               ):
-    
-#     #Additional diagnostics!
-#     if settings['save_addit_quants']:
-        
 
     
     # Estimate the Power Spectral Density (PSD) of the magnetic field and optionally smooth it
     mag_dict = estimate_magnetic_field_psd(df_mag,
                                            mag_resampled,
-                                           dtb,
+                                           func.find_cadence(df_mag),
                                            settings,
                                            diagnostics)
 
@@ -424,11 +445,11 @@ def calculate_diagnostics(
                                     sigs_df,
                                     func.find_cadence(sigs_df))
 
-    if settings['cut_in_small_windows']['flag'] == False:
-        del sigs_df['Zpr'], sigs_df['Zpt'], sigs_df['Zpn']
-        del sigs_df['Zmr'], sigs_df['Zmt'], sigs_df['Zmn']
-        del sigs_df['v_r'], sigs_df['v_t'], sigs_df['v_n']
-        del sigs_df['va_r'], sigs_df['va_t'], sigs_df['va_n']
+#     if settings['cut_in_small_windows']['flag'] == False:
+#         del sigs_df['Zpr'], sigs_df['Zpt'], sigs_df['Zpn']
+#         del sigs_df['Zmr'], sigs_df['Zmt'], sigs_df['Zmn']
+#         del sigs_df['v_r'], sigs_df['v_t'], sigs_df['v_n']
+#         del sigs_df['va_r'], sigs_df['va_t'], sigs_df['va_n']
     
     part_dict =  {
 
@@ -441,7 +462,12 @@ def calculate_diagnostics(
                     'median_alfv_speed' : np.nanmedian(alfv_speed),
                     'mean_alfv_speed'   : np.nanmean(alfv_speed),
                     'std_alfv_speed'    : np.nanstd(alfv_speed),
- 
+        
+        
+                    'median_MA'         : np.nanmedian(Ma_ts),
+                    'mean_MA'           : np.nanmean(Ma_ts),
+                    'std_MA'            : np.nanstd(Ma_ts),
+        
                     'median_MA_r'       : np.nanmedian(Ma_r_ts),
                     'mean_MA_r'         : np.nanmean(Ma_r_ts),
                     'std_MA_r'          : np.nanstd(Ma_r_ts),

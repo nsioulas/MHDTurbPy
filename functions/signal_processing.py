@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 from scipy import signal
 from scipy.signal import butter, filtfilt
+from numpy.fft import fft, ifft, fftfreq
 
 
 
@@ -32,8 +33,9 @@ def apply_lowpass_filter(data, cutoff, fs, order=5):
 
 def downsample_and_filter(high_df,
                           low_df,
-                          order=5,
-                          percentage=1.15):
+                          order      = 5,
+                          #percentage = 1.1):
+                          percentage = 1.15):
     
     
     # Calculate sampling rates for both datasets
@@ -55,6 +57,36 @@ def downsample_and_filter(high_df,
     # Interpolate or reindex the filtered data to match the lower sample rate DataFrame's index
     resampled_df = func.newindex(filtered_df, low_df.index)
     return resampled_df
+
+
+
+# Function to apply FFT-based low-pass filter
+def fft_low_pass_filter(signal, cutoff_hz, fs):
+    """
+    Apply a low-pass FFT filter to a signal.
+    
+    Parameters:
+    - signal: The input signal (time domain).
+    - cutoff_hz: The cutoff frequency in Hz.
+    - fs: The sampling rate of the signal in Hz.
+    
+    Returns:
+    - The filtered signal (time domain).
+    """
+    # FFT of the signal
+    signal_fft = fft(signal)
+    
+    # Generate the frequency axis
+    frequencies = fftfreq(len(signal), 1/fs)
+    
+    # Zero out frequencies beyond the cutoff
+    signal_fft[(np.abs(frequencies) > cutoff_hz)] = 0
+    
+    # Inverse FFT to get the filtered signal back in time domain
+    filtered_signal = ifft(signal_fft)
+    
+    return filtered_signal.real  # Return the real part of the inverse FFT
+
 
 
 

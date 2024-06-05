@@ -1,0 +1,3 @@
+increment:<lambda>:7c00640117005300
+double:<lambda>:7c00640114005300
+square:<lambda>:7c00640113005300

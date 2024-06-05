@@ -80,10 +80,8 @@ def five_pt_two_pt_wavelet_analysis(i,
                                     fnames,
                                     credentials,
                                     conditions,
-                                    gen_names,
                                     return_flucs,
                                     consider_Vsc,
-                                    only_E1,
                                     Estimate_5point,
                                     keep_wave_coeefs,
                                     strict_thresh,
@@ -101,7 +99,9 @@ def five_pt_two_pt_wavelet_analysis(i,
                                     thetas_phis_step         = 10, 
                                     return_B_in_vel_units    = False, 
                                     max_interval_dur         =  240,
-                                   estimate_dzp_dzm          = False):
+                                   estimate_dzp_dzm          = False,
+                                   use_low_resol_data        = False, 
+                                   use_local_polarity       = True):
     
     import warnings
     
@@ -115,7 +115,9 @@ def five_pt_two_pt_wavelet_analysis(i,
 
         # Load files
         res = pd.read_pickle(fnames[i])
-        gen = pd.read_pickle(gen_names[i])
+        
+        gen_name = fnames[i].replace('final.pkl', 'general.pkl')
+        gen      = pd.read_pickle(gen_name)
         
         # Duration of interval in hours
         dts = (gen['End_Time']- gen['Start_Time']).total_seconds()/3600
@@ -170,7 +172,7 @@ def five_pt_two_pt_wavelet_analysis(i,
             
                 
             # Check wether file alredy exists
-            check_file     = str(Path(gen_names[i][:-11]).joinpath('final').joinpath(fname))
+            check_file     = str(Path(gen_name.replace('general.pkl', '')).joinpath('final').joinpath(fname))
                                  
             # Now work on data!
             if (not os.path.exists(check_file)) or (overwrite_existing_files):
@@ -182,7 +184,13 @@ def five_pt_two_pt_wavelet_analysis(i,
                     print('Working on new file: ', check_file)
 
                 # Choose V, B dataframes
-                B  = res['Mag']['B_resampled'][['Br', 'Bt', 'Bn']]
+                if use_low_resol_data:
+                    try:
+                        B  = res['Mag']['B_resampled_part_res'][['Br', 'Bt', 'Bn']]
+                    except:
+                        B  = res['Mag']['B_resampled'][['Br', 'Bt', 'Bn']]
+                else: 
+                    B  = res['Mag']['B_resampled'][['Br', 'Bt', 'Bn']]
                 V  = res['Par']['V_resampled'][['Vr', 'Vt', 'Vn']]
                 Np = res['Par']['V_resampled'][['np']]
 
@@ -265,6 +273,15 @@ def five_pt_two_pt_wavelet_analysis(i,
                     tau_values  = 1.2**np.arange(0, 1000)
                     max_ind     = (tau_values<max_lag) & (tau_values>0)
                     phys_scales = np.unique(tau_values[max_ind].astype(int))
+                    
+                    
+                    
+                    
+                if sc =='WIND':
+                    use_np_factor            = 1.16
+                else:
+                    use_np_factor            = 1
+                    
 
 
                 # Create an empty list to store the final results
@@ -291,7 +308,8 @@ def five_pt_two_pt_wavelet_analysis(i,
                                                                                                                  ts_list                  = ts_list,
                                                                                                                  thetas_phis_step         = thetas_phis_step, 
                                                                                                                  return_B_in_vel_units    = return_B_in_vel_units,
-                                                                                                                 estimate_dzp_dzm          = estimate_dzp_dzm
+                                                                                                                 estimate_dzp_dzm         = estimate_dzp_dzm,
+                                                                                                                 use_np_factor            = use_np_factor
                                                                                                                  
                                                                                                             )
 
@@ -299,12 +317,12 @@ def five_pt_two_pt_wavelet_analysis(i,
                 keep_sfuncs_final = {'di':di, 'Vsw':Vsw, 'Vsw_norm': Vsw_norm, 'ell_di':ell_di,'Sfuncs':Sfunctions, 'flucts':flucts}
 
                 #Now save file
-                func.savepickle(keep_sfuncs_final, str(Path(gen_names[i][:-11]).joinpath('final')), fname)
+                func.savepickle(keep_sfuncs_final, str(Path(gen_name.replace('general.pkl', '')).joinpath('final')), fname)
 
                 # also Save alignment abnles
                 if  estimate_alignment_angle:
                     align_name   = f"alignment_angles_{npoints_suffix}{vsc_suffix}.pkl"
-                    func.savepickle(overall_align_angles, str(Path(gen_names[i][:-11]).joinpath('final')), align_name)
+                    func.savepickle(overall_align_angles, str(Path(gen_name.replace('general.pkl', '')).joinpath('final')), align_name)
 
 
                 # Save some space for ram
@@ -1261,6 +1279,130 @@ def estimate_non_lin_parameter(load_path,
 
     
     return xvm, xvp, yvm, yvp, yvm_xi, yvp_xi
+
+
+
+
+
+def estimate_non_lin_parameter_WIND(load_path,
+                                       sf_name, 
+                                       fin_name,
+                                       al_name,
+                                    
+                                       aling_x_min,
+                                       sig_c_max,
+                                       sig_c_min = 0,
+                                       dur_min   = 0):
+    
+    from scipy import constants
+    mu0          = constants.mu_0  # Vacuum magnetic permeability [N A^-2]
+    m_p          = constants.m_p    # Proton mass [kg]
+
+    # Load files
+    sf_files    = func.load_files(load_path, sf_name, 'final')
+
+    
+    # Initialize lists
+    xvm, yvm =[],[]
+    xvp, yvp =[],[]
+
+    yvm_xi   =[]
+    yvp_xi   =[]
+    
+    counts   = []
+
+    for ww, sf_file  in enumerate(sf_files):
+        
+        
+        
+        sf  = pd.read_pickle(sf_file)
+        fin = pd.read_pickle(sf_file.replace(str('final/')+sf_name, fin_name))
+        al  = pd.read_pickle(sf_file.replace(sf_name, al_name))
+        gen = pd.read_pickle(sf_file.replace(str('final/')+sf_name, 'general.pkl'))
+
+        dur  = (gen['End_Time'] - gen['Start_Time'])/ pd.Timedelta(hours=1)
+        
+        if (fin['Par']['sigma_c_median']> sig_c_max) &(fin['Par']['sigma_c_median']> sig_c_min) & (dur>dur_min):
+
+            kinet_normal = np.nanmedian(1e-15 / np.sqrt(1.16*mu0 * fin['Par']['V_resampled']['np'].values * m_p))
+
+            Var          = kinet_normal*fin['Mag']['B_resampled']['Br']
+            Vat          = kinet_normal*fin['Mag']['B_resampled']['Bt']
+            Van          = kinet_normal*fin['Mag']['B_resampled']['Bn']
+            Va_ts        = np.sqrt(Var**2 + Vat**2 + Van**2)
+            Va           = np.nanmean(Va_ts)
+
+
+            
+            length                         = sum(np.array(al['Zpm']['reg'])>0)
+            
+            #count           =np.array(sf['Sfuncs']['counts_ell_overall'])[0:length]
+            
+            
+            d_zp_lambda      = np.array(sf['Sfuncs']['Zp']['ell_perp'][0])[0:length] ## 0 bevause we want fluctuations!
+            d_zp_xi          =  np.array(sf['Sfuncs']['Zp']['Ell_perp'][0])[0:length]
+            d_zp_ell         =  np.array(sf['Sfuncs']['Zp']['ell_par'][0])[0:length]
+            
+            d_zm_lambda      = np.array(sf['Sfuncs']['Zm']['ell_perp'][0])[0:length]
+            d_zm_xi          = np.array(sf['Sfuncs']['Zm']['Ell_perp'][0])[0:length]
+            d_zm_ell         = np.array(sf['Sfuncs']['Zm']['ell_par'][0])[0:length]
+
+
+#             d_zp_lambda      = np.sqrt(sf['Sfuncs']['Zp']['ell_perp'][1])[0:length] ## 0 bevause we want fluctuations!
+#             d_zp_xi          =  np.sqrt(sf['Sfuncs']['Zp']['Ell_perp'][1])[0:length]
+#             d_zp_ell         =  np.sqrt(sf['Sfuncs']['Zp']['ell_par'][1])[0:length]
+            
+#             d_zm_lambda      = np.sqrt(sf['Sfuncs']['Zm']['ell_perp'][1])[0:length]
+#             d_zm_xi          = np.sqrt(sf['Sfuncs']['Zm']['Ell_perp'][1])[0:length]
+#             d_zm_ell         = np.sqrt(sf['Sfuncs']['Zm']['ell_par'][1])[0:length]
+
+            zp_lambda = np.array(sf['Sfuncs']['l_ell_perp']/sf['di'])[0:length]
+            zp_xi     = np.array(sf['Sfuncs']['l_Ell_perp']/sf['di'])[0:length]
+            zp_ell    = np.array(sf['Sfuncs']['l_ell_par']/sf['di'])[0:length]
+
+            zm_lambda  = np.array(sf['Sfuncs']['l_ell_perp']/sf['di'])[0:length]
+            zm_xi      = np.array(sf['Sfuncs']['l_Ell_perp']/sf['di'])[0:length]
+            zm_ell     = np.array(sf['Sfuncs']['l_ell_par']/sf['di'])[0:length]
+            
+            
+            #print(length, len(zp_lambda), len(zm_ell), len(np.array(al['Zpm']['reg'])[0:length]))
+#
+
+            align_angle = np.array(al['Zpm']['reg'])
+            index       = zp_lambda >aling_x_min
+            
+            try:
+ 
+                # Estimate non-lin parameter
+                lambdas, chi_m_lambda, chi_m_xi, chi_p_lambda, chi_p_xi = turb.calculate_non_linearity_parameter(d_zp_lambda[index], d_zp_xi[index], d_zp_ell[index],
+                                                                                                                  d_zm_lambda[index], d_zm_xi[index], d_zm_ell[index],
+                                                                                                                  zp_lambda[index], zp_xi[index], zp_ell[index], zm_lambda[index],
+                                                                                                                  zm_xi[index], zm_ell[index], align_angle[index], Va)
+                xvm.append(lambdas)
+                xvp.append(lambdas)
+
+                yvm.append(chi_m_lambda)
+                yvp.append(chi_p_lambda)
+
+                yvm_xi.append(chi_m_xi)
+                yvp_xi.append(chi_p_xi)
+                
+                counts.append(np.ones(len(lambdas))*dur)
+            except:
+                traceback.print_exc()
+                print('bad')
+                pass
+
+    xvm, yvm = np.hstack(xvm), np.hstack(yvm)
+    xvp, yvp = np.hstack(xvp), np.hstack(yvp) 
+
+    yvm_xi =  np.hstack(yvm_xi)
+    yvp_xi =  np.hstack(yvp_xi)
+
+    
+    return xvm, xvp, yvm, yvp, yvm_xi, yvp_xi, np.hstack(counts)
+
+
 
 
 

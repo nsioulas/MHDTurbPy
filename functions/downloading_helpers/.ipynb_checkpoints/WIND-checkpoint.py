@@ -57,21 +57,55 @@ def LoadTimeSeriesWind_particles(start_time,
         cdas = CdasWs()
         vars = ['P_DENS','P_VELS','P_TEMP','TIME']
         time = [start_time.to_pydatetime( ).replace(tzinfo=pytz.UTC), end_time.to_pydatetime( ).replace(tzinfo=pytz.UTC)]
-        status, data = cdas.get_data('WI_PM_3DP', vars, time[0], time[1])
-
-
+        status, data         = cdas.get_data('WI_PM_3DP', vars, time[0], time[1])
+        
+        
         dfpar = pd.DataFrame(
             index = data['Epoch'],
             data = {
-                'Vr': data['P_VELS'][:,0],
-                'Vt': data['P_VELS'][:,1],
-                'Vn': data['P_VELS'][:,2],
-                'np': data['P_DENS'],
-                'Tp': data['P_TEMP']
+                'Vr'     : data['P_VELS'][:,0],
+                'Vt'     : data['P_VELS'][:,1],
+                'Vn'     : data['P_VELS'][:,2],
+                #'np_3DP' : data['P_DENS'],
+                'np' : data['P_DENS'],
+                'Tp'     : data['P_TEMP']
             }
         )
         
+#         # Also use qtn data to remove offset
+#         try:
+#             vars_qtn                 = ['Ne','Ne_peak','Ne_Quality']
+#             status_qtn, data_qtn = cdas.get_data('WI_H0_WAV', vars_qtn, time[0], time[1])
+#             dfqtn     = pd.DataFrame(
+#                 index = data_qtn['Epoch'],
+#                 data = {
+
+#                     'np': data_qtn['NE$']*0.96,
+
+#                 }
+#             )
         
+        
+#             # Estimate offset between the timeseries
+#             dnp         = np.nanmedian(dfqtn.values) - np.nanmedian(dfpar['np_3DP'].values)
+            
+            
+#             dfqtn           = func.newindex(dfqtn, dfpar.index)
+#             dfpar['np']     = dfpar['np_3DP'] + dnp
+#             dfpar['np_qtn'] = dfqtn.values
+            
+            
+#             qtn_flag = 'QTN'
+        
+#         except:
+#             dfpar['np']     = dfpar['np_3DP'].values
+            
+#             del dfpar['np_3DP']
+            
+#             qtn_flag = 'No_QTN'
+            
+        
+        qtn_flag                   = 'No_QTN'
         dfpar[dfpar['Vr'] < -1e30] = np.nan
         dfpar['Vth']               = 0.128487*np.sqrt(dfpar['Tp']) # vth[km/s] = 0.128487 * √Tp[K]
         
@@ -79,6 +113,9 @@ def LoadTimeSeriesWind_particles(start_time,
         length = len(data['P_VELS'][:,0][::2])
 
     elif settings['part_resol'] >3:
+        
+        qtn_flag = None
+        
         print('Loading very low resolution particle data!!')
         
         from cdasws import CdasWs
@@ -115,7 +152,7 @@ def LoadTimeSeriesWind_particles(start_time,
 
 
 
-    return dfpar, dfdis
+    return dfpar, dfdis, qtn_flag
 
 
 
@@ -289,7 +326,7 @@ def LoadTimeSeriesWIND(start_time,
 
     try:        
         # Download particle data
-        dfpar, dfdis     = LoadTimeSeriesWind_particles(pd.Timestamp(t0),
+        dfpar, dfdis,qtn_flag     = LoadTimeSeriesWind_particles(pd.Timestamp(t0),
                                                         pd.Timestamp(t1),
                                                         settings)
         
@@ -341,6 +378,6 @@ def LoadTimeSeriesWIND(start_time,
 
         }
 
-        return diagnostics_MAG["resampled_df"], None, dfpar, dfdis, big_gaps, big_gaps_par, None, misc
+        return diagnostics_MAG["resampled_df"], None, dfpar, dfdis, big_gaps, big_gaps_par, None, misc, qtn_flag
     except:
         traceback.print_exc()

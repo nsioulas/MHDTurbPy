@@ -32,6 +32,72 @@ import signal_processing
 
 import orderedstructs
 
+def savepickle_dill(df_2_save, save_path, filename):
+    file_path = Path(save_path).joinpath(filename)
+    with open(file_path, 'wb') as file:
+        pickle.dump(df_2_save, file, protocol=pickle.HIGHEST_PROTOCOL)
+        
+        
+        
+import dill
+
+def load_and_construct_lambdas(save_path, fname):
+    """
+    Load the coefficients and construct lambda functions.
+    
+    Parameters:
+    save_path (str): Directory path where the file is saved.
+    fname (str): Filename of the saved file.
+    
+    Returns:
+    dict: Dictionary containing the reconstructed lambda functions.
+    """
+    # Full path to the file
+    full_path = os.path.join(save_path, fname)
+
+    # Load the coefficients
+    with open(full_path, 'rb') as file:
+        coefficients_dict = dill.load(file)
+
+    # Reconstruct the lambda functions
+    f_dict = {}
+    for key, coeffs in coefficients_dict.items():
+        f_dict[key] = lambda x, c=coeffs: sum(c_i * (x ** i) for i, c_i in enumerate(c[::-1]))
+
+    return f_dict
+
+
+def estimate_derivatives(x, y):
+    """
+    Estimate the first and second derivatives of a function using central differences.
+    
+    :param x: An array of x values.
+    :param y: An array of y values.
+    :return: Arrays of the first and second derivatives of y.
+    """
+    # First derivative (dy/dx)
+    dy = np.gradient(y, x, edge_order=2)
+    
+    # Second derivative (d^2y/dx^2)
+    d2y = np.gradient(dy, x, edge_order=2)
+    
+    return dy, d2y
+
+def compute_curvature(x, y):
+    """
+    Compute the curvature of a function.
+    
+    :param x: An array of x values.
+    :param y: An array of y values.
+    :return: An array of curvature values.
+    """
+    dy, d2y = estimate_derivatives(x, y)
+    
+    # Curvature formula
+    curvature = np.abs(d2y) / (1 + dy**2)**1.5
+    
+    return curvature
+
 
 
 def synchronize_dfs(df_higher_freq, df_lower_freq, upsample):
@@ -199,44 +265,8 @@ def generate_date_range_df(Start_date,
 import numpy as np
 from numba import njit, prange
 
-@njit(parallel=True)
-def custom_nansum_product(xvec, yvec, axis):
-    result = np.zeros(xvec.shape[1-axis], dtype=xvec.dtype)
-    # Parallelizing the outer loop
-    for j in prange(xvec.shape[1-axis]):
-        for i in range(xvec.shape[axis]):
-            if axis == 0:
-                if not np.isnan(xvec[i, j]) and not np.isnan(yvec[i, j]):
-                    result[j] += xvec[i, j] * yvec[i, j]
-            else:
-                if not np.isnan(xvec[j, i]) and not np.isnan(yvec[j, i]):
-                    result[j] += xvec[j, i] * yvec[j, i]
-    return result
 
-def dot_product(xvec, yvec):
-    
-    """
-    Calculate the dot product between two arrays and return the result.
 
-    Parameters:
-        xvec (numpy.ndarray): The first input array for the dot product.
-        yvec (numpy.ndarray): The second input array for the dot product.
-
-    Returns:
-        numpy.ndarray: The result of the dot product.
-
-    Raises:
-        ValueError: If the dimensions of xvec and yvec are not compatible for dot product.
-    """
-    if xvec.shape != yvec.shape:
-        raise ValueError("Incompatible dimensions for dot product.")
-
-    len_x_0, len_x_1 = xvec.shape
-
-    if len_x_0 > len_x_1:
-        return custom_nansum_product(xvec, yvec, 1)
-    else:
-        return custom_nansum_product(xvec, yvec, 0)
 
 
 # Original function
@@ -275,14 +305,20 @@ def angle_between_vectors(V,
         return angle
     
     
+def dot_product(xvec, yvec ):
+    # Determine which axis is shorter
+    axis_to_sum = 1 if xvec.shape[0] > xvec.shape[1] else 0
 
-@njit(parallel=True)
+    # Calculate the product of the two arrays, handling NaNs effectively
+
+    # Sum along the determined shorter axis, skipping NaNs
+    result = np.nansum(xvec * yvec, axis=axis_to_sum)
+    
+    return result
+
 def estimate_vec_magnitude(a):
     """
     Estimate the magnitude of each vector in the input array `a`.
-
-    This function calculates the magnitude of each vector in the input array `a` using the parallelized Numba JIT compiler.
-    It takes advantage of parallel processing to improve performance for large arrays.
 
     Parameters:
     ----------
@@ -296,15 +332,10 @@ def estimate_vec_magnitude(a):
         An array containing the magnitude of each vector in `a`. The output array will have shape (N,) if the input
         array `a` has shape (N, M), or shape (M,) if the input array `a` has shape (M, N).
     """
-    shape = a.shape[0]
-    norms_squared = np.empty(shape, dtype=a.dtype)
+
     shortest_axis = 0 if a.shape[0] <= a.shape[1] else 1
-    for i in prange(shape):
-        squared_sum = 0.0
-        for j in prange(a.shape[shortest_axis]):
-            squared_sum += a[i, j] ** 2
-        norms_squared[i] = squared_sum
-    return np.sqrt(norms_squared)
+
+    return  np.sqrt(np.nansum(a**2, axis=shortest_axis))
 
 
 def perp_vector(a, b, return_paral_comp = False):
@@ -318,8 +349,8 @@ def perp_vector(a, b, return_paral_comp = False):
     Returns:
     ndarray     : A 2D numpy array representing the component of the first input vector that is perpendicular to the second input vector.
     """
-    b_unit = (b.T / estimate_vec_magnitude(b)).T
-    proj   = (np.sum((a * b_unit), axis=1, keepdims=True))* b_unit
+    b_unit = b / estimate_vec_magnitude(b)[:, np.newaxis]
+    proj   = dot_product(a, b_unit)[:, np.newaxis]* b_unit
     perp   = a - proj
     if return_paral_comp:
         
@@ -447,7 +478,7 @@ def add_time_to_datetime_string(start_time, time_amount, time_unit):
     Adds a specified amount of time to a datetime string and returns the result as a string.
 
     Parameters:
-    start_time (str): The original datetime string in the format '%Y-%m-%d %H:%M:%S'.
+    start_time (str): The original datetime string, which may or may not include fractional seconds.
     time_amount (int): The amount of time to add.
     time_unit (str): The unit of the added time, either 's' (seconds), 'm' (minutes), 'h' (hours), or 'd' (days).
 
@@ -458,13 +489,37 @@ def add_time_to_datetime_string(start_time, time_amount, time_unit):
     ValueError: If an invalid time unit is specified.
     """
     import datetime
+
+    # Define the mapping of time units to their corresponding attributes in timedelta
     units = {'s': 'seconds', 'm': 'minutes', 'h': 'hours', 'd': 'days'}
-    unit = units.get(time_unit, None)
+    unit = units.get(time_unit)
+
+    # Raise an error if the time unit is invalid
     if unit is None:
         raise ValueError("Invalid time unit")
+
+    # Create a timedelta object with the specified time amount and unit
     delta = datetime.timedelta(**{unit: time_amount})
-    end_datetime = datetime.datetime.strptime(start_time, '%Y-%m-%d %H:%M:%S') + delta
+
+    # Try parsing the datetime string with and without fractional seconds
+    formats = ['%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%d %H:%M:%S']
+    for fmt in formats:
+        try:
+            # Attempt to parse the datetime string
+            start_datetime = datetime.datetime.strptime(start_time, fmt)
+            break
+        except ValueError:
+            continue
+    else:
+        # If both parsing attempts fail, raise an exception
+        raise ValueError("start_time does not match expected formats")
+
+    # Add the time delta to the parsed datetime
+    end_datetime = start_datetime + delta
+
+    # Return the resulting datetime string in the specified format, without fractional seconds
     return end_datetime.strftime('%Y-%m-%d %H:%M:%S')
+    
 
 
 
@@ -683,6 +738,31 @@ def curve_fit_log(xdata, ydata) :
     # There is no need to apply fscalex^-1 as original data is already available
     return (popt_log, pcov_log, ydatafit_log)
 
+
+
+def find_fit(x, y, x0, xf):  
+    x    = np.array(x)
+    y    = np.array(y)
+    ind1 = np.argsort(x)
+     
+    x   = x[ind1]
+    y   = y[ind1]
+    ind = y>-1e15
+
+    x   = x[ind]
+    y   = y[ind]
+    # Apply fit on specified range #
+   # print(len(np.where(x == x.flat[np.abs(x - x0).argmin()])[0]))
+    if  len(np.where(x == x.flat[np.abs(x - x0).argmin()])[0])>-0:
+        s = np.where(x == x.flat[np.abs(x - x0).argmin()])[0][0]
+        e = np.where(x  == x.flat[np.abs(x - xf).argmin()])[0][0]
+        
+        if (len(y[s:e])>1):
+            fit = curve_fit_log(x[s:e],y[s:e])
+            return fit, s, e, x, y
+        else:
+            return [0],0,0,0,[0]
+
 def curve_fit_log_wrap(x, y, x0, xf):  
     
     from scipy.optimize import curve_fit
@@ -728,28 +808,7 @@ def curve_fit_log_wrap(x, y, x0, xf):
             return [np.nan, np.nan, np.nan],np.nan,np.nan, True
 
 
-def find_fit(x, y, x0, xf):  
-    x    = np.array(x)
-    y    = np.array(y)
-    ind1 = np.argsort(x)
-     
-    x   = x[ind1]
-    y   = y[ind1]
-    ind = y>-1e15
 
-    x   = x[ind]
-    y   = y[ind]
-    # Apply fit on specified range #
-   # print(len(np.where(x == x.flat[np.abs(x - x0).argmin()])[0]))
-    if  len(np.where(x == x.flat[np.abs(x - x0).argmin()])[0])>-0:
-        s = np.where(x == x.flat[np.abs(x - x0).argmin()])[0][0]
-        e = np.where(x  == x.flat[np.abs(x - xf).argmin()])[0][0]
-        
-        if (len(y[s:e])>1):
-            fit = curve_fit_log(x[s:e],y[s:e])
-            return fit, s, e, x, y
-        else:
-            return [0],0,0,0,[0]
 
 def find_fit_expo(x, y, x0, xf):  
     if  len(np.where(x == x.flat[np.abs(x - x0).argmin()])[0])>-0:
@@ -868,9 +927,9 @@ def scotts_rule_PDF(x):
 
 def pdf(val,
         bins, 
-        loglog=False,
-        density=False, 
-        scott_rule=False):
+        loglog      = False,
+        density     = False, 
+        scott_rule  = False):
     """
     Calculate the Probability Density Function (PDF) from a given dataset.
 
@@ -1486,25 +1545,61 @@ def binned_statistics_high_percentile(x, values, bins, statistic='mean', percent
 
 
 
+import numpy as np
+from scipy import stats
 
-def binned_quantity_percentile(x, y, what, std_or_error_of_mean, bins,loglog, percentile):
-    x = x.astype(float); y =y.astype(float)
-    ind = y>-1e15
+def binned_quantity_percentile(x, y, what, std_or_error_of_mean, bins, loglog, percentile):
+    # Ensure x and y are float type arrays
+    x = x.astype(float)
+    y = y.astype(float)
+    
+    # Filter out invalid y values
+    ind = y > -1e15
     x = x[ind]
     y = y[ind]
+    
+    # Define bins in logarithmic scale if specified
     if loglog:
-        bins = np.logspace(np.log10(min(x)),np.log10(max(x)), bins)
-    y_b, x_b, binnumber     = stats.binned_statistic(x, y, what, bins   = bins)
-    z_b, x_b, binnumber     = stats.binned_statistic(x, y, 'std',   bins  = bins)
-    points , x_b, binnumber = stats.binned_statistic(x, y, 'count', bins= bins)    
-    percentiles , x_b, binnumber = stats.binned_statistic(x, y, lambda y: np.percentile(y, percentile), bins= bins) 
-
-
-    if std_or_error_of_mean==0:
-        z_b =z_b/np.sqrt(points)
-    x_b = x_b[:-1] + 0.5*(x_b[1:]-x_b[:-1]) 
- 
-
+        bins = np.logspace(np.log10(min(x)), np.log10(max(x)), bins)
+    
+    # Calculate the binned percentiles
+    percentiles, x_b, binnumber = stats.binned_statistic(x, y, lambda y: np.percentile(y, percentile), bins=bins)
+    
+    # Initialize arrays to store binned quantities for values above the percentile
+    y_b = np.zeros(len(bins) - 1)
+    z_b = np.zeros(len(bins) - 1)
+    points = np.zeros(len(bins) - 1)
+    
+    # Iterate through each bin and calculate the statistics for values above the percentile
+    for i in range(len(bins) - 1):
+        bin_indices = np.where((x >= bins[i]) & (x < bins[i+1]))[0]
+        if len(bin_indices) > 0:
+            bin_y = y[bin_indices]
+            bin_percentile_value = np.percentile(bin_y, percentile)
+            bin_y_above_percentile = bin_y[bin_y >= bin_percentile_value]
+            
+            if len(bin_y_above_percentile) > 0:
+                if what == 'mean':
+                    y_b[i] = np.nanmean(bin_y_above_percentile)
+                elif what == 'median':
+                    y_b[i] = np.nanmedian(bin_y_above_percentile)
+                elif what == 'sum':
+                    y_b[i] = np.nansum(bin_y_above_percentile)
+                elif what == 'std':
+                    y_b[i] = np.nanstd(bin_y_above_percentile)
+                elif what == 'var':
+                    y_b[i] = np.nanvar(bin_y_above_percentile)
+                
+                z_b[i] = np.nanstd(bin_y_above_percentile)
+                points[i] = len(bin_y_above_percentile)
+    
+    # Calculate the standard error of the mean if specified
+    if std_or_error_of_mean == 0:
+        z_b = z_b / np.sqrt(points)
+    
+    # Calculate the bin centers
+    x_b = x_b[:-1] + 0.5 * (x_b[1:] - x_b[:-1])
+    
     return x_b, y_b, z_b, percentiles
 
 
@@ -1603,9 +1698,9 @@ def binned_quantity(x, y, what='mean', std_or_error_of_mean=True, bins=100, logl
     """
     
     if loglog:
-        mask = np.where((y > -1e10) & (x > 0) & (~np.isinf(x)) & (~np.isinf(y)))[0]        
+        mask = np.where((y > -1e10) & (x > 0) )[0]        
     else:
-        mask = np.where((y > -1e10) & (x > -1e10) & (~np.isinf(x)) & (~np.isinf(y)))[0]
+        mask = np.where((y > -1e10) & (x > -1e10) )[0]
     x = np.asarray(x[mask], dtype=float)
     y = np.asarray(y[mask], dtype=float)
 
@@ -1769,7 +1864,13 @@ def find_fit_semilogy(x, y, x0, xf):
 
 
 
-def mov_fit_func(xx, yy, w_size, xmin, xmax, keep_plot=0):
+def mov_fit_func(xx,
+                 yy,
+                 w_size,
+                 xmin,
+                 xmax,
+                 keep_plot = 0,
+                 pad       = 1):
     """
     Perform moving fits on the data within a specified range.
 
@@ -1818,6 +1919,10 @@ def mov_fit_func(xx, yy, w_size, xmin, xmax, keep_plot=0):
     >>> result = mov_fit_func(xx, yy, w_size=2, xmin=2, xmax=8, numb_fits=3, keep_plot=True)
     >>> print(result)
     """
+    
+    if pad       != 1:
+        print('Padding: ', str(pad))
+        
     keep_err = []
     keep_ind = []
     keep_x = []
@@ -1837,10 +1942,14 @@ def mov_fit_func(xx, yy, w_size, xmin, xmax, keep_plot=0):
     index2 = np.searchsorted(xx, xmax, side='right') - 1
 
     where_fit = np.arange(index1, index2 + 1)
+    
 
-    for i in where_fit:
+    for i in where_fit[::int(pad)]:
+        
         x0 = xx[i]
         xf = x0*w_size
+                
+
 
         if xf < 0.98 * xmax:
             fit, s, e, x1, y1 = find_fit(xx, yy, x0,  xf)
@@ -1914,14 +2023,12 @@ def moving_fit(x,
         try:
             fit, _, _, flag = curve_fit_log_wrap(x, y, x1, x2)
 
-
+            fit_vals.append(fit[0][1])   
             xmids.append(x1)
-            fit_vals.append(fit[0][1])                
+                         
 
         except:
             fit_vals.append(np.nan)
-            
-    
             xmids.append(x1)
                             
         x1 = x1 + df
@@ -1943,7 +2050,7 @@ def freq2wavenum(freq, P, Vtot, di):
     
     k_star = freq/Vtot*(2*np.pi*di)
     
-    eps_of_k_star = P*(2*np.pi*di)/Vtot
+    eps_of_k_star = P*Vtot/(2*np.pi*di)
     
     return k_star, eps_of_k_star
 
@@ -2214,14 +2321,17 @@ def saveparquet(df, path_to_save, filename, column_names=None):
     # Save the DataFrame (or the subset) to a Parquet file
     df_to_save.to_parquet(full_file_path)
     
-def load_parquet(path_to_save, filename, column_names):
+import pandas as pd
+
+def load_parquet(path_to_save, filename, column_names, engine='pyarrow'):
     """
-    Reads specific columns from a Parquet file.
+    Reads specific columns from a Parquet file using the specified engine.
 
     Parameters:
     - path_to_save: str, the directory path where the Parquet file is saved.
     - filename: str, the name of the Parquet file.
     - column_names: list, a list of column names to read from the Parquet file.
+    - engine: str, the engine to use for reading the Parquet file ('pyarrow' or 'fastparquet').
 
     Returns:
     - A pandas DataFrame containing only the specified columns.
@@ -2229,10 +2339,11 @@ def load_parquet(path_to_save, filename, column_names):
     # Construct the full file path
     full_file_path = f"{path_to_save}/{filename}"
     
-    # Read specific columns from the Parquet file
-    df = pd.read_parquet(full_file_path, columns=column_names)
+    # Read specific columns from the Parquet file using the specified engine
+    df = pd.read_parquet(full_file_path, columns=column_names, engine=engine)
     
     return df
+
 
 def replace_filename_extension(oldfilename, newextension, addon=False):
     """
@@ -2374,32 +2485,34 @@ def progress_bar(jj, length):
     print('Completed', percentage)
 
 
+# def find_ind_of_closest_dates(df, dates):
+#     """
+#     Find the indices of the closest dates in a DataFrame to a list of input dates.
+
+#     Parameters
+#     ----------
+#     df : pandas DataFrame
+#         Input DataFrame containing time series data with a unique index.
+#     dates : list-like
+#         List of input dates for which the closest indices need to be found.
+
+#     Returns
+#     -------
+#     list
+#         A list containing the indices of the closest dates in the DataFrame `df` to each element in the `dates` list.
+
+#     Notes
+#     -----
+#     This function calculates the indices of the closest dates in the DataFrame `df` to each date in the input `dates`.
+#     It uses the pandas DataFrame `index.unique().get_loc()` method with the 'nearest' method to find the indices.
+
+#     """
+#     return [df.index.unique().get_loc(date, method='nearest') for date in dates]
+
+
+
+
 def find_ind_of_closest_dates(df, dates):
-    """
-    Find the indices of the closest dates in a DataFrame to a list of input dates.
-
-    Parameters
-    ----------
-    df : pandas DataFrame
-        Input DataFrame containing time series data with a unique index.
-    dates : list-like
-        List of input dates for which the closest indices need to be found.
-
-    Returns
-    -------
-    list
-        A list containing the indices of the closest dates in the DataFrame `df` to each element in the `dates` list.
-
-    Notes
-    -----
-    This function calculates the indices of the closest dates in the DataFrame `df` to each date in the input `dates`.
-    It uses the pandas DataFrame `index.unique().get_loc()` method with the 'nearest' method to find the indices.
-
-    """
-    return [df.index.unique().get_loc(date, method='nearest') for date in dates]
-
-
-def find_ind_of_closest_dates_updated(df, dates):
     """
     Find the indices of the closest dates in a DataFrame to a list of input dates in a vectorized manner.
 

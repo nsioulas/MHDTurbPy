@@ -117,11 +117,13 @@ def load(trange=['2018-11-5', '2018-11-6'],
 
             elif datatype in ['ephem_spp_rtn']:
                 pathformat = instrument + '/' + level + '/' + datatype + '/%Y/%m/spp_fld_' + level + '_' + datatype + '_%Y%m%d_v01.cdf'
+                
 
         else:
             # Generic SPDF path.  
             pathformat = instrument + '/' + level + '/' + datatype + '/%Y/psp_fld_' + level + '_' + datatype + '_%Y%m%d%H_v??.cdf'
             file_resolution = 6*3600.
+            
 
     elif instrument == 'spc':
         prefix = 'psp_spc_'
@@ -130,6 +132,9 @@ def load(trange=['2018-11-5', '2018-11-6'],
         else:
             # unpublished data
             pathformat = 'sweap/spc/' + level + '/%Y/%m/psp_swp_spc_' + datatype + '_%Y%m%d_v0?.cdf'
+            
+            
+
     elif instrument == 'spe':
         prefix = 'psp_spe_'
         pathformat = 'sweap/spe/' + level + '/' + datatype + '/%Y/psp_swp_sp?_*_%Y%m%d_v??.cdf'

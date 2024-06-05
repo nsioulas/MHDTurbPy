@@ -37,20 +37,22 @@ def est_alignment_angles(
         numpy.array: A numpy array containing the sine values of the angles between the input vectors.
     """
     
-    # Estimate cross product of the two vectors
+    # Use the cross product and calculate the norm for sine calculation along the last axis
+    numer        = np.sqrt(np.nansum(np.cross(xvec, yvec, axis=1)**2, axis=1))
     
-    numer          = np.cross(xvec, yvec)
-    numer_cos      = func.custom_nansum_product(xvec, yvec, 1)
+    # Calculate dot product for cosine calculation along the last axis (axis=1 for 2D arrays)
+    numer_cos = np.nansum(xvec * yvec, axis=1)
     
+    
+    # Calculate the magnitude of vectors directly on the original vectors
+    xvec_mag = func.estimate_vec_magnitude(xvec)
+    yvec_mag = func.estimate_vec_magnitude(yvec)
 
-    # Estimate magnitudes of the two vectors:
-    xvec_mag       = func.estimate_vec_magnitude(xvec)
-    yvec_mag       = func.estimate_vec_magnitude(yvec)
 
     # Estimate sigma (sigma_r for (δv, δb), sigma_c for (δzp, δz-) )
     sigma_ts             = (xvec_mag**2 - yvec_mag**2 )/( xvec_mag**2 + yvec_mag**2 )
     sigma_mean           = (np.nanmean(xvec_mag**2) - np.nanmean(yvec_mag**2))/(np.nanmean(xvec_mag**2) + np.nanmean(yvec_mag**2))
-    sigma_median         = np.nanmedian(sigma_ts)   
+    sigma_median         = np.nan # We don't need it!  
     
     # Estimate denominator
     denom          = (xvec_mag*yvec_mag)
@@ -59,32 +61,25 @@ def est_alignment_angles(
     numer[np.isinf(numer)] = np.nan
     denom[np.isinf(denom)] = np.nan
 
-    numer          = func.estimate_vec_magnitude(numer)
-    denom          = np.abs(denom)
-    
-    # Counts!
-    
-    counts        = len(numer[numer>-1e10])
 
-    # Estimate sine of the  two vectors
-    sins                = (numer/denom)
-    thetas              = np.arcsin(sins)*180/np.pi
-    thetas[thetas>90]   = 180 -thetas[thetas>90]
-    
+    # Estimate Counts!
+    counts             = len(numer[numer>-1e10])
+
+
     # Regular alignment angle
-    reg_align_angle_sin = np.nanmean(sins)
+    reg_align_angle_sin = np.nanmean(numer/denom)
     
     # polarization intermittency angle (Beresnyak & Lazarian 2006):
-    polar_int_angle     = (np.nanmean(numer)/ np.nanmean(denom))   
+    polar_int_angle_sin     = np.nanmean(numer)/ np.nanmean(denom)  
 
     # Weighted angles
-    weighted_sins       = np.sin(np.nansum(thetas*(denom / np.nansum(denom)))*np.pi/180)
-    #weighted_sins  = np.nansum(((sins)*(denom / np.nansum(denom))))
-                               
+    weighted_sins       = np.nan # We don't need it either
+                      
     if return_mag_align_correl== False:
         sins, xvec_mag, yvec_mag = None, None, None
                                
-    return counts, sigma_ts, sigma_mean, sigma_median, numer, numer_cos,  denom, xvec_mag, yvec_mag, reg_align_angle_sin, polar_int_angle, weighted_sins
+    return counts, sigma_ts, sigma_mean, sigma_median, numer, numer_cos,  denom, xvec_mag, yvec_mag, reg_align_angle_sin, polar_int_angle_sin, weighted_sins
+
 
 def fast_unit_vec(a):
     return a.T / func.estimate_vec_magnitude(a)
@@ -106,9 +101,9 @@ def mag_of_ell_projections_and_angles(
         b_perp_vector  = np.cross(B_l_vector, db_perp_vector)
 
         # Calculate dot product in-place
-        l_ell    = np.abs(func.custom_nansum_product(l_vector, B_l_vector, 1))
-        l_xi     = np.abs(func.custom_nansum_product(l_vector, db_perp_vector, 1))
-        l_lambda = np.abs(func.custom_nansum_product(l_vector, b_perp_vector, 1))
+        l_ell    = np.abs(func.dot_product(l_vector, B_l_vector))
+        l_xi     = np.abs(func.dot_product(l_vector, db_perp_vector))
+        l_lambda = np.abs(func.dot_product(l_vector, b_perp_vector))
 
 
         #  Estimate the component l perpendicular to Blocal
@@ -123,6 +118,7 @@ def mag_of_ell_projections_and_angles(
 
     return l_ell, l_xi, l_lambda, VBangle, Phiangle
 
+
 def local_structure_function(
                              B,
                              V,
@@ -135,8 +131,11 @@ def local_structure_function(
                              return_mag_align_correl  = False,
                              fix_sign                 = True, 
                              return_B_in_vel_units    = False,
-                             turb_amp_analysis        = False
-                            ):
+                             turb_amp_analysis        = False,
+                             also_return_db_nT        = False,
+                             use_local_polarity       = True,
+                             use_np_factor            = 1
+                            ): 
     '''
     Parameters:
     B (pandas dataframe)              : The magnetic field data
@@ -156,8 +155,18 @@ def local_structure_function(
     B_perp_2_hat (numpy array)        : Unit vector perpendicular to both the fluctuation of the magnetic field and the local magnetic field
     V_l_hat (numpy array)             : Unit vector of the local velocity field
     '''
-    # added five_point Structure functions
+
+    # Constant to normalize mag field in vel units
+    kinet_normal = (1e-15 / np.sqrt(use_np_factor * mu0 * Np.rolling('1min', center=True).mean() * m_p)).values
+
+    # Directly multiply each column in B by kinet_normal, broadcasting the operation
+    Va = B.multiply(kinet_normal, axis=0)
+
+    # Keep flag 
+    normal_flag = 'B_in_vel_units' if return_B_in_vel_units else'B_in_nT_units'
+
     if five_points_sfunc:
+        
         # define coefs for loc fields
         coefs_loc     = np.array([1, 4, 6, 4, 1])/16
         lag_coefs_loc = np.array([-2*tau, -tau, 0, tau, 2*tau]).astype(int)
@@ -168,6 +177,10 @@ def local_structure_function(
         
         #Compute the fluctuations in B
         dB           = turb.shifted_df_calcs(B, lag_coefs_db, coefs_db, return_df = True)
+        
+        #Compute the fluctuations in Va
+        dVa          = (turb.shifted_df_calcs(Va, lag_coefs_db, coefs_db, return_df = True)).values
+
         needed_index = dB.index
         dB           = dB.values
 
@@ -183,20 +196,20 @@ def local_structure_function(
         # Estimate local Vsw
         V_l          = turb.shifted_df_calcs(V, lag_coefs_loc, coefs_loc)
 
-        # Estimate average of Np to avoid unphysical spikes
-        N_l          = turb.shifted_df_calcs(Np, lag_coefs_loc, coefs_loc)     
 
-        
     # Estimate regular 2-point Structure functions
     else:
         #Compute the fluctuations in B
-        dB           = B.iloc[:-tau].values - B.iloc[tau:].values#(B.iloc[tau:].values - B.iloc[:-tau].values)
+        dB           = B.iloc[:-tau].values - B.iloc[tau:].values
+        
+        #Compute the fluctuations in Va
+        dVa          = Va.iloc[:-tau].values - Va.iloc[tau:].values
 
         #Compute the fluctuations in V
-        du           = V.iloc[:-tau].values - V.iloc[tau:].values#(V.iloc[tau:].values - V.iloc[:-tau].values)
+        du           = V.iloc[:-tau].values - V.iloc[tau:].values
         
         #Compute the fluctuations in Np
-        dN           = Np.iloc[:-tau].values - Np.iloc[tau:].values# (Np.iloc[tau:].values - Np.iloc[:-tau].values)
+        dN           = Np.iloc[:-tau].values - Np.iloc[tau:].values
         
         # Estimate local B
         B_l          = (B.iloc[:-tau].values + B.iloc[tau:].values)/2
@@ -204,37 +217,27 @@ def local_structure_function(
         # Estimate local Vsw
         V_l          = (V.iloc[:-tau].values + V.iloc[tau:].values)/2
 
-        # Estimate average of Np to avoid unphysical spikes
-        N_l          = (Np.iloc[:-tau].values + Np.iloc[tau:].values)/2
-        
 
+        #print('bl', np.shape(B_l)), print('dB', np.shape(dB))
+        # Keep df index
         needed_index = B.iloc[:-tau,:].index
                 
-   
+
     # Estimate local perpendicular displacement direction
-    dB_perp, dB_parallel   = func.perp_vector(dB, B_l, return_paral_comp = True)
-    
-    # Estimate amplitudes of perp, par
-    dB_perp_amp        = np.sqrt(dB_perp.T[0]**2 + dB_perp.T[1]**2 + dB_perp.T[2]**2  )
-    dB_parallel_amp    = np.sqrt(dB_parallel.T[0]**2 + dB_parallel.T[1]**2 + dB_parallel.T[2]**2  )
-    
+    dB_perp, dB_parallel     = func.perp_vector(dB, B_l, return_paral_comp = True)
+    dVa_perp, dVa_parallel   = func.perp_vector(dVa, B_l, return_paral_comp = True)
     
     #Estimate l vector
-    l_vec            = V_l*tau*dt
+    l_vec                    = V_l*tau*dt
 
     # Estrimate l's in three directions
     l_ell, l_xi, l_lambda,  VBangle, Phiangle = mag_of_ell_projections_and_angles(l_vec,
                                                                                   B_l,
                                                                                   dB_perp)
-    # Constant to normalize mag field in vel units
-    kinet_normal     = 1e-15 / np.sqrt(mu0 * N_l * m_p)
+    # Estimate magntidtues of the par and perp components of increments
+    dB_perp_amp        = np.sqrt(dB_perp.T[0]**2 + dB_perp.T[1]**2 + dB_perp.T[2]**2)
+    dB_parallel_amp    = np.sqrt(dB_parallel.T[0]**2 + dB_parallel.T[1]**2 + dB_parallel.T[2]**2)
     
-    if return_B_in_vel_units:
-        dB         =  dB*kinet_normal
-        normal_flag = 'B_in_vel_units'
-    else:
-        normal_flag = 'B_in_nT_units'
-        
     # Create empty dictionaries
     unit_vecs         = {}
     align_angles_vb   = {}
@@ -242,38 +245,42 @@ def local_structure_function(
     
     if estimate_alignment_angle:
 
-        # Kinetic normalization of magnetic field
-        dva_perp = dB_perp * kinet_normal
-
         # We need the perpendicular component of the fluctuations
         du_perp = func.perp_vector(du, B_l)
 
         # Determine the sign of background Br
-        signBx = -np.sign(B_l.T[0]) if fix_sign else np.sign(func.newindex(B['Br'].rolling('10min', center=True).mean().interpolate(), needed_index).values)
-
+        polarity        = np.sign(func.newindex(B['Br'].rolling('30min', center=True).mean().interpolate(), needed_index).values)
+        signBx          = - polarity if fix_sign else polarity
+        local_polarity  = - np.sign(B_l.T[0]) if fix_sign else np.sign(B_l.T[0])
+        
         # Estimate fluctuations in Elssaser variables
-        dzp_perp = du_perp + signBx[:, None] * dva_perp
-        dzm_perp = du_perp - signBx[:, None] * dva_perp
+        
+        if use_local_polarity:
+            dzp_perp = du_perp + signBx[:, None] * dVa_perp
+            dzm_perp = du_perp - signBx[:, None] * dVa_perp
+        else:
+            dzp_perp = du_perp + local_polarity[:, None] * dVa_perp
+            dzm_perp = du_perp - local_polarity[:, None] * dVa_perp           
 
         if turb_amp_analysis:
             
             keep_turb_amp = {
-                             'dva_perp'  : dva_perp,
-                             'du_perp'   : du_perp,
-                             'dzp_perp'  : dzp_perp,
-                             'dzm_perp'  : dzm_perp
+                             'dva_perp'          : dVa_perp,
+                             'du_perp'           : du_perp,
+                             'dzp_perp'          : dzp_perp,
+                             'dzm_perp'          : dzm_perp,
+                             'dB_nT'             : dB,
+                             'dB_perp_amp_nT'    : dB_perp_amp,
+                             'dB_parallel_amp_nT': dB_parallel_amp,
+                             'B_l'               : B_l,
+                
                             }
         else:
-            keep_turb_amp = {
-                             'dva_perp'  : None,
-                             'du_perp'   : None,
-                             'dzp_perp'  : None,
-                             'dzm_perp'  : None
-                            }            
+            keep_turb_amp = {None}            
         
         #Estimate magnitudes,  angles in three different ways          
         ub_results = est_alignment_angles(du_perp, 
-                                          dva_perp,
+                                          dVa_perp,
                                           return_mag_align_correl = return_mag_align_correl)
     
         zpm_results = est_alignment_angles(dzp_perp, 
@@ -281,9 +288,9 @@ def local_structure_function(
                                            return_mag_align_correl = return_mag_align_correl)   
                                
         # Assign values for va, v, z+, z-
-        countsvb, sigma_r_ts,  sigma_r_mean, sigma_r_median, sins_ub_numer, cos_ub_numer, sins_ub_denom,  v_mag, va_mag, reg_align_angle_sin_ub, polar_int_angle_ub, weighted_sins_ub         = ub_results
+        countsvb, sigma_r_ts,  sigma_r_mean, sigma_r_median, sins_ub_num, cos_ub_num, sins_ub_den,  v_mag, va_mag, reg_align_angle_sin_ub, polar_int_angle_sin_ub, weighted_sins_ub      = ub_results
         
-        countszp, sigma_c_ts,  sigma_c_mean, sigma_c_median, sins_zpm_numer, cos_zpm_numer, sins_zpm_denom, zp_mag, zm_mag, reg_align_angle_sin_zpm, polar_int_angle_zpm, weighted_sins_zpm   = zpm_results  
+        countszp, sigma_c_ts,  sigma_c_mean, sigma_c_median, sins_zp_num, cos_zp_num, sins_zp_den, zp_mag, zm_mag, reg_align_angle_sin_zpm, polar_int_angle_sin_zpm, weighted_sins_zpm   = zpm_results  
 
         
         align_angles_vb      = {     
@@ -291,13 +298,13 @@ def local_structure_function(
                                      'sig_r_mean'        : sigma_r_mean,
                                      'sig_r_median'      : sigma_r_median,
                                      'reg_angle'         : reg_align_angle_sin_ub,
-                                     'polar_inter_angle' : polar_int_angle_ub,            
+                                     'polar_inter_angle' : polar_int_angle_sin_ub,            
                                      'weighted_angle'    : weighted_sins_ub,
                                      'v_mag'             : v_mag,
                                      'va_mag'            : va_mag,
-                                     'sins_uva_num'      : sins_ub_numer,
-                                     'cos_uva_numer'     : cos_ub_numer,
-                                     'sins_uva_den'      : sins_ub_denom,
+                                     'sins_ub_num'       : sins_ub_num,
+                                     'cos_ub_num'        : cos_ub_num,
+                                     'sins_ub_den'       : sins_ub_den,
                                      'counts'            : countsvb
         }
                                
@@ -306,13 +313,13 @@ def local_structure_function(
                                      'sig_c_mean'        : sigma_c_mean,
                                      'sig_c_median'      : sigma_c_median,
                                      'reg_angle'         : reg_align_angle_sin_zpm,
-                                     'polar_inter_angle' : polar_int_angle_zpm,            
+                                     'polar_inter_angle' : polar_int_angle_sin_zpm,            
                                      'weighted_angle'    : weighted_sins_zpm,
                                      'zp_mag'            : zp_mag,
                                      'zm_mag'            : zm_mag,
-                                     'sins_zpm_num'      : sins_zpm_numer,                                    
-                                     'cos_zpm_numer'     : cos_zpm_numer,
-                                     'sins_zpm_den'      : sins_zpm_denom,                                     
+                                     'sins_zp_num'       : sins_zp_num,                                    
+                                     'cos_zp_num'        : cos_zp_num,
+                                     'sins_zp_den'       : sins_zp_den,                                     
                                      'counts'            : countszp
         }
         
@@ -325,7 +332,17 @@ def local_structure_function(
                          'B_perp_2_hat'  : np.cross(B_l_hat, dB_perp_hat),
         }
 
-    return keep_turb_amp, dB, dB_perp_amp, dB_parallel_amp, du, dN, kinet_normal, signBx, normal_flag,  func.estimate_vec_magnitude(l_vec), l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb, align_angles_zpm, needed_index
+    if return_B_in_vel_units:
+        dVa_perp_amp = np.sqrt(dVa_perp.T[0]**2 + dVa_perp.T[1]**2 + dVa_perp.T[2]**2)
+        dVa_par_amp  = np.sqrt(dVa_parallel.T[0]**2 + dVa_parallel.T[1]**2 + dVa_parallel.T[2]**2)
+        
+        return B_l, keep_turb_amp, dVa, dVa_perp_amp, dVa_par_amp, du, dN, kinet_normal, signBx,  normal_flag,  func.estimate_vec_magnitude(l_vec), l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb,align_angles_zpm, needed_index, local_polarity
+        
+        
+    else:
+        return B_l, keep_turb_amp, dB, dB_perp_amp, dB_parallel_amp, du, dN, kinet_normal, signBx,normal_flag, func.estimate_vec_magnitude(l_vec), l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb, align_angles_zpm, needed_index, local_polarity
+
+
 
 @jit( parallel =True,  nopython=True)
 def structure_functions_3D(
@@ -405,10 +422,14 @@ def vars_2_estimate(ts_list=None):
 
 
 def quants_2_estimate(
+                    B_l,
+                    local_polarity,
                     dB,
                     dB_perp,
                     dB_parallel,
                     dV,
+                    dzp,
+                    dzm,
                     dN,
                     Np, 
                     keep_turb_amp,
@@ -446,9 +467,6 @@ def quants_2_estimate(
     
     if 'PVI_vec_zp' in quants:
     
-        # First estimate dzp
-        dzp        = dV + (dB.T*kinet_normal*np.array(sign_Bx)).T
-        
         dzp        = pd.DataFrame({'DateTime': needed_index,
                                   'Zpr'      : dzp.T[0],
                                   'Zpt'      : dzp.T[1],
@@ -461,7 +479,7 @@ def quants_2_estimate(
                                                                  [tau_value],
                                                                  di,
                                                                  Vsw,
-                                                                 hours             = 2,
+                                                                 hours             = 1,
                                                                  keys              = ['Zpr', 'Zpt', 'Zpn'],
                                                                  five_points_sfunc = five_points_sfunc,
                                                                  PVI_vec_or_mod    = 'vec',
@@ -472,9 +490,6 @@ def quants_2_estimate(
                                                                  dbs               = dzp), needed_index).values.T[0]
     if 'PVI_vec_zm' in quants:
     
-        # First estimate dzp
-        dzm        = dV - (dB.T*kinet_normal*np.array(sign_Bx)).T
-        
         dzm        = pd.DataFrame({'DateTime': needed_index,
                                   'Zmr'      : dzm.T[0],
                                   'Zmt'      : dzm.T[1],
@@ -487,7 +502,7 @@ def quants_2_estimate(
                                                                  [tau_value],
                                                                  di,
                                                                  Vsw,
-                                                                 hours             = 2,
+                                                                 hours             = 1,
                                                                  keys              = ['Zmr', 'Zmt', 'Zmn'],
                                                                  five_points_sfunc = five_points_sfunc,
                                                                  PVI_vec_or_mod    = 'vec',
@@ -496,6 +511,57 @@ def quants_2_estimate(
                                                                  n_jobs            =-1,                 
                                                                  input_flucts      = True,
                                                                  dbs               = dzm), needed_index).values.T[0]
+        
+    if 'PVI_vec' in quants:
+        
+            
+        dbb        = pd.DataFrame({'DateTime': needed_index,
+                                  'Br'      : dB.T[0],
+                                  'Bt'      : dB.T[1],
+                                  'Bn'      : dB.T[2]}).set_index('DateTime')
+        
+        
+        
+        variables['PVI_vec'] = func.newindex(turb.estimate_PVI( 
+                                                                 dbb.copy(),
+                                                                 [1],
+                                                                 [tau_value],
+                                                                 di,
+                                                                 Vsw,
+                                                                 hours             = 1,
+                                                                 keys              = ['Br', 'Bt', 'Bn'],
+                                                                 five_points_sfunc = five_points_sfunc,
+                                                                 PVI_vec_or_mod    = 'vec',
+                                                                 use_taus          = True,
+                                                                 return_only_PVI   = True,
+                                                                 n_jobs            =-1,                 
+                                                                 input_flucts      = True,
+                                                                 dbs               = dbb), needed_index).values.T[0]
+
+    if 'PVI_vec_V' in quants:
+          
+        dvv       = pd.DataFrame({'DateTime': needed_index,
+                                  'Vr'      : dV.T[0],
+                                  'Vt'      : dV.T[1],
+                                  'Vn'      : dV.T[2]}).set_index('DateTime')
+        
+        
+        
+        variables['PVI_vec_V'] = func.newindex(turb.estimate_PVI( 
+                                                                 dvv.copy(),
+                                                                 [1],
+                                                                 [tau_value],
+                                                                 di,
+                                                                 Vsw,
+                                                                 hours             = 1,
+                                                                 keys              = ['Vr', 'Vt', 'Vn'],
+                                                                 five_points_sfunc = five_points_sfunc,
+                                                                 PVI_vec_or_mod    = 'vec',
+                                                                 use_taus          = True,
+                                                                 return_only_PVI   = True,
+                                                                 n_jobs            =-1,                 
+                                                                 input_flucts      = True,
+                                                                 dbs               = dvv), needed_index).values.T[0]
 
     if 'PVI_Np' in quants:
         
@@ -507,7 +573,7 @@ def quants_2_estimate(
                                                                  [tau_value],
                                                                  di,
                                                                  Vsw,
-                                                                 hours             = 2,
+                                                                 hours             = 1,
                                                                  keys              = list(Np.keys()),
                                                                  five_points_sfunc = five_points_sfunc,
                                                                  PVI_vec_or_mod    = 'mod',
@@ -525,6 +591,17 @@ def quants_2_estimate(
         
         del dB
         
+    if 'B_l_R' in quants:
+        variables['B_l_R']             =  B_l.T[0]  
+        
+    if 'B_l_T' in quants:
+        variables['B_l_T']             =  B_l.T[1] 
+        
+    if 'B_l_N' in quants:
+        variables['B_l_N']             =  B_l.T[2]
+        
+        del B_l
+        
     if 'V_R' in quants:
         variables['V_R']             =  dV.T[0]  
         
@@ -541,6 +618,11 @@ def quants_2_estimate(
         variables['sign_Bx']         =  sign_Bx 
         
         del sign_Bx 
+        
+    if 'local_polarity' in quants:
+        variables['local_polarity']  =  local_polarity
+        
+        del local_polarity 
         
     if 'N_p' in quants:
         
@@ -582,29 +664,29 @@ def quants_2_estimate(
         variables['sig_r']         = align_angles_vb['sig_r_ts'] 
 
     if 'sins_ub_num' in quants: 
-        variables['sins_ub_num']   = align_angles_vb['sins_uva_num'] 
+        variables['sins_ub_num']   = align_angles_vb['sins_ub_num'] 
         
-    if 'cos_uva_numer' in quants: 
-        variables['cos_uva_numer']   = align_angles_vb['cos_uva_numer'] 
+    if 'cos_ub_num' in quants: 
+        variables['cos_ub_num']   = align_angles_vb['cos_ub_num'] 
         
     if 'sins_ub_den' in quants:
-        variables['sins_ub_den']   = align_angles_vb['sins_uva_den'] 
+        variables['sins_ub_den']   = align_angles_vb['sins_ub_den'] 
 
-    if 'sins_zpm_num' in quants:
-        variables['sins_zpm_num']  = align_angles_zpm['sins_zpm_num']
+    if 'sins_zp_num' in quants:
+        variables['sins_zp_num']  = align_angles_zpm['sins_zp_num']
         
-    if 'cos_zpm_numer' in quants: 
-        variables['cos_zpm_numer']   = align_angles_zpm['cos_zpm_numer'] 
+    if 'cos_zp_num' in quants: 
+        variables['cos_zp_num']   = align_angles_zpm['cos_zp_num'] 
         
-    if 'sins_zpm_den' in quants:
-        variables['sins_zpm_den']   = align_angles_zpm['sins_zpm_den']
+    if 'sins_zp_den' in quants:
+        variables['sins_zp_den']   = align_angles_zpm['sins_zp_den']
 
         
-    if 'sins_zpm' in quants:
-        variables['sins_zpm']       = align_angles_zpm['sins_zpm_num']/align_angles_zpm['sins_zpm_den']
+    if 'sins_zp' in quants:
+        variables['sins_zp']       = align_angles_zpm['sins_zp_num']/align_angles_zpm['sins_zp_den']
         
     if 'sins_ub' in quants:
-        variables['sins_ub']        = align_angles_vb['sins_uva_num']/ align_angles_vb['sins_uva_den']
+        variables['sins_ub']        = align_angles_vb['sins_ub_num']/ align_angles_vb['sins_ub_den']
 
     if 'zp_mag' in quants:
         variables['zp_mag']        = align_angles_zpm['zp_mag'] 
@@ -671,7 +753,7 @@ def quants_2_estimate(
                                                                  [tau_value],
                                                                  di,
                                                                  Vsw,
-                                                                 hours             = 2,
+                                                                 hours             = 1,
                                                                  five_points_sfunc = five_points_sfunc,
                                                                  PVI_vec_or_mod    = 'mod',
                                                                  use_taus          = True,
@@ -679,36 +761,7 @@ def quants_2_estimate(
                                                                  n_jobs=-1), needed_index).values.T[0]
         
 
-    if 'PVI_vec' in quants:
-        
-        # Estimate PVI of \vec{B} 
-        variables['PVI_vec'] = func.newindex(turb.estimate_PVI( 
-                                                                 B.copy(),
-                                                                 [1],
-                                                                 [tau_value],
-                                                                 di,
-                                                                 Vsw,
-                                                                 hours             = 2,
-                                                                 five_points_sfunc = five_points_sfunc,
-                                                                 PVI_vec_or_mod    = 'vec',
-                                                                 use_taus          = True,
-                                                                 return_only_PVI   = True,
-                                                                 n_jobs=-1), needed_index).values.T[0]
-    if 'PVI_vec_V' in quants:
-        # Estimate PVI of \vec{B} 
-        variables['PVI_vec_V'] = func.newindex(turb.estimate_PVI( 
-                                                                 V.copy(),
-                                                                 [1],
-                                                                 [tau_value],
-                                                                 di,
-                                                                 Vsw,
-                                                                 hours             = 2,
-                                                                 keys              = ['Vr', 'Vt', 'Vn'],
-                                                                 five_points_sfunc = five_points_sfunc,
-                                                                 PVI_vec_or_mod    = 'vec',
-                                                                 use_taus          = True,
-                                                                 return_only_PVI   = True,
-                                                                 n_jobs=-1), needed_index).values.T[0]
+
         
     if 'PVI_mod_V' in quants:
         # Estimate PVI of \vec{B} 
@@ -718,7 +771,7 @@ def quants_2_estimate(
                                                                  [tau_value],
                                                                  di,
                                                                  Vsw,
-                                                                 hours             = 2,
+                                                                 hours             = 1,
                                                                  keys              = ['Vr', 'Vt', 'Vn'],
                                                                  five_points_sfunc = five_points_sfunc,
                                                                  PVI_vec_or_mod    = 'mod',
@@ -875,7 +928,10 @@ def estimate_3D_sfuncs(
                        thetas_phis_step         = 10,
                        return_B_in_vel_units    = False,
                        turb_amp_analysis        = False,
-                       estimate_dzp_dzm         = False):
+                       estimate_dzp_dzm         = False,
+                       also_return_db_nT        = False,
+                       use_local_polarity       = True,
+                       use_np_factor            = 1):
     """
     Estimate the 3D structure functions for the data given in `B` and `V`
 
@@ -978,19 +1034,23 @@ def estimate_3D_sfuncs(
        
 
             # Call the function with keyword arguments directly
-            keep_turb_amp, dB, dB_perp, dB_parallel, dV, dN,  kinet_normal, sign_Bx, normal_flag,  l_mag,  l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb, align_angles_zpm, needed_index = local_structure_function(
-                                                                                                                                                                           B.copy(),
-                                                                                                                                                                           V.copy(),
-                                                                                                                                                                           Np.copy(),
-                                                                                                                                                                           int(tau_value),
-                                                                                                                                                                           dt,
-                                                                                                                                                                           return_unit_vecs         = return_unit_vecs,
-                                                                                                                                                                           five_points_sfunc        = five_points_sfuncs,
-                                                                                                                                                                           estimate_alignment_angle = estimate_alignment_angle,
-                                                                                                                                                                           return_mag_align_correl  = return_mag_align_correl,
-                                                                                                                                                                           fix_sign                 = fix_sign,
-                                                                                                                                                                           return_B_in_vel_units    = return_B_in_vel_units,
-                                                                                                                                                                           turb_amp_analysis        = turb_amp_analysis)
+            B_l, keep_turb_amp,  dB, dB_perp, dB_parallel, dV, dN,  kinet_normal, sign_Bx, normal_flag,  l_mag,  l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb, align_angles_zpm, needed_index, local_polarity = local_structure_function(
+                           B.copy(),
+                           V.copy(),
+                           Np.copy(),
+                           int(tau_value),
+                           dt,
+                           return_unit_vecs         = return_unit_vecs,
+                           five_points_sfunc        = five_points_sfuncs,
+                           estimate_alignment_angle = estimate_alignment_angle,
+                           return_mag_align_correl  = return_mag_align_correl,
+                           fix_sign                 = fix_sign,
+                           return_B_in_vel_units    = return_B_in_vel_units,
+                           turb_amp_analysis        = turb_amp_analysis,
+                           also_return_db_nT        = also_return_db_nT,
+                           use_local_polarity       = use_local_polarity,
+                           use_np_factor            = use_np_factor
+            )
             if estimate_alignment_angle:
                 # Va, v average angles
                 ub_polar.append(align_angles_vb['polar_inter_angle'])
@@ -1007,14 +1067,40 @@ def estimate_3D_sfuncs(
                 sig_c_mean.append(align_angles_zpm['sig_c_mean'])
                 sig_c_median.append(align_angles_zpm['sig_c_median']) 
                 counts_zp.append(align_angles_zpm['counts'])
+                
+                
+            
+            if use_local_polarity:
+                sign_B_back  = local_polarity
+            else:
+                sign_B_back  = sign_Bx               
+            
+
+            # Estimate elssaser variables
+            if return_B_in_vel_units:
+                
+                d_Zp = dV + dB *  sign_B_back[:, None]  
+                d_Zm = dV - dB *  sign_B_back[:, None]
+            else:
+                combined = sign_B_back * kinet_normal[:, 0]
+
+                # Element-wise operations for d_Zp and d_Zm
+                d_Zp = dV + dB * combined[:, None]  
+                d_Zm = dV - dB * combined[:, None]
+
+                del combined
 
             # Estimate extra quantities     
             if return_coefs:
                 final_variables = quants_2_estimate(
+                                                    B_l,
+                                                    local_polarity,
                                                     dB,
                                                     dB_perp, 
                                                     dB_parallel,
                                                     dV,
+                                                    d_Zp,
+                                                    d_Zm,
                                                     dN,
                                                     Np,
                                                     keep_turb_amp,
@@ -1034,17 +1120,6 @@ def estimate_3D_sfuncs(
                                                     av_hours  = 1/120,
                                                     ts_list   = ts_list)
 
-            if estimate_dzp_dzm:
-
-                # Element-wise multiplication, using direct column access for kinet_normal
-                #print(np.shape(kinet_normal[:, 0]))
-                combined = sign_Bx * kinet_normal[:, 0]
-
-                # Element-wise operations for d_Zp and d_Zm
-                d_Zp = dV + dB * combined[:, None]  
-                d_Zm = dV - dB * combined[:, None]
-
-                del combined
 
             if only_general ==1:
 
@@ -1181,7 +1256,7 @@ def estimate_3D_sfuncs(
                                                               sf_data_B)
 
         except:
-            traceback.print_exc()
+           # traceback.print_exc()
             pass
     
     

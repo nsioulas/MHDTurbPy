@@ -285,7 +285,7 @@ def download_RPW_SOLO(t0,
         dfrpw.index       = dfrpw.index.tz_localize(None)
         dfrpw.index.name  = 'datetime'
         
-        dfrpw['np_qtn']   = dfrpw['ne_qtn']/ 1.08  # 4% of alpha particle
+        dfrpw['np_qtn']   = dfrpw['ne_qtn']*0.96  # 4% of alpha particle
 
       
         return dfrpw

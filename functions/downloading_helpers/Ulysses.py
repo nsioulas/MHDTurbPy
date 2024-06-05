@@ -122,10 +122,10 @@ def LoadHighResMagUlysses(start_time,
     dfmag = pd.DataFrame(
         index = data['Epoch'],
         data = {
-            'Bx': data['BXSSE'],
-            'By': data['BYSSE'],
-            'Bz': data['BZSSE'],
-            'Btot': data['B']
+            'Br': data['BXSSE'],
+            'Bt': data['BYSSE'],
+            'Bn': data['BZSSE'],
+            #'Btot': data['B']
         }
     )
 
@@ -237,9 +237,9 @@ def LoadTimeSeriesUlysses(start_time,
     try:
         # Download Magnetic field data
 
-        dfmag, dfmag1, infos = LoadMagUlysses(pd.Timestamp(t0),
-                                                  pd.Timestamp(t1),
-                                                  verbose = True)
+        dfmag, dfmag1, infos =  LoadHighResMagUlysses(pd.Timestamp(t0),
+                                                      pd.Timestamp(t1),
+                                                      verbose = True)
 
         print('Not ok!!')
         # Return the originaly requested interval

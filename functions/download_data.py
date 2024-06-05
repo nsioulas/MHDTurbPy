@@ -49,6 +49,7 @@ from  SOLO import LoadTimeSeriesSOLO
 from  WIND import LoadTimeSeriesWIND
 from  HELIOS_A import LoadTimeSeriesHELIOS_A
 from  HELIOS_B import LoadTimeSeriesHELIOS_B
+from  Ulysses import LoadTimeSeriesUlysses
 
 
 
@@ -117,10 +118,7 @@ def download_files( ok,
                                                                          settings            = settings['cut_in_small_windows'],
                                                                          data_path           = None)
 
-                    tfmt         = "%Y-%m-%d_%H-%M-%S"
-                    dtb          = general['Resolution_MAG']*1e-3
-                    mag_resampled = final['Mag']['B_resampled']
-                    
+                    tfmt          = "%Y-%m-%d_%H-%M-%S"
                     combined_dict = {}
                     for jj in range(len( generated_list)):
                         try:
@@ -138,12 +136,13 @@ def download_files( ok,
                             wanted_dt = (tf_time -t0_time).total_seconds()
                             ts_dt     = (sig.index[-1] - sig.index[0]).total_seconds()
 
-                            if ts_dt>0.85*wanted_dt:
-
+                            if ts_dt>0.95*wanted_dt:
+       
+                                
                                 # Estimate the Power Spectral Density (PSD) of the magnetic field and optionally smooth it
                                 mag_dict = calc.estimate_magnetic_field_psd(Bdf,
                                                                             None,
-                                                                            dtb,
+                                                                            func.find_cadence(Bdf),
                                                                             settings, 
                                                                             diagnostics, 
                                                                             return_mag_df = False)
@@ -151,7 +150,7 @@ def download_files( ok,
                                 # Also keep a dict containing psd_vv, psd_bb, psd_zp, psd_zm
                                 dict_psd, addit_dict  = calc.estimate_psd_dict(settings,
                                                                                sig,
-                                                                               dtb, 
+                                                                               func.find_cadence(sig),
                                                                                estimate_means= True)
 
                                 # Final dictionary
@@ -264,6 +263,7 @@ def main_function(
         print('Working on HELIOS_A data')
         try:
             mag_flag                            = None
+            big_gaps, big_gaps_qtn,  big_gaps_par = None, None, None
             dfmag, dfpar, dfdis, big_gaps, misc =  LoadTimeSeriesHELIOS_A(
                                                                               start_time, 
                                                                               end_time, 
@@ -276,8 +276,9 @@ def main_function(
         
         print('Working on HELIOS_B data')
         try:
-            mag_flag                            = None
-            dfmag, dfpar, dfdis, big_gaps, misc =  LoadTimeSeriesHELIOS_B(
+            mag_flag                              = None
+            big_gaps, big_gaps_qtn,  big_gaps_par = None, None, None
+            dfmag, dfpar, dfdis, big_gaps, misc   =  LoadTimeSeriesHELIOS_B(
                                                                           start_time, 
                                                                           end_time, 
                                                                           settings) 
@@ -291,10 +292,25 @@ def main_function(
             
             
             
-            dfmag, mag_flag, dfpar, dfdis, big_gaps, big_gaps_qtn,  big_gaps_par, misc=  LoadTimeSeriesWIND(
+            dfmag, mag_flag, dfpar, dfdis, big_gaps, big_gaps_qtn,  big_gaps_par, misc, qtn_flag=  LoadTimeSeriesWIND(
                                                                                                               start_time, 
                                                                                                               end_time, 
                                                                                                               settings) 
+        except:
+            traceback.print_exc()
+            
+            
+    elif settings['sc']=='Ulysses':
+
+        print('Working on Ulysses data')
+        
+        try:
+            
+            mag_flag, big_gaps_qtn,  big_gaps_par, qtn_flag    = None, None,  None, None
+            dfmag,  dfpar, dfdis, big_gaps, misc               = LoadTimeSeriesUlysses(start_time, 
+                                                                                        end_time, 
+                                                                                        settings
+                                                                                     )
         except:
             traceback.print_exc()
 
@@ -303,35 +319,43 @@ def main_function(
         if misc['Par']['Frac_miss'] < settings['Max_par_missing'] :
             try:
                 
-                """ Make sure both correspond to the same interval """ 
-                dfpar                                             = func.use_dates_return_elements_of_df_inbetween(dfmag.index[0], dfmag.index[-1], dfpar) 
+               # """ Make sure both correspond to the same interval """ 
+                #dfpar                                             = func.use_dates_return_elements_of_df_inbetween(dfmag.index[0], dfmag.index[-1], dfpar) 
 
 
                 try:
                     general_dict =  calc.general_dict_func(misc,
-                                                          dfmag,
-                                                          dfpar,
+                                                          dfmag.copy(),
+                                                          dfpar.copy(),
                                                           dfdis)
+                    
+                    
+                    if settings['sc'] == 'WIND':
+                    
+                        general_dict['qtn_flag'] = qtn_flag
 
                     
                     if settings['estimate_derived_param']:
                         mag_dict, part_dict, sig_c_sig_r_timeseries                 = calc.calculate_diagnostics(
-                                                                                                                    dfmag,
-                                                                                                                    dfpar,
+                                                                                                                    dfmag.copy(),
+                                                                                                                    dfpar.copy(),
                                                                                                                     dfdis, 
                                                                                                                     settings,
                                                                                                                     misc
                                                                                                                 )
                     else:
                         mag_dict, part_dict, sig_c_sig_r_timeseries = {}, {}, {}
-                        mag_dict['B_resampled']                     = dfmag.dropna().interpolate()
+                        mag_dict['B_resampled']                     = dfmag.interpolate().dropna()
 
                 except:
                     traceback.print_exc()   
 
                 
                 # Also keep Velocity field data
-                part_dict['V_resampled'] = dfpar.interpolate()
+                if settings['upsample_low_freq_ts' ]:
+                    part_dict['V_resampled'] = func.newindex(dfpar.interpolate().dropna(), mag_dict['B_resampled'].index)
+                else:
+                    part_dict['V_resampled'] = dfpar.interpolate().dropna()
                 
                 
                 # Now save everything in final_dict as a dictionary
@@ -432,6 +456,6 @@ def generate_intervals(start_time_str,
         logging.info("Duration: %s", settings['duration'])
         logging.info("Number of Intervals: %d", len(start_times))
     else:
-        logging.info("Considering an interval spanning: %s to %s", end_date, start_date)
+        logging.info("Considering an interval spanning: %s to %s", start_date, end_date, )
 
     return df
