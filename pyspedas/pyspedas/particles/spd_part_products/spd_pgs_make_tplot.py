@@ -1,18 +1,19 @@
-
+import logging
 import numpy as np
 from pytplot import store_data, options
 
 from pyspedas.particles.spd_units_string import spd_units_string
 
+
 def spd_pgs_make_tplot(name, x=None, y=None, z=None, units='', ylog=False, zlog=True, colorbar='spedas', ytitle=None, ysubtitle=''):
     """
     Create tplot variable with standard spectrogram settings
 
-    Input:
+    Parameters
+    ----------
         name: str
             Name of the new tplot variable to create
 
-    Parameters:
         x: numpy.ndarray
             X-axis values (time)
 
@@ -34,13 +35,15 @@ def spd_pgs_make_tplot(name, x=None, y=None, z=None, units='', ylog=False, zlog=
         colorbar: str
             PyTplot 'Colormap' option (default: 'spedas')
 
-    Returns:
+    Returns
+    -------
+    str
         String containing new variable name
 
     """
 
     if not isinstance(x, np.ndarray) or not isinstance(y, np.ndarray) or not isinstance(z, np.ndarray) :
-        print('Error, must specify x, y and z parameters')
+        logging.error('Error, must specify x, y and z parameters')
         return
 
     if ytitle is None:

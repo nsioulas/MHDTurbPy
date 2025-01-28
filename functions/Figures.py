@@ -21,9 +21,14 @@ from matplotlib.colors import LinearSegmentedColormap
 plt.rcParams['text.usetex'] = True
 
 import sys
+sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+
+# from  CUSIA.Colors.CUSIA_Colors import mycmap
+
+
 
 import general_functions as func
-import calc_diagnostics as calc
+
 def format_timestamp(timestamp,format_2_return):
     return timestamp.strftime(format_2_return)
 
@@ -84,7 +89,7 @@ def plot_line_points(x, y, figsize=6, xlabel=' ', ylabel=' ', col= 'darkslateblu
 
     plt.show()
 
-def initializeFigure(xlabel, ylabel, scale= 'loglog',width='1col', height=None):
+def initializeFigure(xlabel=r'$f ~[sc]$', ylabel=r'$PSD ~[nT^{2} Hz^{-1}]$', scale= 'loglog',width='1col', height=None):
     '''
     Initialize a single plot for publication.
      
@@ -144,32 +149,56 @@ def initializeFigure(xlabel, ylabel, scale= 'loglog',width='1col', height=None):
 
     return fig, ax
 
+def create_colors_new(hmany, which=None, return_cmap=False):
+    import colormaps as cmaps
+
+    if which is None:
+        # Generate a color map using an interval excluding the middle range
+        interval = np.hstack([np.linspace(0, 0.45, num=hmany//2), np.linspace(0.55, 1, num=hmany//2)])
+        colors = cmaps.w5m4(interval)  # Assuming w5m4 returns an array of RGBA values
+    elif which == 'bone':
+        # For 'bone', use a different excluded middle range
+        interval = np.hstack([np.linspace(0, 0.35, num=hmany//2), np.linspace(0.65, 1, num=hmany//2)])
+        colors = plt.cm.RdGy_r(interval)  # Use matplotlib's colormap
+
+    cmap = LinearSegmentedColormap.from_list('custom_cmap', colors)
+
+    if return_cmap:
+        return cmap, colors  # Return the colormap object and colors
+    else:
+        return cmap  # Return only the colormap object
+    
+    
+
 def create_colors(hmany, which=None):
     
-    import colormaps as cmaps
-    
-    
+    import colormaps as cmaps  # Assuming this is a custom colormap module
 
     if which is None:
         interval = np.hstack([np.linspace(0, 0.45), np.linspace(0.55, 1)])
-        colors   = cmaps.w5m4(interval)
+        colors = cmaps.w5m4(interval)
         
-
-    elif which=='bone':
+    elif which == 'bone':
         interval = np.hstack([np.linspace(0, 0.35), np.linspace(0.65, 1)])
-        colors   = plt.cm.OrRd(interval)
-        colors   = plt.cm.RdGy_r(interval)
+        colors = plt.cm.OrRd(interval)
+        colors = plt.cm.RdGy_r(interval)
 
+    elif which == 'half_blues':
+        # Define the interval to focus on the lower half of the Blues colormap
+        interval = np.linspace(0.25, 0.75, hmany)
+        colors = plt.cm.Blues(interval)
+        
+    elif which == 'cusia':
+        interval = np.linspace(0, 1, hmany)
+        colors   = mycmap(colors ='NeutralGrey')(interval)
 
-    cmap     = LinearSegmentedColormap.from_list('name', colors)
+    # Create the custom colormap from the selected colors
+    cmap = LinearSegmentedColormap.from_list('custom_colormap', colors)
     
-#     import seaborn as sns
-#     cmap = sns.color_palette("vlag", as_cmap=True)
-    
-#     # from tol_colors import tol_cmap, tol_cset
-#     # cmap = tol_cmap('sunset')
+    return cmap(np.linspace(0, 1, hmany))
 
-    return cmap(np.linspace(0,1,hmany))
+
+
 
 
 

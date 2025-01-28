@@ -1,10 +1,19 @@
-
+import logging
 import numpy as np
-from pyspedas import tinterpol, tdeflag
+from pyspedas import tinterpol
 from pyspedas.geopack.get_w_params import get_w
-from pytplot import get_data, store_data
+from pytplot import get_data, store_data, tdeflag
 
-def get_tsy_params(dst_tvar, imf_tvar, Np_tvar, Vp_tvar, model, pressure_tvar=None, newname=None, speed=False, g_variables=None):
+
+def get_tsy_params(dst_tvar,
+                   imf_tvar,
+                   Np_tvar,
+                   Vp_tvar,
+                   model,
+                   pressure_tvar=None,
+                   newname=None,
+                   speed=False,
+                   g_variables=None):
     """
     This procedure will interpolate inputs, generate
     Tsyganenko model parameters and store them in a tplot 
@@ -22,7 +31,7 @@ def get_tsy_params(dst_tvar, imf_tvar, Np_tvar, Vp_tvar, model, pressure_tvar=No
 
         Np_tvar: str
             tplot variable containing the solar wind 
-            ion density (cm**-3)
+            ion density (`cm**-3`)
 
         Vp_tvar: str
             tplot variable containing the proton velocity
@@ -34,8 +43,7 @@ def get_tsy_params(dst_tvar, imf_tvar, Np_tvar, Vp_tvar, model, pressure_tvar=No
     -----------
         newname: str
             name of the output variable; default: t96_par,
-            't01_par' or 'ts04_par', depending on the 
-            model
+            't01_par' or 'ts04_par', depending on the model
 
         speed: bool
             Flag to indicate Vp_tvar is speed, and not velocity
@@ -49,21 +57,25 @@ def get_tsy_params(dst_tvar, imf_tvar, Np_tvar, Vp_tvar, model, pressure_tvar=No
 
     Returns
     --------
+    str
         Name of the tplot variable containing the parameters. 
 
-        The parameters are:
+    Notes
+    -----
+
+        The parameters are::
+
             (1) solar wind pressure pdyn (nanopascals),
             (2) dst (nanotesla),
             (3) byimf,
             (4) bzimf (nanotesla)
             (5-10) indices w1 - w6, calculated as time integrals from the beginning of a storm
-                see the reference (3) below, for a detailed definition of those variables
 
     """
     model = model.lower()
 
     if model not in ['t89', 't96', 't01', 'ts04']:
-        print('Unknown model: ' + model)
+        logging.error('Unknown model: ' + model)
         return
 
     tdeflag(Np_tvar, method='remove_nan', overwrite=True)
@@ -100,14 +112,16 @@ def get_tsy_params(dst_tvar, imf_tvar, Np_tvar, Vp_tvar, model, pressure_tvar=No
                         np.zeros(len(dst_data.y))))
     elif model == 't01':
         if g_variables is None:
-            print('G variables required for T01 model; create a tplot variable containing the G variables, and provide the name of that keyword to the g_variables keyword.')
+            logging.error('G variables required for T01 model; create a tplot variable containing the G variables, and provide the name of that keyword to the g_variables keyword.')
             return
         else:
             if isinstance(g_variables, str):
-                g_data = get_data(g_variables)
+                tdeflag(g_variables, method='remove_nan', overwrite=True)
+                tinterpol(g_variables, Np_tvar, newname=g_variables+'_interp')
+                g_data = get_data(g_variables+'_interp')
 
                 if g_data is None:
-                    print('Problem reading G variable: ' + g_variables)
+                    logging.error('Problem reading G variable: ' + g_variables)
                     return
 
                 g1 = g_data.y[:, 0]
@@ -135,12 +149,14 @@ def get_tsy_params(dst_tvar, imf_tvar, Np_tvar, Vp_tvar, model, pressure_tvar=No
                             np.zeros(len(dst_data.y))))
     elif model == 'ts04':
         params = get_w(trange=[np.nanmin(Np_data.times), np.nanmax(Np_data.times)], create_tvar=True)
+        # Better deflag, just in case...
+        tdeflag(params, method='remove_nan',overwrite=True)
         # interpolate the inputs to the Np timestamps
         tinterpol(params, Np_tvar, newname=params+'_interp')
         w_data = get_data(params+'_interp')
 
         if w_data is None:
-            print('Problem loading W variables for TS04 model.')
+            logging.error('Problem loading W variables for TS04 model.')
             return
 
         out = np.array((P_data.y, 
@@ -153,9 +169,6 @@ def get_tsy_params(dst_tvar, imf_tvar, Np_tvar, Vp_tvar, model, pressure_tvar=No
                         w_data.y[:, 3], 
                         w_data.y[:, 4], 
                         w_data.y[:, 5]))
-    elif model == 't01':
-        print('not implemented yet')
-        return
 
     if newname is None:
         newname = model + '_par'
@@ -164,5 +177,3 @@ def get_tsy_params(dst_tvar, imf_tvar, Np_tvar, Vp_tvar, model, pressure_tvar=No
 
     if saved:
         return newname
-
-

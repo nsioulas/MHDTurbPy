@@ -1,14 +1,28 @@
-
+import logging
 import numpy as np
 from scipy.interpolate import NearestNDInterpolator
 from astropy.coordinates import spherical_to_cartesian
 
+
 def spd_pgs_regrid(data, regrid_dimen):
     """
+    Regrid a data dictionary
 
+    Parameters
+    ----------
+    data: dict
+        The dictionary containing the input data
+
+    regrid_dimen: list of int
+        The lengths of the new angle and energy arrays to compute
+
+    Returns
+    -------
+    dict
+        A dictionary containing the regridded data
     """
     if len(regrid_dimen) != 2:
-        print('Invalid regrid dimensions; the dimensions should be [n_phi, n_theta]')
+        logging.error('Invalid regrid dimensions; the dimensions should be [n_phi, n_theta]')
         return
 
     n_energy = len(data['energy'][:, 0])
@@ -64,6 +78,7 @@ def spd_pgs_regrid(data, regrid_dimen):
             output['bins'][i, j] = bins_grid_interp(grid_x[j], grid_y[j], grid_z[j])
 
     return output
+
 
 def griddata(phi, theta, data):
     r = np.ones(len(phi))

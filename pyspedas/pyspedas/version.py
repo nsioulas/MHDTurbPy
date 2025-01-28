@@ -1,5 +1,8 @@
 """Print the version number for the current installation."""
-
+import logging
+# We don't want to shadow the importlib version() with pyspedas(version)
+from importlib.metadata import version as imp_version
+from importlib.metadata import PackageNotFoundError
 
 def version():
     """
@@ -10,6 +13,8 @@ def version():
     None.
 
     """
-    import pkg_resources
-    ver = pkg_resources.get_distribution("pyspedas").version
-    print("pyspedas version: " + ver)
+    try:
+        ver = imp_version("pyspedas")
+    except PackageNotFoundError:
+        ver = 'bleeding edge'
+    logging.info("pyspedas version: " + ver)

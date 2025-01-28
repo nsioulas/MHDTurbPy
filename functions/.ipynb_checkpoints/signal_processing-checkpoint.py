@@ -11,14 +11,17 @@ import numpy
 import numpy as np
 import pandas as pd
 from scipy import signal
-from scipy.signal import butter, filtfilt
+from scipy.signal import butter, filtfilt, firwin
 from numpy.fft import fft, ifft, fftfreq
+from scipy.interpolate import interp1d
 
 
 
 """ Import manual functions """
 sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
 import general_functions as func
+
+
 
 def butter_lowpass(cutoff, fs, order=5):
     nyq = 0.5 * fs
@@ -31,6 +34,7 @@ def apply_lowpass_filter(data, cutoff, fs, order=5):
     y = filtfilt(b, a, data)
     return y
 
+
 def downsample_and_filter(high_df,
                           low_df,
                           order      = 5,
@@ -42,6 +46,7 @@ def downsample_and_filter(high_df,
     high_fs = 1 / func.find_cadence(high_df)  # Adjusted for high_df
     low_fs = 1 /  func.find_cadence(low_df)   # assuming index is datetime
     
+
     cutoff = percentage * low_fs / 2  # Define cutoff frequency
     
     # Ensure the cutoff frequency is within valid range for digital filter design
@@ -49,6 +54,8 @@ def downsample_and_filter(high_df,
         raise ValueError("Cutoff frequency must be less than half the high_df sampling rate.")
 
     filtered_df = high_df.copy()
+    
+    print( high_df.columns)
     for column in high_df.columns:
         # Apply low-pass filter to each column
         filtered_data = apply_lowpass_filter(high_df[column].values, cutoff, high_fs, order=order)
@@ -57,6 +64,89 @@ def downsample_and_filter(high_df,
     # Interpolate or reindex the filtered data to match the lower sample rate DataFrame's index
     resampled_df = func.newindex(filtered_df, low_df.index)
     return resampled_df
+
+
+
+
+
+def upsample_dataframe(original_df, target_df, numtaps=101, cutoff_ratio=0.85, interp_kind='cubic'):
+    """
+    Upsamples the original_df to match the sampling rate of target_df, applying a linear-phase FIR filter.
+
+    Parameters:
+        original_df (pd.DataFrame): DataFrame containing the original time series.
+                                    The index should be datetime-like.
+        target_df (pd.DataFrame): DataFrame containing the target time series with higher sampling rate.
+                                  The index should be datetime-like.
+        numtaps (int, optional): Number of filter coefficients (taps) for the FIR filter. Default is 101.
+        cutoff_ratio (float, optional): Ratio of Nyquist frequency to set the cutoff frequency (default 0.89).
+        interp_kind (str, optional): Kind of interpolation ('linear', 'cubic', etc.). Default is 'cubic'.
+
+    Returns:
+        pd.DataFrame: Upsampled original_df with time matching target_df.
+    """
+    
+    # Ensure the indices are datetime and sorted
+    if not isinstance(original_df.index, pd.DatetimeIndex):
+        raise TypeError("original_df must have a DatetimeIndex.")
+    if not isinstance(target_df.index, pd.DatetimeIndex):
+        raise TypeError("target_df must have a DatetimeIndex.")
+    
+    original_df = original_df.sort_index()
+    target_df = target_df.sort_index()
+    
+    # Determine data columns to process
+    data_cols = original_df.columns.tolist()
+    
+    # Convert datetime indices to numerical values (e.g., seconds since start)
+    t0 = original_df.index[0]
+    original_time = (original_df.index - t0).total_seconds().values
+    target_time = (target_df.index - t0).total_seconds().values
+    
+    # Compute sampling rates
+    delta_t_original = np.median(np.diff(original_time))
+    delta_t_target = np.median(np.diff(target_time))
+    
+    Fs_original = 1.0 / delta_t_original
+    Fs_target = 1.0 / delta_t_target
+    
+    if Fs_target <= Fs_original:
+        raise ValueError("Target sampling rate must be higher than original sampling rate for upsampling.")
+    
+    # Design a linear-phase FIR low-pass filter
+    nyq_original = 0.5 * Fs_original
+    cutoff_freq = cutoff_ratio * nyq_original
+    normalized_cutoff = cutoff_freq / nyq_original  # Normalize with original Nyquist
+    
+    # Ensure the cutoff is below the Nyquist frequency
+    if cutoff_freq >= nyq_original:
+        raise ValueError(f"Cutoff frequency must be less than Nyquist frequency ({nyq_original} Hz)")
+    
+    # Use a Hamming window for the FIR filter to minimize ripple
+    fir_coeff = firwin(numtaps, cutoff=normalized_cutoff, window='hamming', pass_zero='lowpass')
+    
+    # Initialize a dictionary to hold upsampled data
+    upsampled_data = {'datetime': target_df.index}
+    
+    # Process each data column
+    for col in data_cols:
+        data_original = original_df[col].values
+        
+        # Step 1: Apply FIR low-pass filter using filtfilt for zero-phase
+        data_filtered = filtfilt(fir_coeff, [1.0], data_original)
+        
+        # Step 2: Interpolate to target_time using higher-order interpolation
+        interp_func = interp1d(original_time, data_filtered, kind=interp_kind, fill_value='extrapolate')
+        data_upsampled = interp_func(target_time)
+        
+        upsampled_data[col] = data_upsampled
+    
+    # Create the upsampled DataFrame
+    upsampled_df = pd.DataFrame(upsampled_data).set_index('datetime')
+    
+    return upsampled_df
+
+
 
 
 

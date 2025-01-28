@@ -41,7 +41,9 @@ logging.basicConfig(
 sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
 import calc_diagnostics as calc
 import general_functions as func
-
+import TurbPy as turb
+import polarization_analysis
+import calibrate_efield as efield
 
 sys.path.insert(1, os.path.join(os.getcwd(), 'functions/downloading_helpers'))
 from  PSP import  LoadTimeSeriesPSP, download_ephemeris_PSP
@@ -52,6 +54,11 @@ from  HELIOS_B import LoadTimeSeriesHELIOS_B
 from  Ulysses import LoadTimeSeriesUlysses
 
 
+from scipy import constants
+mu_0            = constants.mu_0  # Vacuum magnetic permeability [N A^-2]
+mu0             = constants.mu_0   #
+m_p             = constants.m_p    # Proton mass [kg]
+kb              = constants.k      # Boltzman's constant     [j/K]
 
 def download_files( ok,
                     df,
@@ -91,7 +98,7 @@ def download_files( ok,
             
               
             # Running the main function
-            big_gaps, big_gaps_par, big_gaps_qtn, flag_good, final, general, sig_c_sig_r_timeseries, dfdis, diagnostics =     main_function(
+            big_gaps, big_gaps_par, big_gaps_elec, big_gaps_qtn, flag_good, final, general, sig_c_sig_r_timeseries, dfdis, diagnostics =     main_function(
                                                                                                     start_time         , 
                                                                                                     end_time           , 
                                                                                                     settings           , 
@@ -108,67 +115,55 @@ def download_files( ok,
 
 
             if flag_good == 1:
+                
+                
+                #Create a folder to save the data
                 os.makedirs(path0.joinpath(foldername), exist_ok=True)
+                
+                
+                """ Calibrate e-field data if requested"""
+                if (settings.get('E_field', {}).get('flag', False)) & (settings['in_rtn']== False):
+                    
+                    try:
+                    
+                        print('Calibrating E-field data')
+                        # Estimate coefficients
+                        coeffs_low_res = efield.process_data(
+                                                        final['Mag']['B_resampled'].copy(),
+                                                        final['Par']['V_resampled'][['Vx', 'Vy', 'Vz']].copy(), 
+                                                        final['E'].copy(),
+                                                        cadence_seconds      = settings.get('E_field', {}).get('cadence_seconds', 6),      # Block-averaging cadence in second
+                                                        fit_interval_minutes = settings.get('E_field', {}).get('fit_interval_minutes', 4), # Length of each fitting interval in minutes
+                                                        stride_minutes       = settings.get('E_field', {}).get('stride_minutes', 0.1),     # Stride length between intervals in minutes
+                                                        min_correlation      = settings.get('E_field', {}).get('min_correlation', 0.8)    # Minimum acceptable cross-correlation value
+                        )
+
+                        # Use coefficients to calibrate the df                              
+                        final['E'] =  efield.calibrate_data(final['E'], coeffs_low_res) 
+                    except:
+                        traceback.print_exc()
                 
                 # In case we want smaller windows
                 if settings['cut_in_small_windows']['flag']:
   
                     generated_list         = generate_intervals(func.format_date_to_str(str(final['Mag']['B_resampled'].index[0])),
                                                                 func.format_date_to_str(str(final['Mag']['B_resampled'].index[-1])),
-                                                                         settings            = settings['cut_in_small_windows'],
-                                                                         data_path           = None)
+                                                                         settings['cut_in_small_windows']['flag'],
+                                                                         data_path           = None,
+                                                                         settings = settings['cut_in_small_windows'])
+    
+    
+                    combined_dict = small_sub_intervals_parallel_process(
+                                                      generated_list         = generated_list,
+                                                      sig_c_sig_r_timeseries = sig_c_sig_r_timeseries,
+                                                      final                  = final,
+                                                      settings               = settings,
+                                                      diagnostics            = diagnostics,
+                                                      general                = general,
+                                                      mu0                    = mu0,
+                                                      m_p                    = m_p,
+                                                      n_jobs                 = settings['cut_in_small_windows']['njobs'])
 
-                    tfmt          = "%Y-%m-%d_%H-%M-%S"
-                    combined_dict = {}
-                    for jj in range(len( generated_list)):
-                        try:
-                            t0_time  = generated_list['Start'][jj]
-                            tf_time  = generated_list['End'][jj]
-
-                            ind1     = func.string_to_datetime_index(t0_time)
-                            ind2     = func.string_to_datetime_index(tf_time)
-
-                            sig      = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, sig_c_sig_r_timeseries.copy())
-                            Vdf      = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, final['Par']['V_resampled'].copy())
-                            Bdf      = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, final['Mag']['B_resampled'].copy())
-
-                            # Check window size
-                            wanted_dt = (tf_time -t0_time).total_seconds()
-                            ts_dt     = (sig.index[-1] - sig.index[0]).total_seconds()
-
-                            if ts_dt>0.95*wanted_dt:
-       
-                                
-                                # Estimate the Power Spectral Density (PSD) of the magnetic field and optionally smooth it
-                                mag_dict = calc.estimate_magnetic_field_psd(Bdf,
-                                                                            None,
-                                                                            func.find_cadence(Bdf),
-                                                                            settings, 
-                                                                            diagnostics, 
-                                                                            return_mag_df = False)
-
-                                # Also keep a dict containing psd_vv, psd_bb, psd_zp, psd_zm
-                                dict_psd, addit_dict  = calc.estimate_psd_dict(settings,
-                                                                               sig,
-                                                                               func.find_cadence(sig),
-                                                                               estimate_means= True)
-
-                                # Final dictionary
-                                addit_dict['dict_psd']      =  dict_psd  
-                                addit_dict['mag_dict']      =  mag_dict  
-                                general_final               =  general.copy()
-                                if settings['sc']=='PSP':
-                                    general_final['d']      = np.nanmedian(Vdf['Dist_au'].values)
-
-                                general_final["Start_Time"] = sig.index[0]
-                                general_final["End_Time" ]  = sig.index[-1]
-
-                                
-                                combined_dict[jj] ={'g': general_final, 'f': addit_dict }
-
-                        except:
-                            traceback.print_exc()
-                        
                     # Save data!
                     func.savepickle(combined_dict, str(path0.joinpath(foldername)), "overall.pkl" )
                 else:
@@ -179,6 +174,8 @@ def download_files( ok,
                         func.savepickle(sig_c_sig_r_timeseries, str(path0.joinpath(foldername)), "sig_c_sig_r.pkl" )
                         func.savepickle(big_gaps, str(path0.joinpath(foldername)), "mag_gaps.pkl" )
                         func.savepickle(big_gaps_qtn, str(path0.joinpath(foldername)), "qtn_gaps.pkl" )
+                        func.savepickle(big_gaps_elec, str(path0.joinpath(foldername)), "elec_gaps.pkl" )
+                        
                         func.savepickle(big_gaps_par, str(path0.joinpath(foldername)), "par_gaps.pkl" )
 
                     else:
@@ -200,7 +197,234 @@ def download_files( ok,
         traceback.print_exc()
 
         
+   
+from copy import deepcopy
+def small_sub_intervals_parallel_process(
+    generated_list,
+    sig_c_sig_r_timeseries,
+    final,
+    settings,
+    diagnostics,
+    general,
+    mu0,
+    m_p,
+    n_jobs=-1,  # Use all available cores by default
+    backend='loky'  # Default backend; you can choose 'multiprocessing' or others
+):
+    """
+    Processes the generated_list in parallel and returns a combined dictionary.
+    """
+    
+
+    
+
+    # Assuming necessary modules and variables are already imported and defined:
+    # func, turb, calc, polarization_analysis, generated_list, sig_c_sig_r_timeseries,
+    # final, settings, diagnostics, general, mu0, m_p
+
+    def process_jj(jj, generated_list, sig_c_sig_r_timeseries, final, phi_ts, settings, diagnostics, general, mu0, m_p):
+        try:
+            # Initialize the time format if needed elsewhere
+            tfmt = "%Y-%m-%d_%H-%M-%S"
+
+            # Extract start and end times
+            t0_time = generated_list['Start'][jj]
+            tf_time = generated_list['End'][jj]
+
+            # Convert string times to datetime indices
+            ind1 = func.string_to_datetime_index(t0_time)
+            ind2 = func.string_to_datetime_index(tf_time)
+
+            # Extract data for the sub-interval
+            sig = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, sig_c_sig_r_timeseries.copy())
+            Vdf = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, final['Par']['V_resampled'].copy())
+            Bdf = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, final['Mag']['B_resampled'].copy())
+            
+            if settings['E_field']['flag']:
+                Edf = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, final['E'].copy())
+            else:
+                Edf = None
+                
+            phi = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, phi_ts.copy())
+            
+
+            # Check window size
+            wanted_dt = (tf_time - t0_time).total_seconds()
+            ts_dt = (Bdf.index[-1] - Bdf.index[0]).total_seconds()
+            dt = func.find_cadence(Bdf)
+
+            if ts_dt > 0.95 * wanted_dt:
+                # Initialize dictionaries
+                sf_dict    = None
+                mag_dict   = None
+                dict_psd   = None
+                addit_dict = None
+                coh_dict   = {}
+
+                # Structural Functions
+                if settings['npt_struc_funcs']['flag']:
+                    sf_dict = turb.est_5_pt_sfuncs(
+                        Bdf,
+                        dt,
+                        func_params=settings['npt_struc_funcs']
+                    )
+
+                # Power Spectral Density (PSD)
+                if settings['PSDs']['flag']:
+                    mag_dict = calc.estimate_magnetic_field_psd(
+                        Bdf,
+                        None,
+                        dt,
+                        settings,
+                        diagnostics,
+                        return_mag_df=False
+                    )
+
+                # Estimate PSD Dictionary
+                dict_psd, addit_dict = calc.estimate_psd_dict(
+                    settings,
+                    sig,
+                    func.find_cadence(sig),
+                    estimate_means=True
+                )
+
+                # Coherence Analysis
+                if settings['coherence_analysis']['flag']:
+                    
+                    coh_dicts = {}
+                    
+                    
+                    Vdf          = func.newindex(Vdf, Bdf.index)
+                    np_mean      = Vdf['np'].rolling('10s', center=True).mean().interpolate()
+                    kinet_normal = func.newindex(1e-15 / np.sqrt(mu0 * np_mean * m_p),Bdf.index).values
+
+                    if ('Vr' in Vdf) and (settings['sc'] == 'PSP'):
+
+                        sc_V         = Vdf[['Vr', 'Vt', 'Vn']] - Vdf[['sc_vel_r', 'sc_vel_t', 'sc_vel_n']].values
+                        Vfin         = func.newindex(sc_V, Bdf.index) + (Bdf[['Br', 'Bt', 'Bn']].values.T * kinet_normal).T
+
+                    elif ('Vx' in Vdf) and (settings['sc'] == 'PSP'):
+
+                        Vfin         = Vdf[['Vx', 'Vy', 'Vz']] + (Bdf[['Bx', 'By', 'Bz']].values.T * kinet_normal).T
+
+                    else:
+                        Vfin         = Vdf
+                    
+                    
+                    vb_ang_va = np.arccos(
+                                            (Vfin.values.T[0] * Bdf.values.T[0] + 
+                                             Vfin.values.T[1] * Bdf.values.T[1] + 
+                                             Vfin.values.T[2] * Bdf.values.T[2]) /
+                                             (np.sqrt(Vfin.values.T[0]**2 + Vfin.values.T[1]**2 + Vfin.values.T[2]**2) * 
+                                              np.sqrt(Bdf.values.T[0]**2  + Bdf.values.T[1]**2  + Bdf.values.T[2]**2))
+                                        )*180/np.pi
+
+
+
+                    # Save additional coherence data
+                    coh_dicts['P_spiral_mean']  = np.nanmean(phi)
+                    coh_dicts['P_spiral_std']   = np.nanstd(phi)
+                    coh_dicts['sig_c']          = np.nanmean(np.abs(sig['sigma_c'])) if 'sigma_c' in sig else np.nan
+                    coh_dicts['sig_r']          = np.nanmean(sig['sigma_r']) if 'sigma_r' in sig else np.nan
+                    coh_dicts['di']             = np.nanmedian(sig['d_i']) if 'd_i' in sig else np.nan
+                    coh_dicts['Tp']             = np.nanmean(Vdf['TEMP']) if 'TEMP' in Vdf else np.nan
+                    coh_dicts['Vsw_with_Va']    = np.nanmedian(np.sqrt(Vfin.values.T[0]**2 + Vfin.values.T[1]**2 + Vfin.values.T[2]**2))
+                    coh_dicts['VB_wth_Va']      = np.nanmean(vb_ang_va)
+                    
+                    
+                    for method in list(settings['coherence_analysis']['method'].keys()):
+                        try:
+
+                            for mm, field in enumerate(settings['coherence_analysis']['method'][method]):
+                                #print('Working on field', field, 'with coh method', method)
+                                #print(Edf)
+                                # Perform coherence analysis
+                                coh_dict = polarization_analysis.anisotropy_coherence(
+                                    Bdf,
+                                    Vfin,
+                                    E_df        = Edf if field=='E' else None,
+                                    method      = method,
+                                    func_params = settings['coherence_analysis'],
+                                    f_dict      = None if mm==0 else coh_dict
+                                )
+                        
+
+                        except Exception as e:
+                            traceback.print_exc()
+                            coh_dict = None
+                            
+                        coh_dicts[method] = coh_dict
+                            
+                            
+                        
+
+                # Prepare the general_final dictionary
+                general_final = deepcopy(general)
+                if settings.get('sc') == 'PSP':
+                    general_final['d'] = np.nanmedian(Vdf['Dist_au'].values)
+
+                general_final["Start_Time"] = Bdf.index[0]
+                general_final["End_Time"] = Bdf.index[-1]
+
+                # Finalize the additional dictionary
+                try:
+                    if addit_dict is not None:
+                        addit_dict['dict_psd'] = dict_psd
+                        addit_dict['mag_dict'] = mag_dict
+                    else:
+                        addit_dict = {
+                            'dict_psd': dict_psd,
+                            'mag_dict': mag_dict
+                        }
+                    
+                except Exception as e:
+                    addit_dict = None
+                    traceback.print_exc()
+
+                # Compile the combined dictionary entry
+                entry = {
+                    'g'      : general_final,
+                    'f'      : addit_dict,
+                    'coh'    : coh_dicts,
+                    'sf_dict': sf_dict
+                }
+                print(f"Working on jj={jj} out of N ={len(generated_list['Start'])}")
+
+                return (jj, entry)
+
+            else:
+                # If ts_dt is not sufficient, skip processing
+                return (jj, None)
+
+        except Exception as e:
+            traceback.print_exc()
+            return (jj, None)
+
         
+    phi_ts = func.calculate_parker_spiral(final['Mag']['B_resampled'].rolling('90s', center=True).mean())
+
+    print('Working on', len(generated_list), 'intervals')
+    # Parallel execution
+    results = Parallel(n_jobs=n_jobs, backend=backend)(
+        delayed(process_jj)(
+            jj,
+            generated_list,
+            sig_c_sig_r_timeseries,
+            final,
+            phi_ts,
+            settings,
+            diagnostics,
+            general,
+            mu0,
+            m_p
+        )
+        for jj in range(len(generated_list))
+    )
+
+    # Assemble the combined_dict from results
+    combined_dict = {jj: entry for jj, entry in results if entry is not None}
+
+    return combined_dict
         
 
 def main_function( 
@@ -218,7 +442,10 @@ def main_function(
         
         print('Working on PSP data')
         mag_flag                                     = None
-        dfmag, dfpar, dfdis, big_gaps, big_gaps_qtn, big_gaps_par, misc = LoadTimeSeriesPSP(
+        df_elec, big_gaps_elec                       = None, None
+        
+
+        dfmag, dfpar, df_e_field,  dfdis, big_gaps, big_gaps_qtn, big_gaps_par, misc = LoadTimeSeriesPSP(
                                                                           start_time, 
                                                                           end_time, 
                                                                           settings, 
@@ -242,6 +469,7 @@ def main_function(
         print('Working on SOLO data')
         
         try:
+            df_elec, big_gaps_elec                             = None, None
             dfmag, mag_flag, dfpar, dfdis, big_gaps, big_gaps_qtn,  big_gaps_par, misc           =  LoadTimeSeriesSOLO(
                                                                                           start_time, 
                                                                                           end_time, 
@@ -262,8 +490,9 @@ def main_function(
         
         print('Working on HELIOS_A data')
         try:
-            mag_flag                            = None
+            mag_flag                              = None
             big_gaps, big_gaps_qtn,  big_gaps_par = None, None, None
+            df_elec, big_gaps_elec                = None, None
             dfmag, dfpar, dfdis, big_gaps, misc =  LoadTimeSeriesHELIOS_A(
                                                                               start_time, 
                                                                               end_time, 
@@ -278,6 +507,7 @@ def main_function(
         try:
             mag_flag                              = None
             big_gaps, big_gaps_qtn,  big_gaps_par = None, None, None
+            df_elec, big_gaps_elec                = None, None
             dfmag, dfpar, dfdis, big_gaps, misc   =  LoadTimeSeriesHELIOS_B(
                                                                           start_time, 
                                                                           end_time, 
@@ -289,13 +519,14 @@ def main_function(
 
         print('Working on WIND data')
         try:
+             
             
             
             
-            dfmag, mag_flag, dfpar, dfdis, big_gaps, big_gaps_qtn,  big_gaps_par, misc, qtn_flag=  LoadTimeSeriesWIND(
-                                                                                                              start_time, 
-                                                                                                              end_time, 
-                                                                                                              settings) 
+            dfmag, mag_flag, dfpar, df_elec, dfdis, big_gaps, big_gaps_qtn,  big_gaps_par, big_gaps_elec, misc, qtn_flag=  LoadTimeSeriesWIND(
+                                                                                                                          start_time, 
+                                                                                                                          end_time, 
+                                                                                                                          settings) 
         except:
             traceback.print_exc()
             
@@ -307,6 +538,7 @@ def main_function(
         try:
             
             mag_flag, big_gaps_qtn,  big_gaps_par, qtn_flag    = None, None,  None, None
+            df_elec, big_gaps_elec                             = None, None
             dfmag,  dfpar, dfdis, big_gaps, misc               = LoadTimeSeriesUlysses(start_time, 
                                                                                         end_time, 
                                                                                         settings
@@ -319,10 +551,6 @@ def main_function(
         if misc['Par']['Frac_miss'] < settings['Max_par_missing'] :
             try:
                 
-               # """ Make sure both correspond to the same interval """ 
-                #dfpar                                             = func.use_dates_return_elements_of_df_inbetween(dfmag.index[0], dfmag.index[-1], dfpar) 
-
-
                 try:
                     general_dict =  calc.general_dict_func(misc,
                                                           dfmag.copy(),
@@ -362,6 +590,7 @@ def main_function(
                 final_dict = { 
                                "Mag"          : mag_dict,
                                "Par"          : part_dict,
+                               "Elec"         : df_elec,
                                "Mag_flag"     : mag_flag
                                 
                               }
@@ -370,6 +599,14 @@ def main_function(
                 general_dict["Fraction_missing_part"]  = misc['Par']['Frac_miss']
                 general_dict["Resolution_part"]        = misc['Par']["resol"]
                 
+                try:
+                    general_dict["Fraction_missing_elec"]  = misc['Elec']['Frac_miss']
+                    general_dict["Resolution_elec"]        = misc['Elec']["resol"]
+                except:
+                    general_dict["Fraction_missing_elec"]  = None
+                    general_dict["Resolution_elec"]        = None                 
+                
+                
                 if (settings['sc']=='PSP') | (settings['sc']=='SOLO'):
                     try:
                         general_dict["Fraction_missing_qtn"]  = misc['QTN']['Frac_miss']
@@ -377,6 +614,14 @@ def main_function(
                     except:
                         general_dict["Fraction_missing_qtn"]  = None
                         general_dict["Resolution_qtn"]        = None
+                        
+                    try:
+                        final_dict['E']                     = df_e_field                
+                        general_dict["Fraction_missing_E"]  = misc['E']['Frac_miss']
+                        general_dict["Resolution_E"]        = misc['E']["resol"]
+                    except:
+                        general_dict["Fraction_missing_E"]  = None
+                        general_dict["Resolution_E"]        = None
 
                 general_dict["sc"]                            = settings["sc"]
 
@@ -404,58 +649,87 @@ def main_function(
         big_gaps, final_dict, general_dict, sig_c_sig_r_timeseries = None, None, None, None
 
         
-    return big_gaps, big_gaps_par,  big_gaps_qtn,  flag_good, final_dict, general_dict, sig_c_sig_r_timeseries,  dfdis, misc
+    return big_gaps, big_gaps_par, big_gaps_elec,  big_gaps_qtn,  flag_good, final_dict, general_dict, sig_c_sig_r_timeseries,  dfdis, misc
     
 
 
 
         
-        
+import datetime
+import logging
+
 def generate_intervals(start_time_str,
                        end_time_str,
-                       settings,
-                       data_path):
-    
-    import datetime
+                       generate_1_interval,
+                       data_path = None, 
+                       settings  = None):
+    """
+    Generates time intervals between start_time and end_time.
+
+    Parameters:
+    - start_time_str (str): Start time in the format '%Y-%m-%d %H:%M'.
+    - end_time_str (str): End time in the format '%Y-%m-%d %H:%M'.
+    - generate_1_interval (bool): Flag to generate a single interval or multiple.
+    - data_path (str): Path to the data (unused in current function).
+    - settings (dict): Dictionary containing 'Step' and 'duration' keys.
+
+    Returns:
+    - pd.DataFrame: DataFrame with 'Start' and 'End' columns for each interval.
+    """
     
     # Parse the start and end times
-    start_date = datetime.datetime.strptime(start_time_str, '%Y-%m-%d %H:%M')
-    end_date = datetime.datetime.strptime(end_time_str, '%Y-%m-%d %H:%M')
+    try:
+        start_date = datetime.datetime.strptime(start_time_str, '%Y-%m-%d %H:%M')
+        end_date   = datetime.datetime.strptime(end_time_str, '%Y-%m-%d %H:%M')
+    except ValueError as ve:
+        logging.error("Incorrect time format. Please use 'YYYY-MM-DD HH:MM'. Error: %s", ve)
+        raise
 
-
-    if settings.get('Only_1_interval', False):
+    if not generate_1_interval:
         # Generate only one interval
         start_times = [start_date]
-        end_times = [end_date]
-
+        end_times   = [end_date]
         logging.info("Generating only one interval based on the provided start and end times.")
     else:
-        # Generate the start times
-        start_times = pd.date_range(start_date, end_date, freq=settings['Step'])
+        # Validate 'Step' and 'duration' in settings
+        step     = settings.get('Step')
+        duration = settings.get('duration')
+        
+        if not step or not duration:
+            logging.error("'Step' and 'duration' must be specified in settings.")
+            raise ValueError("'Step' and 'duration' must be specified in settings.")
 
-        # Generate the end times
+        # Generate the start times using the specified frequency
+        start_times = pd.date_range(start=start_date, end=end_date, freq=step)
+        
+        # Convert 'duration' to a Timedelta
         try:
-            end_times = [time + pd.Timedelta(hours=int(settings['duration'][:-1])) for time in start_times]
-        except:
-            dur  = round(int(settings['duration'][:-3])/60,2)
-            end_times = [time + pd.Timedelta(hours=dur) for time in start_times]            
+            delta = pd.to_timedelta(duration)
+        except ValueError as ve:
+            logging.error("Invalid duration format: %s. Error: %s", duration, ve)
+            raise
+        
+        # Generate end times by adding the duration to each start time
+        end_times = start_times + delta
 
-        # Trim the last end time if it exceeds the end_date
-        if end_times[-1] > end_date:
-            end_times = end_times[:-1]
-            start_times = start_times[:-1]
+        # Ensure that end_times do not exceed the specified end_date
+        valid_indices = end_times <= end_date
+        start_times  = start_times[valid_indices]
+        end_times    = end_times[valid_indices]
+        
+        logging.info("Generated intervals with Step: %s and Duration: %s", step, duration)
+        logging.info("Number of Intervals: %d", len(start_times))
 
     # Create a DataFrame
     df = pd.DataFrame({'Start': start_times, 'End': end_times})
 
-    # Print details in a professional format
+    # Log the start and end times
     logging.info("Start Time: %s", start_date)
     logging.info("End Time: %s", end_date)
-    if not settings.get('Only_1_interval', False):
-        logging.info("Step: %s", settings['Step'])
-        logging.info("Duration: %s", settings['duration'])
-        logging.info("Number of Intervals: %d", len(start_times))
+
+    if not generate_1_interval:
+        logging.info("Considering a single interval spanning: %s to %s", start_date, end_date)
     else:
-        logging.info("Considering an interval spanning: %s to %s", start_date, end_date, )
+        logging.debug("Intervals DataFrame:\n%s", df)
 
     return df

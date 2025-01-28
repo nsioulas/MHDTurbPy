@@ -1,7 +1,7 @@
 
 import math
 import numpy as np
-from scipy.ndimage.interpolation import shift
+from scipy.ndimage import shift
 
 # use nansum from bottleneck if it's installed, otherwise use the numpy one
 try:
@@ -10,15 +10,16 @@ try:
 except ImportError:
     nansum = np.nansum
 
+
 def spd_pgs_make_theta_spec(data_in, resolution=None, colatitude=False):
     """
     Builds theta (latitudinal) spectrogram from simplified particle data structure.
 
-    Input:
+    Parameters
+    ----------
         data_in: dict
             Particle data structure
 
-    Parameters:
         resolution: int
             Number of theta points to include in the output
 
@@ -26,7 +27,9 @@ def spd_pgs_make_theta_spec(data_in, resolution=None, colatitude=False):
             Flag to specify that data is in co-latitude (0, 180); if this is 
             set to False (default), the data are assumed to be (-90, 90)
 
-    Returns:
+    Returns
+    -------
+    tuple
         Tuple containing: (theta values for y-axis, spectrogram values)
 
     """
@@ -102,5 +105,3 @@ def spd_pgs_make_theta_spec(data_in, resolution=None, colatitude=False):
     y = y[1:]
 
     return (y, ave)
-
-

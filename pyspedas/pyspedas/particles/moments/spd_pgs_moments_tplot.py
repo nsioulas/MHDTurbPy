@@ -5,15 +5,16 @@ from pytplot import store_data, options
 logging.captureWarnings(True)
 logging.basicConfig(format='%(asctime)s: %(message)s', datefmt='%d-%b-%y %H:%M:%S', level=logging.INFO)
 
+
 def spd_pgs_moments_tplot(moments, x=None, prefix='', suffix=''):
     """
     Creates tplot variables from moments dictionaries
 
-    Input:
+    Parameters
+    ----------
         moments: dict
             Dictionary containing moments values returned by moments_3d
 
-    Parameters:
         x: numpy.ndarray
             The x-axis (time) values
 
@@ -23,8 +24,10 @@ def spd_pgs_moments_tplot(moments, x=None, prefix='', suffix=''):
         suffix: str
             Name suffix for the output variables
 
-    Returns:
-        List of tplot variables created.
+    Returns
+    -------
+    list of str
+        List of tplot variables returned
     """
 
     if x is None:
@@ -34,7 +37,6 @@ def spd_pgs_moments_tplot(moments, x=None, prefix='', suffix=''):
     if not isinstance(moments, dict):
         logging.error('Error, the "moments" variable must be a hash table containing the moments')
         return
-
 
     for key in moments.keys():
         store_data(prefix + '_' + key + suffix, data={'x': x, 'y': moments[key]})

@@ -1,7 +1,7 @@
 
 import math
 import numpy as np
-from scipy.ndimage.interpolation import shift
+from scipy.ndimage import shift
 
 # use nansum from bottleneck if it's installed, otherwise use the numpy one
 try:
@@ -10,19 +10,22 @@ try:
 except ImportError:
     nansum = np.nansum
 
+
 def spd_pgs_make_phi_spec(data_in, resolution=None):
     """
     Builds phi (longitudinal) spectrogram from the particle data structure
 
-    Input:
+    Parameters
+    ----------
         data_in: dict
             Particle data structure
 
-    Parameters:
         resolution: int
             Number of phi bins in the output
 
-    Returns:
+    Returns
+    -------
+    tuple
         Tuple containing: (phi values for y-axis, spectrogram values)
     """
 

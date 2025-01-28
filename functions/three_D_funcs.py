@@ -25,7 +25,8 @@ cm2m            = 1e-2
 def est_alignment_angles(
                          xvec,
                          yvec,
-                         return_mag_align_correl = False):
+                         return_mag_align_correl = False,
+                         est_sigma_c             = False):
     """
     Calculate the sine of the angle between two vectors.
 
@@ -51,7 +52,12 @@ def est_alignment_angles(
 
     # Estimate sigma (sigma_r for (δv, δb), sigma_c for (δzp, δz-) )
     sigma_ts             = (xvec_mag**2 - yvec_mag**2 )/( xvec_mag**2 + yvec_mag**2 )
-    sigma_mean           = (np.nanmean(xvec_mag**2) - np.nanmean(yvec_mag**2))/(np.nanmean(xvec_mag**2) + np.nanmean(yvec_mag**2))
+    
+    if est_sigma_c:
+        sigma_mean           = (np.nanmean(xvec_mag**2 - yvec_mag**2))/(np.nanmean(xvec_mag**2 + yvec_mag**2))        
+        
+    else:
+        sigma_mean           = (np.nanmean(xvec_mag**2) - np.nanmean(yvec_mag**2))/(np.nanmean(xvec_mag**2) + np.nanmean(yvec_mag**2))
     sigma_median         = np.nan # We don't need it!  
     
     # Estimate denominator
@@ -89,7 +95,8 @@ def fast_unit_vec(a):
 def mag_of_ell_projections_and_angles(
                                         l_vector,
                                         B_l_vector, 
-                                        db_perp_vector
+                                        db_perp_vector,
+                                        est_proj_ells  =  True
                                     ):
     
     try:
@@ -97,15 +104,20 @@ def mag_of_ell_projections_and_angles(
         B_l_vector     = (B_l_vector.T/func.estimate_vec_magnitude(B_l_vector)).T
         db_perp_vector = (db_perp_vector.T/func.estimate_vec_magnitude(db_perp_vector)).T
 
-        # estimate unit vector in pependicular by cross product
-        b_perp_vector  = np.cross(B_l_vector, db_perp_vector)
+        if est_proj_ells:
+            # estimate unit vector in pependicular by cross product
+            b_perp_vector  = np.cross(B_l_vector, db_perp_vector)
 
-        # Calculate dot product in-place
-        l_ell    = np.abs(func.dot_product(l_vector, B_l_vector))
-        l_xi     = np.abs(func.dot_product(l_vector, db_perp_vector))
-        l_lambda = np.abs(func.dot_product(l_vector, b_perp_vector))
-
-
+            # Calculate dot product in-place
+            l_ell    = np.abs(func.dot_product(l_vector, B_l_vector))
+            l_xi     = np.abs(func.dot_product(l_vector, db_perp_vector))
+            l_lambda = np.abs(func.dot_product(l_vector, b_perp_vector))
+            
+           # print('Shapes:', np.shape(l_ell), np.shape(l_xi), np.shape(l_lambda))
+            
+        else:
+            l_ell, l_xi, l_lambda = np.nan, np.nan,np.nan
+            
         #  Estimate the component l perpendicular to Blocal
         l_perp         = func.perp_vector(l_vector, B_l_vector)
 
@@ -122,6 +134,7 @@ def mag_of_ell_projections_and_angles(
 def local_structure_function(
                              B,
                              V,
+                             V_sc,
                              Np,
                              tau,
                              dt,
@@ -134,7 +147,8 @@ def local_structure_function(
                              turb_amp_analysis        = False,
                              also_return_db_nT        = False,
                              use_local_polarity       = True,
-                             use_np_factor            = 1
+                             use_np_factor            = 1,
+                             est_proj_ells            =  True
                             ): 
     '''
     Parameters:
@@ -160,7 +174,7 @@ def local_structure_function(
     kinet_normal = (1e-15 / np.sqrt(use_np_factor * mu0 * Np.rolling('1min', center=True).mean() * m_p)).values
 
     # Directly multiply each column in B by kinet_normal, broadcasting the operation
-    Va = B.multiply(kinet_normal, axis=0)
+    Va = B.multiply(kinet_normal, axis=0).interpolate()
 
     # Keep flag 
     normal_flag = 'B_in_vel_units' if return_B_in_vel_units else'B_in_nT_units'
@@ -185,7 +199,7 @@ def local_structure_function(
         dB           = dB.values
 
         #Compute the fluctuations in V
-        du           = turb.shifted_df_calcs(V, lag_coefs_db, coefs_db )
+        du           = turb.shifted_df_calcs(V - V_sc.values, lag_coefs_db, coefs_db )
         
         #Compute the fluctuations in Np
         dN           = turb.shifted_df_calcs(Np, lag_coefs_db, coefs_db )
@@ -194,7 +208,11 @@ def local_structure_function(
         B_l          = turb.shifted_df_calcs(B, lag_coefs_loc, coefs_loc)
 
         # Estimate local Vsw
-        V_l          = turb.shifted_df_calcs(V, lag_coefs_loc, coefs_loc)
+        #V_l          = turb.shifted_df_calcs(V func.perp_vector(dB, B_l, return_paral_comp = True- V_sc.values +  Va.values, lag_coefs_loc, coefs_loc)
+        V_l          = turb.shifted_df_calcs(V - V_sc.values, lag_coefs_loc, coefs_loc) + turb.shifted_df_calcs( Va, lag_coefs_loc, coefs_loc)
+        
+        # Est d
+        di_array     = turb.shifted_df_calcs(228 / np.sqrt(Np), lag_coefs_loc, coefs_loc)
 
 
     # Estimate regular 2-point Structure functions
@@ -206,7 +224,7 @@ def local_structure_function(
         dVa          = Va.iloc[:-tau].values - Va.iloc[tau:].values
 
         #Compute the fluctuations in V
-        du           = V.iloc[:-tau].values - V.iloc[tau:].values
+        du           = (V - V_sc.values).iloc[:-tau].values - (V - V_sc.values).iloc[tau:].values
         
         #Compute the fluctuations in Np
         dN           = Np.iloc[:-tau].values - Np.iloc[tau:].values
@@ -215,7 +233,11 @@ def local_structure_function(
         B_l          = (B.iloc[:-tau].values + B.iloc[tau:].values)/2
 
         # Estimate local Vsw
-        V_l          = (V.iloc[:-tau].values + V.iloc[tau:].values)/2
+        V_l          = ((V - V_sc.values +  Va.values).iloc[:-tau].values + (V - V_sc.values +  Va.values).iloc[tau:].values)/2
+
+        # Est d
+        quant        = 228 / np.sqrt(Np)
+        di_array     = (quant.iloc[:-tau].values + quant.iloc[tau:].values)/2
 
 
         #print('bl', np.shape(B_l)), print('dB', np.shape(dB))
@@ -229,11 +251,25 @@ def local_structure_function(
     
     #Estimate l vector
     l_vec                    = V_l*tau*dt
+    
+    #Estimate Vsw
+    Vsw                      = np.nanmean(np.sqrt(V_l.T[0]**2 + V_l.T[1]**2 + V_l.T[2]**2) )
 
     # Estrimate l's in three directions
+    
     l_ell, l_xi, l_lambda,  VBangle, Phiangle = mag_of_ell_projections_and_angles(l_vec,
                                                                                   B_l,
-                                                                                  dB_perp)
+                                                                                  dB_perp,
+                                                                                  est_proj_ells  =  est_proj_ells)
+    
+    #print(type(l_xi), np.shape(l_xi), type(di_array), np.shape(di_array) )
+    #di_array_flat =   # Flatten di_array to (367660,)
+    l_ell, l_xi, l_lambda = l_ell / di_array.ravel(), l_xi / di_array.ravel(), l_lambda / di_array.ravel()
+    lmag                  = func.estimate_vec_magnitude(l_vec)/ di_array.ravel()
+
+    #l_ell, l_xi, l_lambda = l_ell / di_array[:, None], l_xi / di_array[:, None], l_lambda / di_array[:, None]
+    print('Got here 2')
+    
     # Estimate magntidtues of the par and perp components of increments
     dB_perp_amp        = np.sqrt(dB_perp.T[0]**2 + dB_perp.T[1]**2 + dB_perp.T[2]**2)
     dB_parallel_amp    = np.sqrt(dB_parallel.T[0]**2 + dB_parallel.T[1]**2 + dB_parallel.T[2]**2)
@@ -263,18 +299,24 @@ def local_structure_function(
             dzm_perp = du_perp - local_polarity[:, None] * dVa_perp           
 
         if turb_amp_analysis:
-            
-            keep_turb_amp = {
-                             'dva_perp'          : dVa_perp,
-                             'du_perp'           : du_perp,
-                             'dzp_perp'          : dzp_perp,
-                             'dzm_perp'          : dzm_perp,
-                             'dB_nT'             : dB,
-                             'dB_perp_amp_nT'    : dB_perp_amp,
-                             'dB_parallel_amp_nT': dB_parallel_amp,
-                             'B_l'               : B_l,
-                
-                            }
+            try:
+                dB_mod           = turb.shifted_df_calcs(pd.DataFrame(np.sqrt(B.Br**2 + B.Bt**2 + B.Bn**2)), lag_coefs_db, coefs_db)
+
+                keep_turb_amp = {
+                                 'dva_perp'          : dVa_perp,
+                                 'du_perp'           : du_perp,
+                                 'dzp_perp'          : dzp_perp,
+                                 'dzm_perp'          : dzm_perp,
+                                 'dB_nT'             : dB,
+                                 'dB_mod_nT'         : dB_mod,
+                                 'dB_perp_amp_nT'    : dB_perp_amp,
+                                 'dB_parallel_amp_nT': dB_parallel_amp,
+                                 'B_l'               : B_l,
+
+                                }
+
+            except:
+                traceback.print_exc()
         else:
             keep_turb_amp = {None}            
         
@@ -285,7 +327,8 @@ def local_structure_function(
     
         zpm_results = est_alignment_angles(dzp_perp, 
                                            dzm_perp,
-                                           return_mag_align_correl = return_mag_align_correl)   
+                                           return_mag_align_correl = return_mag_align_correl,
+                                           est_sigma_c             = True)   
                                
         # Assign values for va, v, z+, z-
         countsvb, sigma_r_ts,  sigma_r_mean, sigma_r_median, sins_ub_num, cos_ub_num, sins_ub_den,  v_mag, va_mag, reg_align_angle_sin_ub, polar_int_angle_sin_ub, weighted_sins_ub      = ub_results
@@ -336,11 +379,11 @@ def local_structure_function(
         dVa_perp_amp = np.sqrt(dVa_perp.T[0]**2 + dVa_perp.T[1]**2 + dVa_perp.T[2]**2)
         dVa_par_amp  = np.sqrt(dVa_parallel.T[0]**2 + dVa_parallel.T[1]**2 + dVa_parallel.T[2]**2)
         
-        return B_l, keep_turb_amp, dVa, dVa_perp_amp, dVa_par_amp, du, dN, kinet_normal, signBx,  normal_flag,  func.estimate_vec_magnitude(l_vec), l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb,align_angles_zpm, needed_index, local_polarity
+        return Vsw, B_l, keep_turb_amp, dVa, dVa_perp_amp, dVa_par_amp, du, dN, kinet_normal, signBx,  normal_flag,  lmag, l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb,align_angles_zpm, needed_index, local_polarity
         
         
     else:
-        return B_l, keep_turb_amp, dB, dB_perp_amp, dB_parallel_amp, du, dN, kinet_normal, signBx,normal_flag, func.estimate_vec_magnitude(l_vec), l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb, align_angles_zpm, needed_index, local_polarity
+        return Vsw, B_l, keep_turb_amp, dB, dB_perp_amp, dB_parallel_amp, du, dN, kinet_normal, signBx,normal_flag, lmag, l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb, align_angles_zpm, needed_index, local_polarity
 
 
 
@@ -903,12 +946,14 @@ def finner_bins_SFs(  dB,
 
 
 
+
 def estimate_3D_sfuncs(
                        B,
                        V,
+                       V_sc,
                        Np,
                        dt,
-                       Vsw,
+                      # Vsw,
                        di, 
                        conditions,
                        qorder,
@@ -931,7 +976,8 @@ def estimate_3D_sfuncs(
                        estimate_dzp_dzm         = False,
                        also_return_db_nT        = False,
                        use_local_polarity       = True,
-                       use_np_factor            = 1):
+                       use_np_factor            = True,
+                       est_proj_ells            = True):
     """
     Estimate the 3D structure functions for the data given in `B` and `V`
 
@@ -1012,7 +1058,9 @@ def estimate_3D_sfuncs(
     zpm_polar, zpm_reg, zpm_weighted                   = [], [], []
     sig_c_mean, sig_r_mean, sig_c_median, sig_r_median = [], [], [], []
     counts_vb, counts_zp                               = [], []
-
+    l_ell_arr, l_xi_arr, l_lambda_arr                  = [], [], []
+    l_mags                                             = []
+    #checks                                             = {}
     
     
     if only_general ==2:
@@ -1034,9 +1082,10 @@ def estimate_3D_sfuncs(
        
 
             # Call the function with keyword arguments directly
-            B_l, keep_turb_amp,  dB, dB_perp, dB_parallel, dV, dN,  kinet_normal, sign_Bx, normal_flag,  l_mag,  l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb, align_angles_zpm, needed_index, local_polarity = local_structure_function(
+            Vsw, B_l, keep_turb_amp,  dB, dB_perp, dB_parallel, dV, dN,  kinet_normal, sign_Bx, normal_flag,  l_mag,  l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb, align_angles_zpm, needed_index, local_polarity = local_structure_function(
                            B.copy(),
                            V.copy(),
+                           V_sc.copy(),
                            Np.copy(),
                            int(tau_value),
                            dt,
@@ -1049,8 +1098,16 @@ def estimate_3D_sfuncs(
                            turb_amp_analysis        = turb_amp_analysis,
                            also_return_db_nT        = also_return_db_nT,
                            use_local_polarity       = use_local_polarity,
-                           use_np_factor            = use_np_factor
+                           use_np_factor            = use_np_factor,
+                           est_proj_ells            =  est_proj_ells
             )
+            
+            
+            l_mags.append(np.nanmean(l_mag))
+
+            
+            
+            
             if estimate_alignment_angle:
                 # Va, v average angles
                 ub_polar.append(align_angles_vb['polar_inter_angle'])
@@ -1068,7 +1125,8 @@ def estimate_3D_sfuncs(
                 sig_c_median.append(align_angles_zpm['sig_c_median']) 
                 counts_zp.append(align_angles_zpm['counts'])
                 
-                
+            if jj==0:
+                Vsw_fin = Vsw
             
             if use_local_polarity:
                 sign_B_back  = local_polarity
@@ -1089,6 +1147,8 @@ def estimate_3D_sfuncs(
                 d_Zm = dV - dB * combined[:, None]
 
                 del combined
+                
+                
 
             # Estimate extra quantities     
             if return_coefs:
@@ -1256,15 +1316,20 @@ def estimate_3D_sfuncs(
                                                               sf_data_B)
 
         except:
-           # traceback.print_exc()
+            traceback.print_exc()
             pass
     
     
     # Also estimate x values in di
-    l_di    = (tau_values*dt*Vsw)/di
+    #l_di    = (tau_values*dt*Vsw_fin)/di
+    l_di     = np.array(l_mags)
     
     # Return fluctuations
     if  return_coefs:
+        l_mag     = l_mag[np.where((final_variables['thetas'] > 0) & (final_variables['phis'] > 0))[0]]
+        l_ell     = l_ell[np.where((final_variables['thetas'] > 0) & (final_variables['phis'] > 0))[0]]
+        l_xi      = l_xi[np.where((final_variables['thetas'] > 0) & (final_variables['phis'] > 0))[0]]
+        l_lambda  = l_lambda[np.where((final_variables['thetas'] > 0) & (final_variables['phis'] > 0))[0]]
         if only_general:
             flucts = {
                        'ell_all'           :  pd.DataFrame(ell_all_dict).T.apply(lambda col: pd.Series([item for sublist in col for item in sublist])),   
@@ -1272,7 +1337,7 @@ def estimate_3D_sfuncs(
                 
                        'tau_lags'          :  tau_values,
                        'l_di'              :  l_di,
-                       'Vsw'               :  Vsw,
+                       'Vsw'               :  Vsw_fin,
                        'di'                :  di,
                        'dt'                :  dt,
                        'B_flag'            : normal_flag
@@ -1284,7 +1349,7 @@ def estimate_3D_sfuncs(
                         'ell_par'     : pd.DataFrame(ell_par_dict).T, 
                         'tau_lags'    : tau_values,
                         'l_di'        : l_di,
-                        'Vsw'         : Vsw,
+                        'Vsw'         : Vsw_fin,
                         'di'          : di,
                         'dt'          : dt,
                         'B_flag'      : normal_flag
@@ -1336,7 +1401,8 @@ def estimate_3D_sfuncs(
                               'l_Ell_perp'          : l_Ell_perp, 
                               'l_ell_par'           : l_ell_par,
                               'l_ell_par_rest'      : l_ell_par_rest,
-                              'B_flag'              : normal_flag 
+                              'B_flag'              : normal_flag,
+                              #'checks'              : checks
                         }    
                   
     else:                                                            
@@ -1367,5 +1433,5 @@ def estimate_3D_sfuncs(
     else:
         overall_align_angles = None                           
     
-    return VBangle, Phiangle,  flucts, l_di, Sfunctions, PDFs, overall_align_angles
+    return  l_mag, l_lambda, l_xi, l_ell, VBangle, Phiangle,  flucts, l_di, Sfunctions, PDFs, overall_align_angles
                                       

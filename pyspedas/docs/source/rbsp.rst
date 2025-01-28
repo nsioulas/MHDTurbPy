@@ -1,10 +1,10 @@
 Van Allen Probes (RBSP)
 ========================================================================
-The routines in this module can be used to load data from the Van Allen Probes (RBSP) mission.
+The routines in this module can be used to load and process data (in case of RBSPICE) from the Van Allen Probes (RBSP) mission.
 
 
 Electric and Magnetic Field Instrument Suite and Integrated Science (EMFISIS)
-----------------------------------------------------------
+-------------------------------------------------------------------------------
 .. autofunction:: pyspedas.rbsp.emfisis
 
 Example
@@ -46,7 +46,7 @@ Example
 
 
 Radiation Belt Storm Probes Ion Composition Experiment (RBSPICE)
-----------------------------------------------------------
+-----------------------------------------------------------------
 .. autofunction:: pyspedas.rbsp.rbspice
 
 Example
@@ -56,18 +56,24 @@ Example
    
    import pyspedas
    from pytplot import tplot
-   rbspice_vars = pyspedas.rbsp.rbspice(trange=['2018-11-5', '2018-11-6'], datatype='tofxeh', level='l3')
-   tplot('Alpha')
+   rbspice_vars = pyspedas.rbsp.rbspice(trange=['2018-11-5', '2018-11-6'], datatype='TOFxEH', level='l3')
+   tplot('rbspa_rbspice_l3_TOFxEH_proton_omni_spin')
+   # calculate the pitch angle distributions
+   from pyspedas.rbsp.rbspice_lib.rbsp_rbspice_pad import rbsp_rbspice_pad
+   rbsp_rbspice_pad(probe='a', datatype='TOFxEH', level='l3')
+   tplot(['rbspa_rbspice_l3_TOFxEH_proton_omni_spin',
+          'rbspa_rbspice_l3_TOFxEH_proton_omni_0-1000keV_pad_spin'])
 
 .. image:: _static/rbsp_rbspice.png
    :align: center
    :class: imgborder
 
+.. autofunction:: pyspedas.rbsp.rbspice_lib.rbsp_rbspice_pad.rbsp_rbspice_pad
 
-
+.. autofunction:: pyspedas.rbsp.rbspice_lib.rbsp_rbspice_pad_spinavg.rbsp_rbspice_pad_spinavg
 
 Energetic Particle, Composition, and Thermal Plasma Suite (ECT) - MagEIS
-----------------------------------------------------------
+--------------------------------------------------------------------------
 .. autofunction:: pyspedas.rbsp.mageis
 
 Example
@@ -88,7 +94,7 @@ Example
 
 
 Energetic Particle, Composition, and Thermal Plasma Suite (ECT) - HOPE
-----------------------------------------------------------
+------------------------------------------------------------------------
 .. autofunction:: pyspedas.rbsp.hope
 
 Example
@@ -108,7 +114,7 @@ Example
 
 
 Energetic Particle, Composition, and Thermal Plasma Suite (ECT) - REPT
-----------------------------------------------------------
+------------------------------------------------------------------------
 .. autofunction:: pyspedas.rbsp.rept
 
 Example

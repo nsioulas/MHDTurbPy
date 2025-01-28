@@ -53,6 +53,7 @@ sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
 import general_functions as func
 import TurbPy as turb
 
+
 # Some constants
 from scipy import constants
 au_to_km       = 1.496e8  # Conversion factor
@@ -96,7 +97,13 @@ def default_variables_to_download_PSP(vars_2_downnload):
         varnames_EPHEM         = ['position','velocity']  
     else:
         varnames_EPHEM          = vars_2_downnload['ephem']
-    return varnames_MAG, varnames_QTN, varnames_SPAN, varnames_SPC,  varnames_SPAN_alpha,varnames_EPHEM
+        
+    if vars_2_downnload.get('E_field', False):
+        varnames_E_field          = ['psp_fld_l2_dfb_wf_dVdc_sc']
+    else:
+        varnames_E_field          =  None
+        
+    return varnames_MAG, varnames_QTN, varnames_SPAN, varnames_SPC,  varnames_SPAN_alpha,varnames_EPHEM, varnames_E_field
 
 
 def map_col_names_PSP(instrument, varnames):
@@ -111,7 +118,7 @@ def map_col_names_PSP(instrument, varnames):
         'mag_SC'                       : ['Bx', 'By', 'Bz'],
         'mag_rtn'                      : ['Br', 'Bt', 'Bn'],
         'mag_sc'                       : ['Bx', 'By', 'Bz'],
-
+        'psp_fld_l2_dfb_wf_dVdc_sc'    : ['dvx', 'dvy']
     }
     # Mapping between variable names and column names for QTN
     fields_QTN_cols = {
@@ -187,6 +194,7 @@ def download_MAG_FIELD_PSP(t0,
                     print('Using RTN frame mag data.')
                     if settings['MAG_resol']> 230:               # It's better to use lower resol if you want to resample to SPC, SPAN cadence. 
                         datatype = 'mag_RTN_4_Sa_per_Cyc'
+                        
                     else:
                         datatype = 'mag_RTN'
                 else:
@@ -258,6 +266,8 @@ def download_MAG_FIELD_PSP(t0,
         return None
         
 
+        
+        
 def process_mag_field_data(t0, 
                            t1, 
                            settings,
@@ -275,6 +285,7 @@ def process_mag_field_data(t0,
                                            t1,
                                            credentials,
                                            settings)
+            
         else:
             print('Working on fluxgate mag data')
             dfmag = download_MAG_FIELD_PSP(t0,
@@ -282,12 +293,14 @@ def process_mag_field_data(t0,
                                            credentials, 
                                            varnames_MAG,
                                            settings)
+            
+            #print(dfmag)
         try:
             dfmag = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfmag)
         except Exception:
             # Adjust index format and retry processing
             dfmag.index = pd.to_datetime(dfmag.index, format='%Y-%m-%d %H:%M:%S.%f')
-            dfmag = func.use_dates_return_elements_of_df_inbetween(pd.to_numeric(ind1), pd.to_numeric(ind2), dfmag)
+            dfmag       = func.use_dates_return_elements_of_df_inbetween(pd.to_numeric(ind1), pd.to_numeric(ind2), dfmag)
         
         # Identify big gaps in timeseries
         big_gaps = func.find_big_gaps(dfmag, settings['Big_Gaps']['Mag_big_gaps'])
@@ -297,7 +310,7 @@ def process_mag_field_data(t0,
     
         
         # Remove wheel noise from scam data
-        if  settings['Mag_SCAM_PSP']['flag']:
+        if  settings['Mag_SCAM_PSP']['noise_flag']:
             
             print('Removing wheel noise!')
             
@@ -305,13 +318,14 @@ def process_mag_field_data(t0,
             keys = list(diagnostics_MAG["resampled_df"].keys())
             
             for key in keys:
-
-                signal_noise_removed  =  turb.remove_wheel_noise(diagnostics_MAG["resampled_df"][key].values,
-                                                                                             1/dt,
-                                                                                             freq_threshold      =  settings['Mag_SCAM_PSP']['noise_removal']['freq_threshold'],
-                                                                                             window_width_hz     =  settings['Mag_SCAM_PSP']['noise_removal']['window_width_hz'],
-                                                                                             empirical_threshold =  settings['Mag_SCAM_PSP']['noise_removal']['empirical_threshold'])
                 
+                signal_noise_removed = turb.remove_wheel_noise(diagnostics_MAG["resampled_df"][key].values,
+                                                               1/dt, 
+                                                               window_size      = settings['Mag_SCAM_PSP']['noise_removal']['window_size'], 
+                                                               avg_length       = settings['Mag_SCAM_PSP']['noise_removal']['avg_length'],
+                                                               power_threshold  = settings['Mag_SCAM_PSP']['noise_removal']['power_threshold'],
+                                                               freq_min         = settings['Mag_SCAM_PSP']['noise_removal']['freq_min'])
+
                 
                
                 #replace with clean data
@@ -544,13 +558,24 @@ def download_QTN_PSP(t0, t1, credentials, varnames, settings):
             
             username = credentials['psp']['fields']['username']
             password = credentials['psp']['fields']['password']
-            
+
             qtndata = pyspedas.psp.fields(trange     = [t0, t1],
                                           datatype   = 'sqtn_rfs_V1V2', level='l3',
                                           varnames   = varnames,
                                           time_clip  = True, 
                                           username   = username,
                                           password   = password)#,
+            if qtndata ==[]:
+
+                print('Using other qtn version')
+                username = credentials['psp']['fields']['username']
+                password = credentials['psp']['fields']['password']
+                qtndata  = pyspedas.psp.fields(trange    = [t0, t1], 
+                                               datatype  = 'rfs_lfr_qtn', level='l2', 
+                                               time_clip = True,
+                                               username  = username,
+                                               password  = password)
+
 
             
         except:
@@ -574,8 +599,9 @@ def download_QTN_PSP(t0, t1, credentials, varnames, settings):
                                 data=get_data(data).y, 
                                 columns=col_names[i]) for i, data in enumerate(qtndata)]
         dfqtn = dfs[0].join(dfs[1:])
-
+        
         dfqtn['np_qtn'] = dfqtn['ne_qtn']*0.96  # 4% of alpha particle
+
         dfqtn.index = time_string.time_datetime(time=dfqtn.index)
         dfqtn.index = dfqtn.index.tz_localize(None)
         dfqtn.index.name = 'datetime'
@@ -596,6 +622,26 @@ def process_qtn_data(t0, t1, credentials, varnames_QTN, ind1, ind2, settings):
         
         ll_path       = '/Users/nokni/work/turb_amplitudes/final_data/qtn/'
         dfqtn           = pd.read_pickle(str(Path(ll_path).joinpath('qtn.pkl')))
+        
+        
+    elif ((pd.Timestamp(t0)>pd.Timestamp('2024-03-19')) &  (pd.Timestamp(t1)<pd.Timestamp('2024-04-09'))): 
+        
+        ll_path       = '/Users/nokni/work/turb_amplitudes/final_data/qtn/'
+        dfqtn         = pd.read_pickle(str(Path(ll_path).joinpath('qtn.pkl')))
+        
+    # Use E20 data
+    elif ((pd.Timestamp(t0)>pd.Timestamp('2024-06-20 00:00:06')) &  (pd.Timestamp(t1)<pd.Timestamp('2024-07-07 23:59:54'))): 
+        
+        print('Using Orlandos QTN, E20 data')
+        ll_path       = '/Users/nokni/work/turb_amplitudes/final_data/qtn/'
+        dfqtn         = pd.read_pickle(str(Path(ll_path).joinpath('e20.pkl')))
+        
+    # Use E21 data
+    elif ((pd.Timestamp(t0)>pd.Timestamp('2024-09-25 04:31:49')) &  (pd.Timestamp(t1)<pd.Timestamp('2024-10-05 05:59:44'))): 
+        
+        print('Using Orlandos QTN, E21 data')
+        ll_path       = '/Users/nokni/work/turb_amplitudes/final_data/qtn/'
+        dfqtn         = pd.read_pickle(str(Path(ll_path).joinpath('e21.pkl')))
 
     else:
         dfqtn = download_QTN_PSP(t0, t1, credentials, varnames_QTN, settings)
@@ -622,7 +668,7 @@ def process_qtn_data(t0, t1, credentials, varnames_QTN, ind1, ind2, settings):
 
     return dfqtn, diagnostics_QTN, dfqtn_flag, big_gaps
 
-def download_ephemeris_PSP(t0, t1, credentials, varnames, settings):
+def download_ephemeris_PSP(t0, t1, credentials, varnames, settings=None):
     try:
         username = credentials['psp']['fields']['username']
         password = credentials['psp']['fields']['password']
@@ -725,14 +771,64 @@ def create_particle_dataframe(end_time,
 
 
 
+
+def download_efield(t0, t1, credentials, varnames, settings):
+    
+    print('E_field Variables', varnames)
+    
+    try:
+        fields_vars = pyspedas.psp.fields(trange=[t0, t1], datatype='dfb_wf_dvdc', varnames = varnames, level='l2', time_clip=True)
+
+        col_names = map_col_names_PSP('FIELDS-MAG', varnames)
+        
+        dfs       = [pd.DataFrame(index  = get_data(data).times, 
+                                  data   = get_data(data).y, 
+                                 columns = col_names[i]) for i, data in enumerate(fields_vars)]
+
+        df_efield = dfs[0].join(dfs[1:])
+
+        # Fix datetime index
+        df_efield.index = time_string.time_datetime(time=df_efield.index)
+        df_efield.index = df_efield.index.tz_localize(None)
+        df_efield.index.name = 'datetime'
+        
+        return df_efield
+    except Exception as e:
+        logging.exception("An error occurred: %s", e)
+        return None, None
+                    
+
+def process_e_field_data(t0, t1,settings, credentials, varnames,  ind1, ind2):
+    try:
+        # Download e_field data
+        df_efield = download_efield(t0, t1, credentials, varnames, settings)
+        
+        
+        # Trim data to the originally requested interval
+        df_efield = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, df_efield)
+
+        # Identify big gaps in timeseries
+        big_gaps_e_field = func.find_big_gaps(df_efield, settings['Big_Gaps']['Par_big_gaps'])
+        
+        # Calculate diagnostics
+        diagnostics_e_field = func.resample_timeseries_estimate_gaps(df_efield, 1, large_gaps=10)
+        e_field_flag = 'e_field'
+    except Exception as e:
+        logging.exception("An error occurred: %s", e)
+        # Return None for df_efield and default values for diagnostics_e_field on error
+        df_efield, diagnostics_e_field, e_field_flag, big_gaps_e_field = None, {'Frac_miss': 100, 'Large_gaps': 100, 'Tot_gaps': 100, 'resol': 100}, 'No e_field', None
+
+    return df_efield, big_gaps_e_field, diagnostics_e_field
+
+
 def LoadTimeSeriesPSP(start_time, 
                       end_time, 
                       settings, 
                       vars_2_downnload,
                       cdf_lib_path,
                       credentials = None,
-                      time_amount =12,
-                      time_unit ='h'
+                      time_amount = 2,
+                      time_unit   ='h'
                      ):
     """" 
     Load Time Serie From SPEDAS, PSP 
@@ -756,7 +852,7 @@ def LoadTimeSeriesPSP(start_time,
         'hampel_params'   : {'w':100, 'std':3},
         'part_resol'      : 900,
         'MAG_resol'       : 1,
-        'Mag_SCAM_PSP'    : {'flag':False}
+        'Mag_SCAM_PSP'    : {'flag':False, 'noise_flag':False}
 
     }
  
@@ -772,8 +868,6 @@ def LoadTimeSeriesPSP(start_time,
     
     settings = {**default_settings, **settings}
     
-    print(settings['Mag_SCAM_PSP'])
-    
 
     
     # Ensure the dates have appropriate format
@@ -783,21 +877,29 @@ def LoadTimeSeriesPSP(start_time,
     t0 = func.add_time_to_datetime_string(t0i, -time_amount, time_unit)
     t1 = func.add_time_to_datetime_string(t1i,  time_amount, time_unit)
 
+    # Add something extra to lower-cadence timeseries
+    t0i_e  = func.add_time_to_datetime_string(t0i, -2, 'm')
+    t1i_e = func.add_time_to_datetime_string(t1i,  2, 'm')
+    
+    
     # In order to return the originaly requested interval
     ind1  = func.string_to_datetime_index(t0i)
     ind2  = func.string_to_datetime_index(t1i)
     
+    ind1_e  = func.string_to_datetime_index(t0i_e)
+    ind2_e  = func.string_to_datetime_index(t1i_e)
+    
     # Specify variables to download
-    varnames_MAG, varnames_QTN, varnames_SPAN, varnames_SPC,  varnames_SPAN_alpha, varnames_EPHEM = default_variables_to_download_PSP(vars_2_downnload)
+    varnames_MAG, varnames_QTN, varnames_SPAN, varnames_SPC,  varnames_SPAN_alpha, varnames_EPHEM, varnames_E_field = default_variables_to_download_PSP(vars_2_downnload)
     
     
     # Download QTN data
-    dfqtn, diagnostics_QTN, dfqtn_flag, dfqtn_big_gaps = process_qtn_data(t0, t1, credentials, varnames_QTN, ind1, ind2, settings)
+    dfqtn, diagnostics_QTN, dfqtn_flag, dfqtn_big_gaps = process_qtn_data(t0, t1, credentials, varnames_QTN, ind1_e, ind2_e, settings)
         
     print('FLAG QTN', dfqtn_flag)
     #Download ephemeris
     print(t0), print(t1)
-    dfephem                            = process_ephemeris(t0, t1, credentials, varnames_EPHEM, ind1, ind2, settings)
+    dfephem                            = process_ephemeris(t0, t1, credentials, varnames_EPHEM, ind1_e, ind2_e, settings)
     
 
     # Add some thresholds
@@ -808,18 +910,34 @@ def LoadTimeSeriesPSP(start_time,
     if (dist_threshold) & (qtn_threshold):
         
 
+            
+        # Download Electric field data
+        df_e_field, big_gaps_e_field, diagnostics_e_field = (
+                                                    process_e_field_data(t0, t1, settings, credentials, varnames_E_field, ind1, ind2)
+                                                    if vars_2_downnload.get('E_field', False)
+                                                    else (None, None,  {
+                                                                        "Init_dt"         : np.nan,
+                                                                        "resampled_df"    : None,
+                                                                        "Frac_miss"       : None,
+                                                                        "Large_gaps"      : None,
+                                                                        "Tot_gaps"        : None,
+                                                                        "resol"           : None
+                                                                    }))
+                                                        
+
+        
         # Download magnetic field data
         dfmag, big_gaps, diagnostics_MAG                   = process_mag_field_data(t0, t1, settings,
                                                                   credentials, varnames_MAG, ind1, ind2)
        
         # Download SPAN data
         dfspan, diagnostics_SPAN, span_flag, big_gaps_span = process_span_data(t0, t1, credentials,
-                                                                varnames_SPAN, varnames_SPAN_alpha, settings, ind1, ind2)
+                                                                varnames_SPAN, varnames_SPAN_alpha, settings, ind1_e, ind2_e)
         
 
 
         # Download SPC data 
-        dfspc, diagnostics_SPC, spc_flag, big_gaps_spc     = process_spc_data(t0, t1, credentials, varnames_SPC, settings, ind1, ind2)
+        dfspc, diagnostics_SPC, spc_flag, big_gaps_spc     = process_spc_data(t0, t1, credentials, varnames_SPC, settings, ind1_e, ind2_e)
 
 
         try:
@@ -846,6 +964,7 @@ def LoadTimeSeriesPSP(start_time,
                 'SPAN'             : func.filter_dict(diagnostics_SPAN, keys_to_keep),
                 'QTN'              : func.filter_dict(diagnostics_QTN, keys_to_keep),
                 'Par'              : func.filter_dict(diagnostics_PAR,  keys_to_keep),
+                'E'                : func.filter_dict(diagnostics_e_field,  keys_to_keep),
                 'Mag'              : func.filter_dict(diagnostics_MAG,  keys_to_keep),
                 'part_flag'        : part_flag,
                 'qtn_flag'         : dfqtn_flag
@@ -855,12 +974,12 @@ def LoadTimeSeriesPSP(start_time,
             if dfqtn_flag =='No_QTN':
                 diagnostics_PAR["resampled_df"]['np']   = diagnostics_PAR["resampled_df"].pop('np_sweap')
 
-            return diagnostics_MAG["resampled_df"], diagnostics_PAR["resampled_df"], dfephem.interpolate(), big_gaps,  dfqtn_big_gaps, big_gaps_par, misc
+            return diagnostics_MAG["resampled_df"], diagnostics_PAR["resampled_df"], diagnostics_e_field["resampled_df"], dfephem.interpolate(), big_gaps,  dfqtn_big_gaps, big_gaps_par, misc
         
      
         except Exception as e:
             logging.exception("An error occurred: %s", e)
-            return None, None, None, None, None, None, None
+            return None, None, None, None, None, None, None, None
     else:
         if (dist_threshold == False) and (qtn_threshold == False):
             logging.info(BG_BLUE+'Discarded, No qtn and d=%s' + RESET, mean_dist)
@@ -891,15 +1010,16 @@ def LoadSCAMFromSPEDAS_PSP(t0,
 
     # use credentials
     try:
-        if settings['Mag_SCAM_PSP']['coord_system']=='RTN':
+        if settings['in_rtn']:
             
-            print('Working on RTN, SCAM DATA')
+            print('Working on RTN frame, SCAM DATA')
             scam_vars = pyspedas.psp.fields(
                 trange=[t0, t1], datatype='merged_scam_wf',
                         varnames = ['psp_fld_l3_merged_scam_wf_RTN'], level='l3', time_clip=1, downloadonly = False,
                 username = username,
                 password = password )
         else:
+            print('Working on SC frame, SCAM DATA')
             scam_vars = pyspedas.psp.fields(
                 trange=[t0, t1], datatype='merged_scam_wf',
                         varnames = ['psp_fld_l3_merged_scam_wf_SC'], level='l3', time_clip=1, downloadonly = False,
@@ -910,7 +1030,7 @@ def LoadSCAMFromSPEDAS_PSP(t0,
         if scam_vars == []:
             return None
 
-        if settings['Mag_SCAM_PSP']['coord_system'] == 'RTN':
+        if settings['in_rtn']:
             data   = get_data(scam_vars[0])
             dfscam = pd.DataFrame(
                     index = data.times,
@@ -926,21 +1046,8 @@ def LoadSCAMFromSPEDAS_PSP(t0,
         dfscam.index = time_string.time_datetime(time=dfscam.index)
         dfscam.index = dfscam.index.tz_localize(None)
         dfscam.index.name = 'datetime'
+        
 
-
-#         # Return the originaly requested interval
-#         try:
-#             dfscam                 = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfscam)
-#         except:
-#             dfscam.index = pd.to_datetime(dfscam.index, format='%Y-%m-%d %H:%M:%S.%f')
-#             dfscam                 = func.use_dates_return_elements_of_df_inbetween(pd.to_numeric(ind1), pd.to_numeric(ind2), dfscam)
-
-
-
-#         # Identify big gaps in timeseries
-#         big_gaps              = func.find_big_gaps(dfscam , settings['gap_time_threshold'])        
-#         # Resample the input dataframes
-#         diagnostics_MAG       = func.resample_timeseries_estimate_gaps(dfscam , settings['MAG_resol']  , large_gaps=10)      
 
 
     except:

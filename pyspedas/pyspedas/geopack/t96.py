@@ -1,7 +1,8 @@
-
+import logging
 import numpy as np
 from pytplot import get_data, store_data
 from geopack import geopack, t96
+
 
 def tt96(pos_var_gsm, parmod=None, suffix=''):
     """
@@ -16,8 +17,10 @@ def tt96(pos_var_gsm, parmod=None, suffix=''):
 
     Parameters
     -----------
-        parmod: ndarray
-            10-element array (vs. time), but only the first 4 elements are used
+        parmod: str
+            A tplot variable containing a 10-element model parameter array (vs. time).  The timestamps
+            should match the timestamps in the input position variable. Only the first 4 elements are used::
+
                 (1) solar wind pressure pdyn (nanopascals)
                 (2) dst (nanotesla)
                 (3) byimf (nanotesla)
@@ -28,12 +31,13 @@ def tt96(pos_var_gsm, parmod=None, suffix=''):
 
     Returns
     --------
-        Name of the tplot variable containing the model data
+        str
+            Name of the tplot variable containing the model data
     """
     pos_data = get_data(pos_var_gsm)
 
     if pos_data is None:
-        print('Variable not found: ' + pos_var_gsm)
+        logging.error('Variable not found: ' + pos_var_gsm)
         return
 
     b0gsm = np.zeros((len(pos_data.times), 3))
@@ -48,14 +52,14 @@ def tt96(pos_var_gsm, parmod=None, suffix=''):
         if par is not None:
             par = par.y
     else:
-        print('parmod keyword required.')
+        logging.error('parmod keyword required.')
         return
 
     for idx, time in enumerate(pos_data.times):
         tilt = geopack.recalc(time)
 
-        # dipole B in GSM
-        b0gsm[idx, 0], b0gsm[idx, 1], b0gsm[idx, 2] = geopack.dip(pos_re[idx, 0], pos_re[idx, 1], pos_re[idx, 2])
+        # IGRF B in GSM
+        b0gsm[idx, 0], b0gsm[idx, 1], b0gsm[idx, 2] = geopack.igrf_gsm(pos_re[idx, 0], pos_re[idx, 1], pos_re[idx, 2])
 
         # T96 dB in GSM
         dbgsm[idx, 0], dbgsm[idx, 1], dbgsm[idx, 2] = t96.t96(par[idx, :], tilt, pos_re[idx, 0], pos_re[idx, 1], pos_re[idx, 2])

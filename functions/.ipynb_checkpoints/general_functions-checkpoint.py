@@ -20,6 +20,10 @@ from statistics import mode
 import orderedstructs
 import sys
 
+import warnings
+warnings.filterwarnings('ignore')
+
+
 # Import TurbPy
 sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
 
@@ -28,6 +32,24 @@ from plasma_params import*
 import signal_processing 
 
 
+
+def create_folder_if_not_exists(path0, overwrite_files=False):
+    folder_path = Path(path0)
+    
+    # Check if folder exists or overwrite_files is True
+    if not folder_path.exists() or overwrite_files:
+        folder_path.mkdir( exist_ok=True)
+        print(f"Folder created or overwritten: {folder_path}")
+    else:
+        print(f"Folder already exists: {folder_path}")
+
+from collections.abc import Iterable
+
+def ensure_iterable(obj):
+    if isinstance(obj, Iterable) and not isinstance(obj, (str, bytes)):
+        return obj
+    else:
+        return [obj]
 
 
 import orderedstructs
@@ -67,6 +89,25 @@ def load_and_construct_lambdas(save_path, fname):
     return f_dict
 
 
+def format_datetime_to_string(numpy_datetime):
+    """
+    Converts a numpy.datetime64 object to a string in 'YYYY-MM-DD HH:MM' format.
+    
+    Parameters:
+    numpy_datetime (numpy.datetime64): The input datetime object.
+    
+    Returns:
+    str: Formatted datetime string.
+    """
+    # Convert to datetime object
+    datetime_obj = numpy_datetime.astype('datetime64[s]').tolist()
+    
+    # Convert to the desired string format: 'YYYY-MM-DD HH:MM'
+    formatted_time = datetime_obj.strftime('%Y-%m-%d %H:%M')
+    
+    return formatted_time
+
+
 def estimate_derivatives(x, y):
     """
     Estimate the first and second derivatives of a function using central differences.
@@ -100,6 +141,62 @@ def compute_curvature(x, y):
 
 
 
+
+# def synchronize_dfs(df_higher_freq, df_lower_freq, upsample=True, 
+#                    order_up=3, order_down=5, percentage=1.15, interp_method='linear'):
+#     """
+#     Align two DataFrames based on their frequency by either upsampling the lower frequency DataFrame 
+#     or downsampling the higher frequency DataFrame.
+
+#     Args:
+#         df_higher_freq: [pandas DataFrame] DataFrame with higher frequency data.
+#         df_lower_freq: [pandas DataFrame] DataFrame with lower frequency data.
+#         upsample: [bool] If True, upsample the lower frequency DataFrame; otherwise, downsample the higher frequency one.
+#         order_up: [int] Order of the Butterworth filter for upsampling.
+#         order_down: [int] Order of the Butterworth filter for downsampling.
+#         percentage: [float] Multiplier for the cutoff frequency during downsampling.
+#         interp_method: [str] Interpolation method for reindexing.
+
+#     Returns:
+#         Tuple[pandas DataFrame, pandas DataFrame]: Aligned DataFrames (high_freq_df, low_freq_df).
+#     """
+    
+
+#     if overlapping_start >= overlapping_end:
+#         raise ValueError("No overlapping time range between high_df and low_df.")
+
+#     # Trim both DataFrames to the overlapping range before any processing
+
+#     if upsample:
+#         # Upsample the lower frequency DataFrame to match the higher frequency one
+#         aligned_lower_freq = signal_processing.upsample_and_filter(
+#             low_df         = df_lower_freq, 
+#             high_df        = df_higher_freq, 
+#             order          = order_up, 
+#             interp_method  = interp_method
+#         )
+#         # Ensure both DataFrames cover the exact same time range after synchronization
+#         aligned_high_freq = df_higher_freq.loc[aligned_lower_freq.index]
+#         return aligned_high_freq, aligned_lower_freq
+
+#     else:
+#         # Downsample the higher frequency DataFrame to match the lower frequency one
+#         aligned_higher_freq  = signal_processing.downsample_and_filter(
+#             high_df          = df_higher_freq, 
+#             low_df           = df_lower_freq, 
+#             order            = order_down, 
+#             percentage       = percentage
+#         )
+        
+#         # Ensure both DataFrames cover the exact same time range after synchronization
+#         aligned_low_freq = df_lower_freq.loc[aligned_higher_freq.index]
+#         return aligned_higher_freq, aligned_low_freq
+
+
+
+
+
+
 def synchronize_dfs(df_higher_freq, df_lower_freq, upsample):
     """
     Align two dataframes based on their frequency, upsample lower frequency dataframe if specified.
@@ -114,15 +211,36 @@ def synchronize_dfs(df_higher_freq, df_lower_freq, upsample):
     """
     if upsample:
         # Upsample the lower frequency dataframe to match the higher frequency one
-        aligned_lower_freq = newindex(df_lower_freq, df_higher_freq.index)
+        # aligned_lower_freq = newindex(df_lower_freq, df_higher_freq.index)
+        # return df_higher_freq, aligned_lower_freq
+        
+        aligned_lower_freq = signal_processing.upsample_dataframe(df_lower_freq, df_higher_freq)
+        
+        # Determine overlapping time range
+        overlapping_start    = max(df_higher_freq.dropna().index.min(), aligned_lower_freq.dropna().index.min())
+        overlapping_end      = min(df_higher_freq.dropna().index.max(), aligned_lower_freq.dropna().index.max())
+
+        df_higher_freq       = df_higher_freq.loc[overlapping_start:overlapping_end]#.copy()
+        aligned_lower_freq  = aligned_lower_freq.loc[overlapping_start:overlapping_end]#.copy()
+
+            
         return df_higher_freq, aligned_lower_freq
+
     else:
         # Attempt to align the higher frequency dataframe to the lower frequency one
         try:
             
             
-            aligned_higher_freq = signal_processing.downsample_and_filter(df_higher_freq.copy(), 
-                                                                          df_lower_freq.copy())
+            aligned_higher_freq = signal_processing.downsample_and_filter(df_higher_freq.interpolate().dropna().copy(), 
+                                                                          df_lower_freq.interpolate().dropna().copy())
+            
+            # Determine overlapping time range
+            overlapping_start    = max(aligned_higher_freq.dropna().index.min(), df_lower_freq.dropna().index.min())
+            overlapping_end      = min(aligned_higher_freq.dropna().index.max(), df_lower_freq.dropna().index.max())
+
+            aligned_higher_freq = aligned_higher_freq.loc[overlapping_start:overlapping_end]#.copy()
+            df_lower_freq       = df_lower_freq.loc[overlapping_start:overlapping_end]#.copy()
+
  
             return aligned_higher_freq, df_lower_freq
         except Exception as e:  # Consider specifying the exact exception if known
@@ -180,6 +298,19 @@ def load_files(load_path, filenames, conect_2= '', sort= True):
     return fnames
 
 
+@njit(parallel=True)
+def custom_nansum_product(xvec, yvec, axis):
+    result = np.zeros(xvec.shape[1-axis], dtype=xvec.dtype)
+    # Parallelizing the outer loop
+    for j in prange(xvec.shape[1-axis]):
+        for i in range(xvec.shape[axis]):
+            if axis == 0:
+                if not np.isnan(xvec[i, j]) and not np.isnan(yvec[i, j]):
+                    result[j] += xvec[i, j] * yvec[i, j]
+            else:
+                if not np.isnan(xvec[j, i]) and not np.isnan(yvec[j, i]):
+                    result[j] += xvec[j, i] * yvec[j, i]
+    return result
 
 
 
@@ -521,6 +652,34 @@ def add_time_to_datetime_string(start_time, time_amount, time_unit):
     return end_datetime.strftime('%Y-%m-%d %H:%M:%S')
     
 
+from datetime import timedelta
+import re
+
+def parse_time_duration(duration_str):
+    # Define regex to capture value and unit
+    time_regex = re.compile(r'(\d+)([a-z]+)')
+    
+    # Define supported time units and their equivalent in timedelta
+    unit_mapping = {
+        'ms': 'milliseconds',
+        's': 'seconds',
+        'm': 'minutes',
+        'h': 'hours',
+        'd': 'days'
+    }
+    
+    matches = time_regex.findall(duration_str)
+    if not matches:
+        raise ValueError(f"Invalid time duration format: {duration_str}")
+    
+    kwargs = {}
+    for value, unit in matches:
+        if unit in unit_mapping:
+            kwargs[unit_mapping[unit]] = int(value)
+        else:
+            raise ValueError(f"Unsupported time unit: {unit}")
+    
+    return timedelta(**kwargs)
 
 
 def count_fits_in_duration(df, wind_size):
@@ -551,117 +710,119 @@ def smooth_filter(xv, arr, window):
     
     return smooth_grad
 
-@jit(nopython=True)
-def calc_medians(window_size, arr, medians): 
-    for i in range(window_size, len(arr)-window_size, 1):
-        id0 = i - window_size
-        id1 = i + window_size
-        median = np.median(arr[id0:id1])
-        medians[i] = median
 
-@jit(nopython=True)
-def calc_medians_std(window_size, arr, medians, medians_diff): 
+@njit
+def custom_median(array):
+    sorted_array = np.sort(array)
+    n = len(sorted_array)
+    middle = n // 2
+    if n % 2 == 0:
+        return 0.5 * (sorted_array[middle - 1] + sorted_array[middle])
+    else:
+        return sorted_array[middle]
+
+@njit
+def calc_medians(window_size, arr, medians):
+    half_window = window_size // 2
+    n = len(arr)
+    for i in range(half_window, n - half_window):
+        window = arr[i - half_window:i + half_window + 1]
+        medians[i] = custom_median(window)
+    return medians
+
+@njit
+def calc_medians_std(window_size, arr, medians_diff, medians):
+    half_window = window_size // 2
+    k = 1.4826  # Scale factor for Gaussian distribution
+    n = len(arr)
+    for i in range(half_window, n - half_window):
+        window = arr[i - half_window:i + half_window + 1]
+        median = medians[i]
+        abs_deviation = np.abs(window - median)
+        mad = custom_median(abs_deviation)
+        medians_diff[i] = k * mad
+    return medians_diff
+
+@njit(parallel=True)
+def calc_medians_parallel(window_size, arr, medians):
+    half_window = window_size // 2
+    n = len(arr)
+    for i in prange(half_window, n - half_window):
+        window     = arr[i - half_window:i + half_window + 1]
+        medians[i] = custom_median(window)
+    return medians
+
+@njit(parallel=True)
+def calc_medians_std_parallel(window_size, arr, medians_diff, medians):
+    half_window = window_size // 2
     k = 1.4826
-    for i in range(window_size, len(arr)-window_size, 1):
-        id0 = i - window_size
-        id1 = i + window_size
-        x = arr[id0:id1]
-        medians_diff[i] = k * np.median(np.abs(x - np.median(x)))
-        
-        
-@njit(parallel=True) 
-def calc_medians_parallel(window_size, arr, medians): 
-    for i in prange(window_size, len(arr)-window_size, 1):
-        id0 = i - window_size
-        id1 = i + window_size
-        median = np.median(arr[id0:id1])
-        medians[i] = median
+    n = len(arr)
+    for i in prange(half_window, n - half_window):
+        window = arr[i - half_window:i + half_window + 1]
+        median = medians[i]
+        abs_deviation = np.abs(window - median)
+        mad = custom_median(abs_deviation)
+        medians_diff[i] = k * mad
+    return medians_diff
 
-@njit(parallel=True) 
-def calc_medians_std_parallel(window_size, arr, medians, medians_diff): 
-    k = 1.4826  # scale factor for Gaussian distribution
-    for i in prange(window_size, len(arr)-window_size, 1):
-        id0 = i - window_size
-        id1 = i + window_size
-        x = arr[id0:id1]
-        medians_diff[i] = k * np.median(np.abs(x - np.median(x)))
-        
-        
-
-
-    
-    return xv, [arr[0] + sum(smooth_grad[:x]) for x in range(len(arr))]
-
-
-def hampel(arr, window_size=200, n=3, parallel=False):
+def hampel(arr, window_size=5, n=3, parallel=True):
     """
     Apply Hampel filter to despike a time series by removing spurious data points.
 
-    The Hampel filter is a robust method used for detecting and replacing outliers (spikes) in a time series.
-    This function applies the Hampel filter to the input array `arr` and replaces the outliers with the median of
-    neighboring values within a specified window.
-
     Parameters:
     ----------
-    arr : numpy.ndarray
-        The input time series as a 1-dimensional numpy array.
+    arr : numpy.ndarray, pandas.Series, or pandas.DataFrame
+        The input time series as a 1-dimensional array.
     window_size : int, optional
-        The size of the sliding window used to compute the median and standard deviation of neighboring values.
-        The default value is 5.
-    n_sigmas : int or float, optional
-        The number of standard deviations away from the median used to define outliers. Data points that deviate
-        from the median by more than `n_sigmas` times the median absolute deviation are considered outliers.
-        The default value is 3.
+        The size of the sliding window used to compute the median and MAD of neighboring values.
+        It should be an odd integer to have a symmetric window around each point. The default value is 5.
+    n : int or float, optional
+        The number of MADs away from the median used to define outliers. Data points that deviate
+        from the median by more than `n` times the MAD are considered outliers. The default value is 3.
+    parallel : bool, optional
+        Whether to use parallel computation for performance. The default is True.
 
     Returns:
     -------
-    numpy.ndarray, tuple
-        A tuple containing two elements:
-        1. A new filtered time series as a numpy array with outliers replaced by the median of neighboring values.
-        2. A tuple of indices corresponding to the positions of the identified outliers in the original `arr`.
-
-    Notes:
-    -----
-    The Hampel filter is an effective method for despiking a time series in the presence of outliers and noise.
-    The function uses the Numpy library for efficient array operations and parallel processing to improve performance
-    for large arrays.
-
-    Example:
-    --------
-    >>> import numpy as np
-
-    >>> def hampel_filter(arr, window_size=5, n_sigmas=3):
-    ...     # (Your function implementation here)
-
-    >>> time_series = np.array([1.0, 2.0, 100.0, 3.0, 4.0, 200.0, 5.0, 6.0])
-    >>> filtered_series, outliers = hampel_filter(time_series, window_size=3, n_sigmas=2)
-    >>> print(filtered_series)
-    array([1. , 2. , 3. , 3. , 4. , 5. , 5. , 6. ])
-    >>> print(outliers)
-    (array([2, 5]),)
+    filtered_arr : numpy.ndarray
+        A new filtered time series with outliers replaced by the median of neighboring values.
+    outlier_indices : numpy.ndarray
+        An array of indices corresponding to the positions of the identified outliers in the original `arr`.
     """
-    if isinstance(arr, np.ndarray):
-        pass
-    elif isinstance(arr, pd.Series):
-        arr = arr.values
-    elif isinstance(arr, pd.DataFrame):
-        arr = arr.values
-    else:
+    # Convert input to numpy array if it's a pandas Series or DataFrame
+    if isinstance(arr, (pd.Series, pd.DataFrame)):
+        arr = arr.values.flatten()
+    elif not isinstance(arr, np.ndarray):
         raise ValueError("arr must be a numpy array or pandas Series or DataFrame!")
     
-    medians = np.ones_like(arr, dtype=float)*np.nan
-    medians_diff = np.ones_like(arr, dtype=float)*np.nan
-    if parallel:
-        calc_medians_parallel(window_size, arr, medians)
-        calc_medians_std_parallel(window_size, arr, medians, medians_diff)
-    else:
-        calc_medians(window_size, arr, medians)
-        calc_medians_std(window_size, arr, medians, medians_diff)
-    
-    outlier_indices = np.where(np.abs(arr - medians) > n*(medians_diff))
-    
-    return outlier_indices[0]
+    if arr.ndim != 1:
+        raise ValueError("Input array must be one-dimensional!")
 
+    # Ensure window_size is odd
+    if window_size % 2 == 0:
+        window_size += 1  # Make it odd
+        print(f"window_size adjusted to {window_size} to make it odd.")
+
+    medians      = np.full_like(arr, np.nan, dtype=np.float64)
+    medians_diff = np.full_like(arr, np.nan, dtype=np.float64)
+
+    if parallel:
+        medians = calc_medians_parallel(window_size, arr, medians)
+        medians_diff = calc_medians_std_parallel(window_size, arr, medians_diff, medians)
+    else:
+        medians = calc_medians(window_size, arr, medians)
+        medians_diff = calc_medians_std(window_size, arr, medians_diff, medians)
+
+    # Identify outliers
+    threshold = n * medians_diff
+    difference = np.abs(arr - medians)
+    outlier_indices = np.where(difference > threshold)[0]
+
+    # Create a copy of the original array to avoid modifying it
+    filtered_arr = arr.copy()
+    filtered_arr[outlier_indices] = medians[outlier_indices]
+
+    return filtered_arr, outlier_indices
 
 # solve for a and b
 def best_fit(X, Y):
@@ -1048,7 +1209,6 @@ def moving_average(xvals, yvals, window_size):
 
 
 
-import numpy as np
 
 def plot_plaw(start, end, exponent, c):
     """
@@ -1203,6 +1363,37 @@ def smoothing_function(x, y, mean=True, window=2):
 
     return xoutmid, yout
 
+
+def calculate_parker_spiral(B):
+    """
+    This function estimates φ_{rB} = arctan(Bt / Br) for arrays of Br and Bt.
+    It also returns the rolling mean of the computed angles over a 24-hour window.
+    
+    Parameters:
+    B : pd.DataFrame
+        A DataFrame where:
+        - B.iloc[:, 0] corresponds to Br (Radial component of the magnetic field).
+        - B.iloc[:, 1] corresponds to Bt (Tangential component of the magnetic field).
+        - The index is the datetime for each measurement.
+    
+    Returns:
+    pd.DataFrame:
+        A DataFrame with the rolling mean of φ_{rB} (in degrees) over 24-hour windows.
+    """
+    # Extract Br and Bt using positional indexing (0 for Br, 1 for Bt)
+    Br = B.iloc[:, 0].to_numpy()
+    Bt = B.iloc[:, 1].to_numpy()
+    
+    # Calculate the Parker Spiral angle (phi_rB) in degrees using arctan2
+    phi_rB = np.degrees(np.arctan2(Bt, Br))
+    
+    # Create a DataFrame for phi_rB with datetime index
+    df_phi = pd.DataFrame({'phi_rB': phi_rB}, index=B.index)
+    
+    # Apply the rolling mean over a 24-hour window
+    df_phi_rolling = df_phi.rolling('24H', center=True).mean()
+    
+    return df_phi_rolling
 
 
 def interp(df, new_index):
@@ -1377,14 +1568,38 @@ def percentile(y,percentile):
 import numpy as np
 
 
-import numpy as np
-from scipy.stats import binned_statistic
-from joblib import Parallel, delayed
+def binned_statistics_exclude(x, values, bins, statistic='mean', N=2, log_binning=True, n_jobs=1):
+    """
+    Compute binned statistics with exclusion of outliers greater than N standard deviations from the bin-specific mean.
 
-def compute_binned_statistics(x_array, y_array, nbins, loglog=False, estimate_counts=False, estimate_std=False, N=2, n_jobs=1):
+    Parameters:
+    - x : (N,) array_like
+        Input values to be binned.
+    - values : (N,) array_like
+        Data values to compute the statistics on.
+    - bins : int or sequence of scalars
+        If bins is an int, it defines the number of equal-width bins. If bins is a sequence, it defines the bin edges.
+    - statistic : string in ['mean', 'sum', 'std', 'count'] or callable
+        The statistic to compute (default is 'mean').
+    - N : float
+        Number of standard deviations to exclude values from the mean within each bin.
+    - log_binning : bool
+        If True, use logarithmic bins.
+    - n_jobs : int, default=1
+        Number of CPU cores to use when parallelizing. Use -1 for all cores.
+    
+    Returns:
+    - result : (nbins,) array
+        The computed statistic for each bin.
+    """
+    
+    
+    from joblib import Parallel, delayed
+
     def compute_bin_statistic(bin_values, statistic, N):
+        # Function to compute statistics for a single bin
         mean_val = np.mean(bin_values)
-        std_val = np.std(bin_values)
+        std_val  = np.std(bin_values)
 
         # Exclude values more than N std dev from the bin-specific mean
         mask_std = np.abs(bin_values - mean_val) <= N * std_val
@@ -1405,38 +1620,36 @@ def compute_binned_statistics(x_array, y_array, nbins, loglog=False, estimate_co
         else:
             return np.nan
 
-    # Remove NaNs and inf values
-    mask = np.isfinite(x_array) & np.isfinite(y_array)
-    valid_x = x_array[mask]
-    valid_y = y_array[mask]
-
-    # Determine bin edges
-    if loglog:
-        bin_edges = np.logspace(np.log10(np.min(valid_x[valid_x > 0])), np.log10(np.max(valid_x)), nbins + 1)
+    # Remove nan and inf values
+    mask_valid = np.isfinite(x) & np.isfinite(values)
+    x          = x[mask_valid]
+    values     = values[mask_valid]
+    
+    # Determine bins 
+    if log_binning:
+        if isinstance(bins, int):
+            bin_edges = np.logspace(np.log10(min(x)), np.log10(max(x)), bins+1)
+        else:
+            bin_edges = np.logspace(np.log10(min(bins)), np.log10(max(bins)), len(bins))
     else:
-        bin_edges = np.linspace(np.min(valid_x), np.max(valid_x), nbins + 1)
+        if isinstance(bins, int):
+            bin_edges = np.linspace(min(x), max(x), bins+1)
+        else:
+            bin_edges = bins
+        
+    bin_indices = np.digitize(x, bin_edges)
 
-    results = {}
-    results['xvals'] = 0.5 * (bin_edges[1:] + bin_edges[:-1])
-
-    # Compute statistics for each bin using parallel processing
-    bin_indices = np.digitize(valid_x, bin_edges)
-
-    results['mean'] = Parallel(n_jobs=n_jobs)(delayed(compute_bin_statistic)(valid_y[bin_indices == i], 'mean', N) 
-                                              for i in range(1, len(bin_edges)))
-
-    if estimate_std:
-        results['std'] = Parallel(n_jobs=n_jobs)(delayed(compute_bin_statistic)(valid_y[bin_indices == i], 'std', N) 
-                                                 for i in range(1, len(bin_edges)))
-
-    if estimate_counts:
-        results['count'] = Parallel(n_jobs=n_jobs)(delayed(compute_bin_statistic)(valid_y[bin_indices == i], 'count', N) 
-                                                   for i in range(1, len(bin_edges)))
-
-    return results
-
-# Example usage:
-result = compute_binned_statistics(x_array, y_array, nbins, loglog=True, estimate_counts=True, estimate_std=True)
+    # Compute statistic for each bin using parallel processing
+    results = Parallel(n_jobs=n_jobs)(delayed(compute_bin_statistic)(values[bin_indices == i], statistic, N) 
+                                      for i in range(1, len(bin_edges)))
+    
+    std_results = Parallel(n_jobs=n_jobs)(delayed(compute_bin_statistic)(values[bin_indices == i], 'std', N) 
+                                      for i in range(1, len(bin_edges)))
+    count_results = Parallel(n_jobs=n_jobs)(delayed(compute_bin_statistic)(values[bin_indices == i], 'count', N) 
+                                      for i in range(1, len(bin_edges)))
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
+    
+    return bin_centers, np.array(results), np.array(std_results)/np.sqrt(count_results)
 
 # Example usage
 
@@ -1839,19 +2052,503 @@ def find_fit_semilogy(x, y, x0, xf):
             return fit, s, e, x[s:e], y
         else:
             return [0],0,0,0,[0]
+        
+        
+        
+# import numpy as np
+# from scipy.optimize import minimize
+
+# def three_plaw_fit(x: np.ndarray, y: np.ndarray, num_segments: int = 3, max_iter: int = 10000,
+#                    middle_weight: float = 1.0, initial_breakpoints: np.ndarray = None,
+#                    breakpoint_bounds: list = None):
+#     """
+#     Optimize the breakpoints for a piecewise power-law fit with continuity constraints,
+#     and weight the middle segment more heavily in the optimization.
+
+#     Parameters:
+#     -----------
+#     x : np.ndarray
+#         Independent variable data.
+#     y : np.ndarray
+#         Dependent variable data.
+#     num_segments : int, optional
+#         Number of segments for the piecewise power-law fit. Default is 3.
+#     max_iter : int, optional
+#         Maximum number of iterations for the optimizer. Default is 10000.
+#     middle_weight : float, optional
+#         Weight applied to the residuals of the middle segment. Default is 1.0.
+#     initial_breakpoints : np.ndarray, optional
+#         Initial guesses for the breakpoint x-values. Should be of length num_segments - 1.
+#     breakpoint_bounds : list of tuples, optional
+#         Bounds for the breakpoint x-values. Should be a list of tuples with length num_segments - 1.
+
+#     Returns:
+#     --------
+#     fits_dict : dict
+#         Dictionary containing the fit results for each segment.
+#     """
+#     # Ensure x and y are sorted by x
+#     sort_idx = np.argsort(x)
+#     x = x[sort_idx]
+#     y = y[sort_idx]
+
+#     # Remove any NaN or infinite values
+#     finite_mask = np.isfinite(x) & np.isfinite(y) & (x > 0) & (y > 0)
+#     x = x[finite_mask]
+#     y = y[finite_mask]
+
+#     n = len(x)
+#     logx = np.log(x)
+#     logy = np.log(y)
+
+#     # Initial guess for breakpoints (x-values)
+#     if initial_breakpoints is None:
+#         initial_breakpoints = np.linspace(
+#             x[0],
+#             x[-1],
+#             num_segments + 1
+#         )[1:-1]  # Exclude the first and last point
+
+#     # Ensure initial breakpoints satisfy constraints
+#     initial_breakpoints = np.array(initial_breakpoints)
+#     initial_breakpoints += np.arange(num_segments - 1) * 1e-5
+
+#     # Initial guesses for slopes and intercepts
+#     initial_a = np.full(num_segments, -1.0)  # Initial slope guesses
+#     initial_logc = np.full(num_segments, np.mean(logy))  # Initial intercept guesses
+
+#     # Combine all variables into a single array
+#     x0 = np.concatenate([initial_breakpoints, initial_a, initial_logc])
+
+#     # Define bounds for variables
+#     if breakpoint_bounds is None:
+#         breakpoint_bounds = [(x[1], x[-2])] * (num_segments - 1)
+#     else:
+#         breakpoint_bounds = [(max(b[0], x[1]), min(b[1], x[-2])) for b in breakpoint_bounds]
+
+#     bounds = breakpoint_bounds  # Bounds for breakpoints (x-values)
+#     bounds += [(-np.inf, np.inf)] * (2 * num_segments)  # Bounds for slopes and intercepts
+
+#     # Constraints: Ordering of breakpoints
+#     constraints = []
+#     for i in range(num_segments - 2):
+#         def breakpoint_order_constraint(x_vars, i=i):
+#             return x_vars[i + 1] - x_vars[i] - 1e-5
+#         constraints.append({
+#             'type': 'ineq',
+#             'fun': breakpoint_order_constraint
+#         })
+
+#     # Continuity constraints at breakpoints
+#     for i in range(num_segments - 1):
+#         def continuity_constraint(x_vars, i=i):
+#             # Breakpoint x-value
+#             x_b = x_vars[i]
+#             if x_b <= x[0] or x_b >= x[-1]:
+#                 return 0  # Return zero to avoid errors
+
+#             # Slopes and intercepts
+#             a_i = x_vars[num_segments - 1 + i]
+#             logc_i = x_vars[2 * num_segments - 1 + i]
+#             a_next = x_vars[num_segments - 1 + i + 1]
+#             logc_next = x_vars[2 * num_segments - 1 + i + 1]
+
+#             # Continuity equation
+#             y_i = logc_i + a_i * np.log(x_b)
+#             y_next = logc_next + a_next * np.log(x_b)
+#             return y_i - y_next  # Should be zero for continuity
+
+#         constraints.append({
+#             'type': 'eq',
+#             'fun': continuity_constraint
+#         })
+
+#     # Objective function with weighted middle segment
+#     def objective(x_vars):
+#         # Extract variables
+#         breakpoints = x_vars[:num_segments - 1]
+#         a_i = x_vars[num_segments - 1:2 * num_segments - 1]
+#         logc_i = x_vars[2 * num_segments - 1:]
+
+#         # Clip and sort breakpoints
+#         breakpoints = np.clip(breakpoints, x[1], x[-2])
+#         breakpoints = np.sort(breakpoints)
+
+#         # Determine the indices where the breakpoints occur
+#         indices = np.searchsorted(x, breakpoints)
+#         start_idx = np.concatenate(([0], indices))
+#         end_idx = np.concatenate((indices, [n]))
+
+#         residuals = []
+#         for i in range(num_segments):
+#             idx = slice(start_idx[i], end_idx[i])
+#             x_seg = logx[idx]
+#             y_seg = logy[idx]
+
+#             y_fit = logc_i[i] + a_i[i] * x_seg
+#             res = y_seg - y_fit
+
+#             # Apply weighting to the middle segment
+#             if num_segments == 3 and i == 1:
+#                 weight = middle_weight
+#             else:
+#                 weight = 1.0
+
+#             residuals.extend(weight * res)
+
+#         residuals = np.array(residuals)
+#         return np.sum(residuals ** 2)
+
+#     # Minimize the total residuals with tighter tolerances
+#     res = minimize(
+#         objective,
+#         x0,
+#         method='SLSQP',
+#         bounds=bounds,
+#         constraints=constraints,
+#         options={
+#             'maxiter': int(max_iter),
+#             'disp': True,
+#             'ftol': 1e-12,   # Decrease function tolerance
+#             'eps': 1e-12     # Decrease step size for numerical gradient
+#         }
+#     )
+
+#     if not res.success:
+#         print("Optimizer did not converge:", res.message)
+
+#     # Extract optimized variables
+#     x_vars = res.x
+#     breakpoints = x_vars[:num_segments - 1]
+#     a_i = x_vars[num_segments - 1:2 * num_segments - 1]
+#     logc_i = x_vars[2 * num_segments - 1:]
+
+#     # Clip and sort breakpoints
+#     breakpoints = np.clip(breakpoints, x[1], x[-2])
+#     breakpoints = np.sort(breakpoints)
+
+#     # Determine the indices where the breakpoints occur
+#     indices = np.searchsorted(x, breakpoints)
+#     start_idx = np.concatenate(([0], indices))
+#     end_idx = np.concatenate((indices, [n]))
+
+#     # Get the x-values of the breakpoints
+#     breakpoints_values = breakpoints  # These are already x-values
+
+#     # Build fits_dict
+#     fits_dict = {}
+#     segment_labels = ['p{}'.format(i + 1) for i in range(num_segments)]
+#     for i, label in enumerate(segment_labels):
+#         idx_range = slice(start_idx[i], end_idx[i])
+#         x_seg = x[idx_range]
+#         y_seg = y[idx_range]
+
+#         # Compute predicted y values
+#         y_fit = np.exp(logc_i[i] + a_i[i] * np.log(x_seg))
+
+#         # Compute residuals
+#         residuals = np.log(y_seg) - (logc_i[i] + a_i[i] * np.log(x_seg))
+#         residual_sum = np.sum(residuals ** 2)
+
+#         # Compute standard error of the slope
+#         n_seg = len(x_seg)
+#         if n_seg > 2:
+#             s_squared = residual_sum / (n_seg - 2)
+#             Sxx = np.sum((np.log(x_seg) - np.mean(np.log(x_seg))) ** 2)
+#             if Sxx > 0:
+#                 s_a = np.sqrt(s_squared / Sxx)
+#             else:
+#                 s_a = np.nan
+#         else:
+#             s_a = np.nan
+
+#         fits_dict[label] = {
+#             'plaw-index': a_i[i],
+#             'plaw-index-err': s_a,
+#             'err': residual_sum,
+#             'xv': x_seg,
+#             'yv': y_fit,
+#             'x_break': breakpoints_values[i] if i < num_segments - 1 else np.nan,
+#             'n_iter': res.nit
+#         }
+
+#     return fits_dict
 
 
 
-def mov_fit_func(xx,
-                 yy,
-                 w_size,
-                 xmin,
-                 xmax,
-                 keep_plot = 0,
-                 pad       = 1):
+import numpy as np
+from scipy.ndimage import gaussian_filter1d
+
+def local_slope(x, y, bin_size=1, smoothing_sigma=3, return_max_diff_points=False):
+    """
+    Compute the local slope of y with respect to x in log-log space, and estimate y at midpoints.
+
+    Parameters:
+    -----------
+    x : np.ndarray
+        Independent variable data.
+    y : np.ndarray
+        Dependent variable data.
+    bin_size : int, optional
+        The number of data points to include in each bin. Default is 1 (no binning).
+    smoothing_sigma : float, optional
+        The standard deviation for Gaussian kernel used in smoothing. Default is 3.
+    return_max_diff_points : bool, optional
+        If True, the function returns the x-values where the absolute differences
+        of the slopes are maximum.
+
+    Returns:
+    --------
+    midpoints : np.ndarray
+        The x-values at the middle of the bins where the slopes are estimated.
+    slopes_smooth : np.ndarray
+        The smoothed local slopes computed in log-log space.
+    y_midpoints : np.ndarray
+        The y-values estimated at the midpoints.
+    max_diff_points : np.ndarray (optional)
+        The x-values where the absolute differences of the slopes are maximum.
+        Only returned if `return_max_diff_points` is True.
+    """
+    # Ensure x and y are numpy arrays
+    x = np.asarray(x)
+    y = np.asarray(y)
+
+    # Ensure x and y are sorted by x
+    sort_idx = np.argsort(x)
+    x = x[sort_idx]
+    y = y[sort_idx]
+
+    # Remove any NaN or infinite values and non-positive values
+    finite_mask = np.isfinite(x) & np.isfinite(y) & (x > 0) & (y > 0)
+    x = x[finite_mask]
+    y = y[finite_mask]
+
+    # Log-transform x and y
+    logx = np.log(x)
+    logy = np.log(y)
+
+    # Binning
+    if bin_size > 1:
+        num_complete_bins = len(logx) // bin_size
+        logx_binned = np.array([
+            np.mean(logx[i * bin_size:(i + 1) * bin_size]) for i in range(num_complete_bins)
+        ])
+        logy_binned = np.array([
+            np.mean(logy[i * bin_size:(i + 1) * bin_size]) for i in range(num_complete_bins)
+        ])
+    else:
+        logx_binned = logx
+        logy_binned = logy
+
+    # Compute the differences in log-log space
+    dlogx = np.diff(logx_binned)
+    dlogy = np.diff(logy_binned)
+
+    # Avoid division by zero
+    with np.errstate(divide='ignore', invalid='ignore'):
+        slopes = np.true_divide(dlogy, dlogx)
+        slopes[~np.isfinite(slopes)] = 0  # Replace infinities and NaNs with zero
+
+    # Compute midpoints of x and y in log space
+    logx_mid = (logx_binned[:-1] + logx_binned[1:]) / 2
+    midpoints = np.exp(logx_mid)
+
+    logy_mid = (logy_binned[:-1] + logy_binned[1:]) / 2
+    y_midpoints = np.exp(logy_mid)
+
+    # Smooth the slopes to reduce noise
+    slopes_smooth = gaussian_filter1d(slopes, sigma=smoothing_sigma)
+
+    if return_max_diff_points:
+        # Compute differences of slopes
+        slope_diffs = np.diff(slopes_smooth)
+        # Find indices where the absolute differences are maximum
+        max_diff_indices = np.where(np.abs(slope_diffs) == np.max(np.abs(slope_diffs)))[0]
+        # Corresponding x-values (midpoints between midpoints)
+        x_max_diff = (midpoints[max_diff_indices] + midpoints[max_diff_indices + 1]) / 2
+        return midpoints, slopes_smooth, y_midpoints, x_max_diff
+    else:
+        return midpoints, slopes_smooth, y_midpoints
+
+
+
+
+from scipy.optimize import differential_evolution
+import numpy as np
+
+def three_plaw_fit(x: np.ndarray, y: np.ndarray, num_breaks: int = 2):
+    """
+    Fit a piecewise power-law (3 segments) to the data (x, y) by optimizing the breakpoints.
+    Parameters:
+    -----------
+    x : np.ndarray
+        Independent variable data.
+    y : np.ndarray
+        Dependent variable data.
+    num_breaks : int, optional
+        Number of breakpoints (Default is 2, resulting in 3 segments)
+    Returns:
+    --------
+    fits_dict : dict
+        Dictionary containing the fit results for each segment, including standard errors.
+    """
+
+    # Ensure x and y are sorted by x
+    sort_idx = np.argsort(x)
+    x = x[sort_idx]
+    y = y[sort_idx]
+
+    # Remove any NaN or infinite values
+    finite_mask = np.isfinite(x) & np.isfinite(y) & (x > 0) & (y > 0)
+    x = x[finite_mask]
+    y = y[finite_mask]
+
+    logx = np.log(x)
+    logy = np.log(y)
+
+    # Define the objective function
+    def objective(breakpoints):
+        # Ensure breakpoints are sorted and within x range
+        breakpoints = np.sort(breakpoints)
+        if np.any(breakpoints <= x[0]) or np.any(breakpoints >= x[-1]):
+            return np.inf  # Penalty for invalid breakpoints
+
+        # Split data into segments
+        residuals = []
+        previous_idx = 0
+
+        for bp in breakpoints:
+            idx = np.searchsorted(x, bp, side='right')
+            x_seg = logx[previous_idx:idx]
+            y_seg = logy[previous_idx:idx]
+
+            # Linear regression in log-log space
+            if len(x_seg) > 1:
+                A = np.vstack([x_seg, np.ones(len(x_seg))]).T
+                slope, intercept = np.linalg.lstsq(A, y_seg, rcond=None)[0]
+                y_fit = intercept + slope * x_seg
+                residuals.extend(y_seg - y_fit)
+            else:
+                return np.inf  # Penalty for too few points in segment
+
+            previous_idx = idx
+
+        # Last segment
+        x_seg = logx[previous_idx:]
+        y_seg = logy[previous_idx:]
+        if len(x_seg) > 1:
+            A = np.vstack([x_seg, np.ones(len(x_seg))]).T
+            slope, intercept = np.linalg.lstsq(A, y_seg, rcond=None)[0]
+            y_fit = intercept + slope * x_seg
+            residuals.extend(y_seg - y_fit)
+        else:
+            return np.inf  # Penalty for too few points in segment
+
+        residuals = np.array(residuals)
+        return np.sum(residuals ** 2)
+
+    # Define bounds for breakpoints
+    bounds = [(x[1], x[-2])] * num_breaks  # Avoid the very first and last points
+
+    # Use differential evolution for global optimization
+    result = differential_evolution(
+        objective,
+        bounds,
+        strategy='best1bin',
+        maxiter=1000,
+        popsize=15,
+        tol=1e-6,
+        mutation=(0.5, 1),
+        recombination=0.7,
+        polish=True,
+        disp=False
+    )
+
+    if not result.success:
+        print("Optimization failed.")
+        return None
+
+    # Get the best breakpoints
+    best_breakpoints = np.sort(result.x)
+
+    # Now, compute the final fit parameters
+    fits_dict = {}
+    segment_labels = ['p{}'.format(i + 1) for i in range(num_breaks + 1)]
+    previous_idx = 0
+    residuals_total = []
+
+    for i, bp in enumerate(np.append(best_breakpoints, x[-1])):
+        idx = np.searchsorted(x, bp, side='right')
+        x_seg = x[previous_idx:idx]
+        y_seg = y[previous_idx:idx]
+        logx_seg = logx[previous_idx:idx]
+        logy_seg = logy[previous_idx:idx]
+
+        if len(x_seg) > 1:
+            A = np.vstack([logx_seg, np.ones(len(logx_seg))]).T
+            # Solve for parameters
+            beta = np.linalg.lstsq(A, logy_seg, rcond=None)[0]
+            slope, intercept = beta
+            y_fit = np.exp(intercept + slope * logx_seg)
+            residuals = logy_seg - (intercept + slope * logx_seg)
+            residual_sum = np.sum(residuals ** 2)
+
+            # Calculate standard errors
+            n = len(logx_seg)
+            p = 2  # Number of parameters (slope and intercept)
+            dof = n - p  # Degrees of freedom
+            if dof > 0:
+                sigma_squared = np.sum(residuals ** 2) / dof
+                # Compute covariance matrix
+                cov_beta = sigma_squared * np.linalg.inv(np.dot(A.T, A))
+                # Standard errors are square roots of diagonal elements
+                standard_errors = np.sqrt(np.diag(cov_beta))
+                slope_error, intercept_error = standard_errors
+            else:
+                slope_error = np.nan
+                intercept_error = np.nan
+        else:
+            slope = np.nan
+            intercept = np.nan
+            slope_error = np.nan
+            intercept_error = np.nan
+            y_fit = np.full_like(y_seg, np.nan)
+            residual_sum = np.nan
+
+        fits_dict[segment_labels[i]] = {
+            'plaw-index': slope,
+            'plaw-index-error': slope_error,
+            'plaw-intercept': intercept,
+            'plaw-intercept-error': intercept_error,
+            'err': residual_sum,
+            'xv': x_seg,
+            'yv': y_fit,
+            'x_break': bp if i < num_breaks else np.nan
+        }
+
+        residuals_total.extend(residuals)
+        previous_idx = idx
+
+    fits_dict['breakpoints'] = best_breakpoints
+    fits_dict['total_error'] = np.sum(np.array(residuals_total) ** 2)
+
+    return fits_dict
+
+import numpy as np
+from joblib import Parallel, delayed
+
+def mov_fit_func_joblib(xx,
+                        yy,
+                        w_size,
+                        xmin,
+                        xmax,
+                        keep_plot=0,
+                        pad=1,
+                        n_jobs=-1):
     """
     Perform moving fits on the data within a specified range.
-
+    Optimized with Joblib for parallel processing.
+    
     Parameters
     ----------
     xx : ndarray
@@ -1864,82 +2561,75 @@ def mov_fit_func(xx,
         Minimum value of x for the fitting range.
     xmax : float
         Maximum value of x for the fitting range.
-    numb_fits : int
-        Number of fits to perform.
     keep_plot : bool
         If True, additional data for plotting fits is returned.
-
+    pad : int
+        Step size to reduce the number of points for fitting.
+    n_jobs : int
+        Number of parallel jobs to run (-1 uses all available CPUs).
+    
     Returns
     -------
     dict
-        A dictionary containing information about the fits:
-        - 'xvals': x values corresponding to the fitted data.
-        - 'plaw': fitted parameters of the power law.
-        - 'fit_err': errors of the fitted parameters.
-
-        If `keep_plot` is True, the dictionary also contains:
-        - 'plot_x': x values for plotting the fitted data.
-        - 'plot_y': y values for plotting the fitted data.
-
-    Notes
-    -----
-    This function performs moving fits on the data within the specified range (`xmin` to `xmax`) with a window size of `w_size`.
-    The number of fits to perform is given by `numb_fits`.
-    If `keep_plot` is True, additional data for plotting the fits is included in the returned dictionary.
-
-    Example
-    --------
-    >>> import numpy as np
-    >>> # Create example data for xx and yy
-    >>> xx = np.linspace(1, 10, 100)
-    >>> yy = 2 * xx + np.random.normal(0, 1, 100)
-    >>> # Perform moving fits with specified parameters
-    >>> result = mov_fit_func(xx, yy, w_size=2, xmin=2, xmax=8, numb_fits=3, keep_plot=True)
-    >>> print(result)
+        A dictionary containing information about the fits.
     """
     
-    if pad       != 1:
-        print('Padding: ', str(pad))
-        
-    keep_err = []
-    keep_ind = []
-    keep_x = []
-    xvals = []
-    yvals = []
-
+    # Convert inputs to arrays and filter based on valid ranges
+    xx = np.asarray(xx)
+    yy = np.asarray(yy)
     
-    xx    = np.array(xx)
-    yy    = np.array(yy)
-    
-    mask  = (xx>-1e10) & (yy>-1e10)
-    
-    
+    mask = (xx > -1e10) & (yy > -1e10)
     xx, yy = xx[mask], yy[mask]
-    
+
+    # Find indices in the range of interest
     index1 = np.searchsorted(xx, xmin, side='left')
     index2 = np.searchsorted(xx, xmax, side='right') - 1
+    where_fit = np.arange(index1, index2 + 1, step=int(pad))  # Skip with stride of `pad`
 
-    where_fit = np.arange(index1, index2 + 1)
-    
-
-    for i in where_fit[::int(pad)]:
-        
+    # Function to perform fit (to be run in parallel)
+    def perform_fit(i):
         x0 = xx[i]
-        xf = x0*w_size
-                
-
+        xf = x0 * w_size
 
         if xf < 0.98 * xmax:
-            fit, s, e, x1, y1 = find_fit(xx, yy, x0,  xf)
+            fit, s, e, x1, y1 = find_fit(xx, yy, x0, xf)
             if len(np.shape(x1)) > 0:
-                keep_err.append(np.sqrt(fit[1][1][1]))
-                keep_ind.append(fit[0][1])
-                #keep_x.append(np.nanmean(x1[s:e]))
-                keep_x.append(x1[s])
-                if keep_plot:
-                    xvals.append(x1[s:e])
-                    yvals.append(2 * fit[2])
+                err = np.sqrt(fit[1][1][1])
+                ind = fit[0][1]
+                x_val = x1[s]
 
+                result = {
+                    'err': err,
+                    'ind': ind,
+                    'x_val': x_val,
+                }
+
+                if keep_plot:
+                    result['plot_x'] = x1[s:e]
+                    result['plot_y'] = 2 * fit[2]
+
+                return result
+        return None
+
+    # Run fits in parallel using joblib
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(perform_fit)(i) for i in where_fit
+    )
+
+    # Extract valid results
+    keep_err, keep_ind, keep_x = [], [], []
+    xvals, yvals = [], []
+
+    for result in results:
+        if result is not None:
+            keep_err.append(result['err'])
+            keep_ind.append(result['ind'])
+            keep_x.append(result['x_val'])
+            if keep_plot:
+                xvals.append(result['plot_x'])
+                yvals.append(result['plot_y'])
+
+    # Prepare the result dictionary
     result_dict = {
         'xvals': np.array(keep_x),
         'plaw': np.array(keep_ind),
@@ -1951,6 +2641,7 @@ def mov_fit_func(xx,
         result_dict['plot_y'] = yvals
 
     return result_dict
+
 
 import numpy as np
 from scipy.optimize import curve_fit
@@ -2032,6 +2723,18 @@ def freq2wavenum(freq, P, Vtot, di):
     
     return k_star, eps_of_k_star
 
+def freq2wavenum_only_kdi(freq, Vtot, di):
+    """ Takes the frequency, the PSD, the SW velocity and the di.
+        Gives the k* and the E(k*), normalised with di"""
+    
+    # xvals          =  xvals/Vtotal*(2*np.pi*di)
+    # yvals          =  yvals*(2*np.pi*di)/Vtotal
+
+    
+    k_star = freq/Vtot*(2*np.pi*di)
+    
+    
+    return k_star
 
 import numpy as np
 from scipy.interpolate import griddata
@@ -2301,7 +3004,7 @@ def saveparquet(df, path_to_save, filename, column_names=None):
     
 import pandas as pd
 
-def load_parquet(path_to_save, filename, column_names, engine='pyarrow'):
+def load_parquet(path_to_save, filename= None, column_names= None, engine='pyarrow'):
     """
     Reads specific columns from a Parquet file using the specified engine.
 
@@ -2315,8 +3018,11 @@ def load_parquet(path_to_save, filename, column_names, engine='pyarrow'):
     - A pandas DataFrame containing only the specified columns.
     """
     # Construct the full file path
-    full_file_path = f"{path_to_save}/{filename}"
-    
+    if filename== None:
+        full_file_path = f"{path_to_save}"    
+    else:
+        full_file_path = f"{path_to_save}/{filename}"
+
     # Read specific columns from the Parquet file using the specified engine
     df = pd.read_parquet(full_file_path, columns=column_names, engine=engine)
     
@@ -2350,6 +3056,35 @@ def replace_filename_extension(oldfilename, newextension, addon=False):
     return oldfilename[:dot_ix] + '.' + newextension.strip('.')
 
 
+
+
+# def newindex(df, ix_new, interp_method='linear'):
+#     """
+#     Reindex a DataFrame according to the new index *ix_new* supplied, ensuring no duplicate labels in the index.
+
+#     Args:
+#         df: [pandas DataFrame] The dataframe to be reindexed.
+#         ix_new: [np.array or pandas Index] The new index.
+#         interp_method: [str] Interpolation method to be used; forwarded to `pandas.DataFrame.interpolate`.
+
+#     Returns:
+#         df_reindexed: [pandas DataFrame] DataFrame interpolated and reindexed to *ix_new*.
+#     """
+#     # Remove duplicate indices
+#     df = df[~df.index.duplicated(keep='first')].sort_index()
+
+#     # Remove duplicates in new index and sort
+#     ix_new = np.unique(ix_new)
+
+#     # Trim the new index to the overlapping range to ensure synchronization constraints
+#     start, end = max(df.index.min(), ix_new.min()), min(df.index.max(), ix_new.max())
+#     ix_new     = ix_new[(ix_new >= start) & (ix_new <= end)]
+
+#     # Reindex and interpolate
+#     df_reindexed = df.reindex(ix_new).interpolate(method=interp_method).dropna()
+
+#     return df_reindexed
+
 def newindex(df, ix_new, interp_method='linear'):
     """
     Reindex a DataFrame according to the new index *ix_new* supplied, ensuring no duplicate labels in the index.
@@ -2363,7 +3098,7 @@ def newindex(df, ix_new, interp_method='linear'):
         df3: [pandas DataFrame] DataFrame interpolated and reindexed to *ix_new*.
     """
     # Ensure df.index and ix_new do not contain duplicates
-    df     = df[~df.index.duplicated(keep='first')]
+    df     = df[~df.index.duplicated(keep='first')].interpolate().dropna()
     ix_new = np.unique(ix_new)
 
     # Verify that reindexing is necessary and feasible
@@ -2490,6 +3225,7 @@ def progress_bar(jj, length):
 
 
 
+
 def find_ind_of_closest_dates(df, dates):
     """
     Find the indices of the closest dates in a DataFrame to a list of input dates in a vectorized manner.
@@ -2506,10 +3242,14 @@ def find_ind_of_closest_dates(df, dates):
     list
         A list containing the indices of the closest dates in the DataFrame `df` to each date in the `dates` list.
     """
+    # Ensure the DataFrame index is in datetime64[ns] format
     df_timestamps = df.index.values.astype('datetime64[ns]')
+    # Convert input dates to numpy array in datetime64[ns] format
     input_dates = np.array(pd.to_datetime(dates).values.astype('datetime64[ns]'))
+    # Calculate the absolute differences between all dates
     abs_diff = np.abs(df_timestamps[:, np.newaxis] - input_dates)
-    closest_indices = abs_diff.argmin(axis=0)
+    # Find the index of the minimum difference for each input date
+    closest_indices = np.argmin(abs_diff, axis=0)
     return closest_indices.tolist()
 
 
@@ -2559,7 +3299,7 @@ def find_closest_values_of_2_arrays(a, b):
     return np.column_stack((uni, ret_b))
 
 
-def find_cadence(df, mean_or_median_cadence='mean'):
+def find_cadence(df, mean_or_median_cadence='median'):
     """
     Find the cadence (time interval) between successive timestamps in a DataFrame's index.
 

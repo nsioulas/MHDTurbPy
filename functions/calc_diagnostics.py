@@ -12,15 +12,6 @@ import traceback
 import datetime
 
 
-# SPEDAS API
-
-# SPEDAS API
-# make sure to use the local spedas
-sys.path.insert(0, os.path.join(os.getcwd(), 'pyspedas'))
-import pyspedas
-from pyspedas.utilities import time_string
-from pytplot import get_data
-
 # Import TurbPy
 sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
 import TurbPy as turb
@@ -83,7 +74,15 @@ def apply_rolling_mean_and_get_columns(f_df, settings):
 def calculate_signB(f_df, settings):
     """Calculate the sign of B based on available column."""
     if settings['sc'] in ['PSP', 'SOLO', 'HELIOS_A', 'HELIOS_B']:
-        return -np.sign(f_df['Br'].rolling('30min', center=True).mean())
+        try:
+            return -np.sign(f_df['Br'].rolling('30min', center=True).mean())
+        except:
+            if settings['sc'] in ['PSP']:
+                return np.sign(f_df['Bz'].rolling('30min', center=True).mean())
+                
+            else:
+                return np.sign(f_df['Bx'].rolling('30min', center=True).mean())
+        
     elif settings['sc'] in ['WIND']:
         return np.sign(f_df['Br'].rolling('30min', center=True).mean())
     else:

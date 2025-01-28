@@ -42,6 +42,86 @@ au_to_rsun      = 215.032
 T_to_Gauss      = 1e4
 
 
+def LoadTimeSeriesWind_electrons(start_time,
+                                 end_time,
+                                 settings):
+    """ 
+    Load Wind Plasma Data 
+    start_time: pd.Timestamp
+    end_time: pd.Timestamp
+    """
+
+    
+    from cdasws import CdasWs
+    cdas = CdasWs()
+    vars = ['T_elec', 'TcElec']
+    time = [start_time.to_pydatetime( ).replace(tzinfo=pytz.UTC), end_time.to_pydatetime( ).replace(tzinfo=pytz.UTC)]
+    status, data         = cdas.get_data('WI_H5_SWE' , vars, time[0], time[1])
+
+    dfpar = pd.DataFrame(
+            index = data['Epoch'],
+            data = {
+                'Te'          : data['T_elec'],
+                'Te_core'     : data['TcElec']
+            }
+        )
+
+    return dfpar
+
+
+# def LoadTimeSeriesWind_electrons(start_time,
+#                                  end_time,
+#                                  settings):
+#     """ 
+#     Load Wind Plasma Data 
+#     start_time: pd.Timestamp
+#     end_time: pd.Timestamp
+#     """
+
+    
+#     from cdasws import CdasWs
+#     cdas = CdasWs()
+#     vars = ['AVGTEMP']
+#     time = [start_time.to_pydatetime( ).replace(tzinfo=pytz.UTC), end_time.to_pydatetime( ).replace(tzinfo=pytz.UTC)]
+#     status, data         = cdas.get_data('WI_ELM2_3DP', vars, time[0], time[1])
+
+#     dfpar = pd.DataFrame(
+#             index = data['Epoch'],
+#             data = {
+
+#                 'Te'     : data['AVGTEMP']
+#             }
+#         )
+    
+#     return dfpar
+
+# def LoadTimeSeriesWind_electrons(start_time,
+#                                  end_time,
+#                                  settings):
+#     """ 
+#     Load Wind Plasma Data 
+#     start_time: pd.Timestamp
+#     end_time: pd.Timestamp
+#     """
+
+    
+#     from cdasws import CdasWs
+#     cdas = CdasWs()
+#     vars = ['elect_temp']
+#     time = [start_time.to_pydatetime( ).replace(tzinfo=pytz.UTC), end_time.to_pydatetime( ).replace(tzinfo=pytz.UTC)]
+#     status, data         = cdas.get_data('WI_K0_3DP', vars, time[0], time[1])
+
+#     dfpar = pd.DataFrame(
+#             index = data['Epoch'],
+#             data = {
+
+#                 'Te'     : data['elect_temp']
+#             }
+#         )
+    
+#     return dfpar
+
+
 
 def LoadTimeSeriesWind_particles(start_time,
                                  end_time,
@@ -67,7 +147,7 @@ def LoadTimeSeriesWind_particles(start_time,
                 'Vt'     : data['P_VELS'][:,1],
                 'Vn'     : data['P_VELS'][:,2],
                 #'np_3DP' : data['P_DENS'],
-                'np' : data['P_DENS'],
+                'np'     : data['P_DENS'],
                 'Tp'     : data['P_TEMP']
             }
         )
@@ -323,12 +403,51 @@ def LoadTimeSeriesWIND(start_time,
         dfmag                 = None
         big_gaps              = None
         diagnostics_MAG       = {'Frac_miss':100, 'Large_gaps':100, 'Tot_gaps':100, 'resol':100}
+        
+        
+    if 'Down_electrons' not in settings:
+        settings['Down_electrons'] = False
+            
+    if settings['Down_electrons']:
+        try:
+            
+            # Download particle data
+            df_ELE                    = LoadTimeSeriesWind_electrons(pd.Timestamp(t0),
+                                                                     pd.Timestamp(t1),
+                                                                     settings)
 
-    try:        
+            # Return the originaly requested interval
+            df_ELE                 = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, df_ELE) 
+
+
+            # Identify big gaps in timeseries
+            big_gaps_ELE = func.find_big_gaps(df_ELE, settings['Big_Gaps']['Par_big_gaps'])
+
+            # Resample the input dataframes
+            diagnostics_ELE = func.resample_timeseries_estimate_gaps(df_ELE, settings['part_resol'] , large_gaps=10)
+
+            print('Elec fraction missing', diagnostics_ELE['Frac_miss'])
+
+        except:
+            traceback.print_exc()
+            df_ELE                = None
+            big_gaps_ELE          = None
+            diagnostics_ELE       = {'Frac_miss':100, 'Large_gaps':100, 'Tot_gaps':100, 'resol':100}
+    else:
+
+            df_ELE                = None
+            big_gaps_ELE          = None
+            diagnostics_ELE       = {'Frac_miss':100, 'Large_gaps':100, 'Tot_gaps':100, 'resol':100}       
+
+            
+
+    try:    
+            
         # Download particle data
         dfpar, dfdis,qtn_flag     = LoadTimeSeriesWind_particles(pd.Timestamp(t0),
                                                         pd.Timestamp(t1),
                                                         settings)
+
         
         # Return the originaly requested interval
         dfpar                 = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfpar) 
@@ -375,9 +494,10 @@ def LoadTimeSeriesWIND(start_time,
         misc = {
             'Par'              : func.filter_dict(diagnostics_PAR,  keys_to_keep),
             'Mag'              : func.filter_dict(diagnostics_MAG,  keys_to_keep),
+            'Elec'             : func.filter_dict(diagnostics_ELE,  keys_to_keep),
 
         }
 
-        return diagnostics_MAG["resampled_df"], None, dfpar, dfdis, big_gaps, big_gaps_par, None, misc, qtn_flag
+        return diagnostics_MAG["resampled_df"], None, dfpar, df_ELE,  dfdis, big_gaps, None, big_gaps_par, big_gaps_ELE,  misc, qtn_flag
     except:
         traceback.print_exc()

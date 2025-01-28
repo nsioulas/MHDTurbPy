@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 
 from .slice2d_intrange import slice2d_intrange
@@ -14,7 +15,7 @@ from .slice2d_2di import slice2d_2di
 from .slice2d_smooth import slice2d_smooth
 from .slice2d_subtract import slice2d_subtract
 
-from pyspedas import time_double, time_string
+from pytplot import time_double, time_string
 
 
 def slice2d(dists,
@@ -35,6 +36,7 @@ def slice2d(dists,
             thetarange=None,
             zdirrange=None,
             average_angle=None,
+            sum_angle=None,
             mag_data=None,
             vel_data=None,
             sun_data=None,
@@ -156,7 +158,7 @@ def slice2d(dists,
 
     if trange is None:
         if time is None:
-            print('Please specify a time or time range over which to compute the slice.')
+            logging.error('Please specify a time or time range over which to compute the slice.')
             return
         if window is None and samples is None:
             # use single closest distribution by default
@@ -166,7 +168,7 @@ def slice2d(dists,
                        'perp_xy', 'perp_xz', 'perp_yz', 'b_exb', 'perp1-perp2']
 
     if rotation not in valid_rotations:
-        print('Invalid rotation requested; valid options: ' + ', '.join(valid_rotations))
+        logging.error('Invalid rotation requested; valid options: ' + ', '.join(valid_rotations))
         return
 
     if interpolation == '2d':
@@ -179,6 +181,9 @@ def slice2d(dists,
     elif interpolation == 'geometric':
         if resolution is None:
             resolution = 500
+    else:
+        logging.error('Unknown interpolation method: ' + interpolation + '; valid options: "geometric", "2d"')
+        return
 
     if time is not None:
         time = time_double(time)
@@ -284,7 +289,7 @@ def slice2d(dists,
 
     geo_shift = [0, 0, 0]
     if subtract_bulk:
-        vectors = slice2d_subtract(rot_matrix['vectors'], vbulk)
+        vectors = slice2d_subtract(rot_matrix['vectors'], rot_matrix['vbulk'])
 
         if vectors is not None:
             rot_matrix['vectors'] = vectors
@@ -304,7 +309,7 @@ def slice2d(dists,
         the_slice = slice2d_geo(data['data'], resolution, data['rad'], data['phi'], data['theta'], data['dr'], data['dp'],
                                 data['dt'], orient_matrix=orientation['matrix'], rotation_matrix=rot_matrix['matrix'],
                                 custom_matrix=custom_rot['matrix'], msg_prefix=msg_prefix, shift=geo_shift,
-                                average_angle=average_angle)
+                                average_angle=average_angle, sum_angle=sum_angle)
     elif interpolation == '2d':
         the_slice = slice2d_2di(data['data'], rot_matrix['vectors'], resolution, thetarange=thetarange, zdirrange=zdirrange)
 
@@ -330,8 +335,9 @@ def slice2d(dists,
            'zrange': drange,
            'rrange': rrange,
            'rlog': log,
+           'interpolation': interpolation,
            'n_samples': len(times_ind),
            **the_slice}
 
-    print('Finished slice at ' + time_string(tr[0], fmt='%Y-%m-%d %H:%M:%S.%f'))
+    logging.info('Finished slice at ' + time_string(tr[0], fmt='%Y-%m-%d %H:%M:%S.%f'))
     return out

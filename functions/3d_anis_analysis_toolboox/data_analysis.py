@@ -36,11 +36,10 @@ import Figures as figs
 from   SEA import SEA
 import three_D_funcs as threeD
 
-# os.path.join(os.getcwd(), 'functions','downloading_helpers' )
-# from PSP import  download_ephemeris_PSP
+sys.path.insert(1, os.path.join(os.getcwd(), 'functions', 'downloading_helpers'))
+from PSP import  download_ephemeris_PSP
 
-os.path.join(os.getcwd(), 'functions','3d_anis_analysis_toolboox' )
-import collect_wave_coeffs 
+
 
 
 
@@ -99,9 +98,10 @@ def five_pt_two_pt_wavelet_analysis(i,
                                     thetas_phis_step         = 10, 
                                     return_B_in_vel_units    = False, 
                                     max_interval_dur         =  240,
-                                   estimate_dzp_dzm          = False,
-                                   use_low_resol_data        = False, 
-                                   use_local_polarity       = True):
+                                    estimate_dzp_dzm          = False,
+                                    use_low_resol_data        = False, 
+                                    use_local_polarity       = True,
+                                    dt_step                  = 0.25 ):
     
     import warnings
     
@@ -172,7 +172,7 @@ def five_pt_two_pt_wavelet_analysis(i,
             
                 
             # Check wether file alredy exists
-            check_file     = str(Path(gen_name.replace('general.pkl', '')).joinpath('final').joinpath(fname))
+            check_file     = str(Path(gen_name.replace('general.pkl', '')).joinpath('final_vs8').joinpath(fname))
                                  
             # Now work on data!
             if (not os.path.exists(check_file)) or (overwrite_existing_files):
@@ -199,6 +199,14 @@ def five_pt_two_pt_wavelet_analysis(i,
 
                 V  = V[~V.index.duplicated()]
                 B  = B[~B.index.duplicated()]
+                
+                
+                # Reindex V timeseries
+                try:
+                    V   = func.newindex(V, B.index)
+                except:
+                    print(func.find_cadence(V))
+
                 try:
                     Np = func.newindex(Np, B.index)
                 except:
@@ -221,11 +229,13 @@ def five_pt_two_pt_wavelet_analysis(i,
                     ephem                 = func.newindex(ephem, V.index)
 
                     # Subract
-                    V[['Vr', 'Vt', 'Vn']] = res['Par']['V_resampled'][['Vr', 'Vt', 'Vn']].values - ephem[['sc_vel_r', 'sc_vel_t', 'sc_vel_n']].interpolate().values
+
+                    V_sc                  = ephem[['sc_vel_r', 'sc_vel_t', 'sc_vel_n']].interpolate()#.values
 
                     # Keep Vsw to normalize
-                    Vsw_norm              = np.nanmean(np.sqrt(V['Vr']**2 + V['Vt']**2 + V['Vn']**2))
+                    Vsw_norm              = np.nanmean(np.sqrt((V['Vr']-ephem.values.T[0])**2 + (V['Vt']-ephem.values.T[1])**2 + (V['Vn']-ephem.values.T[2])**2))
                 else:
+                    V_sc                  = 0*res['Par']['V_resampled'][['Vr', 'Vt', 'Vn']]#.values 
                     Vsw_norm              = np.nanmean(np.sqrt(res['Par']['V_resampled']['Vr']**2 + res['Par']['V_resampled']['Vt']**2 + res['Par']['V_resampled']['Vn']**2))
 
                 if sc =='WIND':
@@ -237,11 +247,6 @@ def five_pt_two_pt_wavelet_analysis(i,
                 di  = res['Par']['di_mean']
                 Vsw = res['Par']['Vsw_mean']
 
-                # Reindex V timeseries
-                try:
-                    V   = func.newindex(V, B.index)
-                except:
-                    print(func.find_cadence(V))
 
                 # Estimate lags
                 dt  = func.find_cadence(B)
@@ -270,7 +275,7 @@ def five_pt_two_pt_wavelet_analysis(i,
                     del keep_wave_coeff
                 else:
                     max_lag     = int((max_hours*3600)/dt)
-                    tau_values  = 1.2**np.arange(0, 1000)
+                    tau_values  = 2**np.arange(0, 1000, dt_step)
                     max_ind     = (tau_values<max_lag) & (tau_values>0)
                     phys_scales = np.unique(tau_values[max_ind].astype(int))
                     
@@ -283,46 +288,46 @@ def five_pt_two_pt_wavelet_analysis(i,
                     use_np_factor            = 1
                     
 
-
                 # Create an empty list to store the final results
-                thetas, phis, flucts, ell_di, Sfunctions, PDFs, overall_align_angles = threeD.estimate_3D_sfuncs(B,
-                                                                                                                 V, 
-                                                                                                                 Np,
-                                                                                                                 dt,
-                                                                                                                 Vsw_norm, 
-                                                                                                                 di, 
-                                                                                                                 conditions,
-                                                                                                                 qorder, 
-                                                                                                                 phys_scales, 
-                                                                                                                 estimate_PDFS            = False,
-                                                                                                                 return_unit_vecs         = False,
-                                                                                                                 five_points_sfuncs       = Estimate_5point,
-                                                                                                                 estimate_alignment_angle = estimate_alignment_angle,
-                                                                                                                 return_mag_align_correl  = return_mag_align_correl,
-                                                                                                                 return_coefs             = return_flucs,
-                                                                                                                 only_general             = only_general,
-                                                                                                                 theta_thresh_gen         = theta_thresh_gen,
-                                                                                                                 phi_thresh_gen           = phi_thresh_gen,
-                                                                                                                 extra_conditions         = extra_conditions,
-                                                                                                                 fix_sign                 = fix_sign,
-                                                                                                                 ts_list                  = ts_list,
-                                                                                                                 thetas_phis_step         = thetas_phis_step, 
-                                                                                                                 return_B_in_vel_units    = return_B_in_vel_units,
-                                                                                                                 estimate_dzp_dzm         = estimate_dzp_dzm,
-                                                                                                                 use_np_factor            = use_np_factor
-                                                                                                                 
-                                                                                                            )
+                _,_, _, _, thetas, phis, flucts, ell_di, Sfunctions, PDFs, overall_align_angles = threeD.estimate_3D_sfuncs(B,
+                                                                                                                     V,
+                                                                                                                     V_sc, 
+                                                                                                                     Np,
+                                                                                                                     dt,
+                                                                                                                    # Vsw_norm, 
+                                                                                                                     di, 
+                                                                                                                     conditions,
+                                                                                                                     qorder, 
+                                                                                                                     phys_scales, 
+                                                                                                                     estimate_PDFS            = False,
+                                                                                                                     return_unit_vecs         = False,
+                                                                                                                     five_points_sfuncs       = Estimate_5point,
+                                                                                                                     estimate_alignment_angle = estimate_alignment_angle,
+                                                                                                                     return_mag_align_correl  = return_mag_align_correl,
+                                                                                                                     return_coefs             = return_flucs,
+                                                                                                                     only_general             = only_general,
+                                                                                                                     theta_thresh_gen         = theta_thresh_gen,
+                                                                                                                     phi_thresh_gen           = phi_thresh_gen,
+                                                                                                                     extra_conditions         = extra_conditions,
+                                                                                                                     fix_sign                 = fix_sign,
+                                                                                                                     ts_list                  = ts_list,
+                                                                                                                     thetas_phis_step         = thetas_phis_step, 
+                                                                                                                     return_B_in_vel_units    = return_B_in_vel_units,
+                                                                                                                     estimate_dzp_dzm         = estimate_dzp_dzm,
+                                                                                                                     use_np_factor            = use_np_factor
+
+                                                                                                                    )
 
 
                 keep_sfuncs_final = {'di':di, 'Vsw':Vsw, 'Vsw_norm': Vsw_norm, 'ell_di':ell_di,'Sfuncs':Sfunctions, 'flucts':flucts}
 
                 #Now save file
-                func.savepickle(keep_sfuncs_final, str(Path(gen_name.replace('general.pkl', '')).joinpath('final')), fname)
+                func.savepickle(keep_sfuncs_final, str(Path(gen_name.replace('general.pkl', '')).joinpath('final_vs8')), fname)
 
                 # also Save alignment abnles
                 if  estimate_alignment_angle:
                     align_name   = f"alignment_angles_{npoints_suffix}{vsc_suffix}.pkl"
-                    func.savepickle(overall_align_angles, str(Path(gen_name.replace('general.pkl', '')).joinpath('final')), align_name)
+                    func.savepickle(overall_align_angles, str(Path(gen_name.replace('general.pkl', '')).joinpath('final_vs8')), align_name)
 
 
                 # Save some space for ram
@@ -568,7 +573,7 @@ def five_pt_two_pt_wavelet_analysis_E1_only(i,
 
 
                 # Create an empty list to store the final results
-                thetas, phis, flucts, ell_di, Sfunctions, PDFs, overall_align_angles = threeD.estimate_3D_sfuncs(B,
+                l_mag, l_lambda, l_xi, l_ell, thetas, phis, flucts, ell_di, Sfunctions, PDFs, overall_align_angles = threeD.estimate_3D_sfuncs(B,
                                                                                                                  V, 
                                                                                                                  Np,
                                                                                                                  dt,
@@ -1505,6 +1510,197 @@ def alignment_anlges(
 
 
 
+def alignment_anlges2(
+                     what,
+                     std,
+                     al_names,
+                     wind,
+                     loglog,
+                     sig_c_min,
+                     data_path    = '',
+                     fnames_sf    ='',
+                     fnames_align ='',
+                     base_path    ='',
+                     connect2     = ''):
+    
+
+
+
+
+    data_filess_align = func.load_files(data_path,al_names, '')
+    fin_filess        = func.load_files(data_path,'final.pkl', '')
+    
+
+    xvals       = []
+    zpm_ang_w   = []
+    VB_ang_w    = []
+    zpm_ang_reg = []
+    VB_ang_reg  = []   
+    zpm_ang_pol = []
+    VB_ang_pol  = []  
+    VB_sin_reg  = []
+    
+    sig_r_mean   = []
+    sig_r_median = []
+    sig_c_mean   = []
+    sig_c_median = []
+    for  data_files_align, fin_file in zip( data_filess_align, fin_filess):
+        
+        res = pd.read_pickle(data_files_align)
+        fin  = pd.read_pickle(fin_file)
+        
+        
+        if  fin['Par']['sigma_c_median']> sig_c_min:
+            vv = np.array(res['Zpm']['weighted'])
+            xvals.append(np.array(res['l_di'])[0:len(vv)])
+
+            zpm_ang_w.append((res['Zpm']['weighted']))
+            VB_ang_w.append((res['VB']['weighted']))
+
+            zpm_ang_reg.append((res['Zpm']['reg']))
+            VB_ang_reg.append((res['VB']['reg']))
+            VB_sin_reg.append(np.array(res['VB']['reg']))
+
+            zpm_ang_pol.append((res['Zpm']['polar']))
+            VB_ang_pol.append((res['VB']['polar']))  
+
+            sig_r_mean.append(np.array(res['VB']['sig_r_mean']))
+            sig_r_median.append(np.array(res['VB']['sig_r_median']))
+            sig_c_mean.append(np.array(res['Zpm']['sig_c_mean']))
+            sig_c_median.append(np.array(res['Zpm']['sig_c_median']))
+
+    print(len(sig_r_mean))
+    keep_all  = {
+                  'xvals'         : np.hstack(xvals),
+                  'Zpm_reg'       : np.hstack(zpm_ang_reg),        
+                  'VB_reg'        : np.hstack(VB_ang_reg),  
+                  'Zpm_pol'       : np.hstack(zpm_ang_pol),        
+                  'VB_pol'        : np.hstack(VB_ang_pol), 
+                  'Zpm_w'         : np.hstack(zpm_ang_w),        
+                  'VB_w'          : np.hstack(VB_ang_w),
+                  'VB_sin_reg'    : np.hstack(VB_sin_reg),
+                  'sig_c_mean'    : np.hstack(sig_c_mean),        
+                  'sig_c_median'  : np.hstack(sig_c_median),  
+                  'sig_r_mean'    : np.hstack(sig_r_mean),        
+                  'sig_r_median'  : np.hstack(sig_r_median),  
+    }
+        
+        
+    keys = list(keep_all.keys())[1:]
+    
+    for key in keys:
+        results = func.binned_quantity(keep_all['xvals'], keep_all[key], what, std, wind, loglog)
+
+        if key =='VB_sin_reg':
+            keep_all[key] = {  'all'  : VB_sin_reg,
+                              'xvals' : results[0],
+                              'yvals' : results[1],
+                              'err'   : results[2],
+                            }          
+        else:
+            keep_all[key] = {
+                              'xvals' : results[0],
+                              'yvals' : results[1],
+                              'err'   : results[2],
+                            }
+
+    return keep_all
+
+
+
+
+from scipy.interpolate import interp1d, PchipInterpolator
+
+def calculate_wavenumber_aniso(d_b_lambda, d_b_xi, d_b_ell, 
+                               b_lambda, b_xi, b_ell,
+                               return_dbs  = False,
+                               smooth      = False,
+                               method      = 'linear',
+                               window      = 1.2):
+    # Helper function to clean and sort data
+    def clean_data(x, y):
+        valid = ~np.isnan(x) & ~np.isnan(y)
+        x, y = x[valid], y[valid]
+        sorted_indices = np.argsort(x)
+        x, y = x[sorted_indices], y[sorted_indices]
+        return x, y
+
+    # Optionally smooth the data (ensure you have a proper smoothing function)
+    if smooth:
+        # Assuming smooth_filter is a valid function that returns smoothed x and y
+        b_lambda, d_b_lambda  = smooth_filter(b_lambda, d_b_lambda, window)
+        b_xi, d_b_xi          = smooth_filter(b_xi, d_b_xi, window)
+        b_ell, d_b_ell        = smooth_filter(b_ell, d_b_ell, window)
+
+    # Clean and sort data
+    b_lambda, d_b_lambda = clean_data(b_lambda, d_b_lambda)
+    b_xi, d_b_xi         = clean_data(b_xi, d_b_xi)
+    b_ell, d_b_ell       = clean_data(b_ell, d_b_ell)
+
+    # Create interpolation functions for δB vs. scale
+    interp_d_b_lambda  = interp1d(b_lambda, d_b_lambda, kind=method, fill_value="extrapolate", assume_sorted=True)
+    interp_d_b_xi      = interp1d(b_xi, d_b_xi, kind=method, fill_value="extrapolate", assume_sorted=True)
+    interp_d_b_ell     = interp1d(b_ell, d_b_ell, kind=method, fill_value="extrapolate", assume_sorted=True)
+
+    # Create inverse interpolation functions (scale vs. δB)
+    def create_inverse_interp(y, x):
+        y, x = clean_data(y, x)
+        if np.all(np.diff(y) > 0) or np.all(np.diff(y) < 0):
+            return interp1d(y, x, kind=method, fill_value="extrapolate", assume_sorted=True)
+        else:
+            # Use PchipInterpolator for non-monotonic data
+            return PchipInterpolator(y, x, extrapolate=True)
+
+    interp_b_lambda = create_inverse_interp(d_b_lambda, b_lambda)
+    interp_b_xi     = create_inverse_interp(d_b_xi, b_xi)
+    interp_b_ell    = create_inverse_interp(d_b_ell, b_ell)
+
+    # Determine overlapping δB range across all directions
+    d_b_min = max(np.min(d_b_lambda), np.min(d_b_xi), np.min(d_b_ell))
+    d_b_max = min(np.max(d_b_lambda), np.max(d_b_xi), np.max(d_b_ell))
+
+    # Generate δB values within the overlapping range
+    d_b_values = np.logspace(np.log10(d_b_min), np.log10(d_b_max), num=1000)
+
+    lambdas = []
+    xis     = []
+    ells    = []
+    dbs_lambda = []
+    dbs_xi     = []
+    dbs_ell    = []
+
+    # Loop over δB values to find corresponding scales
+    for d_b in d_b_values:
+        try:
+            b_lambda_val = interp_b_lambda(d_b)
+            b_xi_val     = interp_b_xi(d_b)
+            b_ell_val    = interp_b_ell(d_b)
+        except ValueError:
+            # Skip if interpolation is not possible
+            continue
+
+        lambdas.append(b_lambda_val)
+        xis.append(b_xi_val)
+        ells.append(b_ell_val)
+
+        if return_dbs:
+            dbs_lambda.append(d_b)
+            dbs_xi.append(interp_d_b_xi(b_xi_val))
+            dbs_ell.append(interp_d_b_ell(b_ell_val))
+            
+            
+    # Sorting based on lambdas
+    sorted_indices = np.argsort(lambdas)
+    lambdas        = np.array(lambdas)[sorted_indices]
+    xis            = np.array(xis)[sorted_indices]
+    ells           = np.array(ells)[sorted_indices]
+
+    if return_dbs:
+        return (np.array(ells), np.array(xis), np.array(lambdas),
+                np.array(dbs_lambda), np.array(dbs_xi), np.array(dbs_ell))
+    else:
+        return np.array(ells), np.array(xis), np.array(lambdas)
+
 
 
 def find_nearest(array, value):
@@ -1514,7 +1710,7 @@ def find_nearest(array, value):
     return array[idx]
 
 from scipy.interpolate import PchipInterpolator
-def calculate_wavenumber_aniso(d_b_lambda, d_b_xi, d_b_ell, 
+def calculate_wavenumber_aniso_old(d_b_lambda, d_b_xi, d_b_ell, 
                                b_lambda, b_xi, b_ell,
                                return_dbs  = False,
                                smooth      = False,
@@ -1525,26 +1721,18 @@ def calculate_wavenumber_aniso(d_b_lambda, d_b_xi, d_b_ell,
     
     if smooth:
 
-        b_lambda, d_b_lambda = func.smooth_filter(b_lambda, d_b_lambda, window)
-        b_xi, d_b_xi         = func.smooth_filter(b_xi, d_b_xi, window)
-        b_ell, d_b_ell       = func.smooth_filter(b_ell,d_b_ell, window)
+        b_lambda,_, d_b_lambda = func.smooth_filter(b_lambda, d_b_lambda, window)
+        b_xi, _, d_b_xi         = func.smooth_filter(b_xi, d_b_xi, window)
+        b_ell,_,  d_b_ell       = func.smooth_filter(b_ell,d_b_ell, window)
 
 
-#     interp_d_b_lambda = interp1d(b_lambda, d_b_lambda, kind=method, fill_value='extrapolate')
-#     interp_d_b_ell = interp1d(b_ell, d_b_ell, kind=method, fill_value='extrapolate')
-#     interp_d_b_xi = interp1d(b_xi, d_b_xi, kind=method, fill_value='extrapolate')
-
-#     interp_b_lambda = interp1d(d_b_lambda, b_lambda, kind=method, fill_value='extrapolate')
-#     interp_b_ell = interp1d(d_b_ell, b_ell, kind=method, fill_value='extrapolate')
-#     interp_b_xi = interp1d(d_b_xi, b_xi, kind=method, fill_value='extrapolate')
-    
     interp_d_b_lambda = interp1d(b_lambda, d_b_lambda, kind=method, bounds_error=False)#, fill_value=(d_b_lambda[0], d_b_lambda[-1]))
-    interp_d_b_ell = interp1d(b_ell, d_b_ell, kind=method, bounds_error=False)#, fill_value=(d_b_ell[0], d_b_ell[-1]))
-    interp_d_b_xi = interp1d(b_xi, d_b_xi, kind=method, bounds_error=False)#, fill_value=(d_b_xi[0], d_b_xi[-1]))
+    interp_d_b_ell    = interp1d(b_ell, d_b_ell, kind=method, bounds_error=False)#, fill_value=(d_b_ell[0], d_b_ell[-1]))
+    interp_d_b_xi     = interp1d(b_xi, d_b_xi, kind=method, bounds_error=False)#, fill_value=(d_b_xi[0], d_b_xi[-1]))
 
-    interp_b_lambda = interp1d(d_b_lambda, b_lambda, kind=method, bounds_error=False)#, fill_value=(b_lambda[0], b_lambda[-1]))
-    interp_b_ell = interp1d(d_b_ell, b_ell, kind=method, bounds_error=False)#, fill_value=(b_ell[0], b_ell[-1]))   
-    interp_b_xi = interp1d(d_b_xi, b_xi, kind=method, bounds_error=False)#, fill_value=(b_xi[0], b_xi[-1])) 
+    interp_b_lambda   = interp1d(d_b_lambda, b_lambda, kind=method, bounds_error=False)#, fill_value=(b_lambda[0], b_lambda[-1]))
+    interp_b_ell      = interp1d(d_b_ell, b_ell, kind=method, bounds_error=False)#, fill_value=(b_ell[0], b_ell[-1]))   
+    interp_b_xi       = interp1d(d_b_xi, b_xi, kind=method, bounds_error=False)#, fill_value=(b_xi[0], b_xi[-1])) 
         
     # Calculating chi_p_lambda_ast
     lambdas = []
