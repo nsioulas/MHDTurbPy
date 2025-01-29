@@ -7,3 +7,5 @@ examples/PSP/*/final.pkl
 examples/WIND/*/final.pkl
 examples/PSP/*.pkl
 examples/WIND/*.pkl
+examples/PSP/*.pkl
+examples/WIND/*.pkl
