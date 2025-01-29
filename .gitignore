@@ -5,3 +5,5 @@ _download_data.ipynb/
 _download_data.ipynb
 examples/PSP/*/final.pkl
 examples/WIND/*/final.pkl
+examples/PSP/*.pkl
+examples/WIND/*.pkl
