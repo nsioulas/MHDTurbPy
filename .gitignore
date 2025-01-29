@@ -3,3 +3,5 @@ Notebooks_Examples/Load_Clean_Analyze_test.ipynb
 example/final_intervals/
 _download_data.ipynb/
 _download_data.ipynb
+examples/PSP/*/final.pkl
+examples/WIND/*/final.pkl
