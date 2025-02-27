@@ -116,8 +116,7 @@ def calculate_energies_sigmas(Zp, Zm, dv, dva):
 
 
 
-def estimate_magnetic_field_psd(mag_resampled,
-                                mag_low_res,
+def estimate_magnetic_field_psd(df_mag,
                                 dtb,
                                 settings,
                                 diagnostics,
@@ -127,7 +126,7 @@ def estimate_magnetic_field_psd(mag_resampled,
     and return a dictionary containing the PSD information and diagnostics.
 
     Parameters:
-    - mag_resampled: The resampled magnetic field data.
+    - df_mag: The resampled magnetic field data.
     - dtb: The time base or resolution for the PSD calculation.
     - settings: A dictionary containing settings for PSD estimation and smoothing.
     - diagnostics: A dictionary containing diagnostic information related to the magnetic field.
@@ -136,7 +135,7 @@ def estimate_magnetic_field_psd(mag_resampled,
     - A dictionary containing the estimated PSD values, frequencies, smoothing details, and diagnostics.
     """
     
-    def estimate_B_psd_and_smooth(mag_resampled, dtb, settings):
+    def estimate_B_psd_and_smooth(df_mag, dtb, settings):
         """
         Estimate the Power Spectral Density (PSD) of the magnetic field and optionally smooth it.
         """
@@ -147,13 +146,13 @@ def estimate_magnetic_field_psd(mag_resampled,
             try:
                 # Estimate PSD of the magnetic field
                 f_B, psd_B, psd_B_R, psd_B_T, psd_B_N, psd_Mod = turb.TracePSD(
-                    mag_resampled.values.T[0],
-                    mag_resampled.values.T[1],
-                    mag_resampled.values.T[2],
-                    dtb,
-                    return_components          = settings['est_PSD_components'],
-                    return_mod                 = True)
-                
+                                                                                df_mag.values.T[0],
+                                                                                df_mag.values.T[1],
+                                                                                df_mag.values.T[2],
+                                                                                dtb,
+                                                                                return_components          = settings['est_PSD_components'],
+                                                                                return_mod                 = True)
+                                                                            
 
                 # Smooth PSD of the magnetic field if required
                 if settings['smooth_psd']:
@@ -169,7 +168,7 @@ def estimate_magnetic_field_psd(mag_resampled,
 
     
     # Estimate the Power Spectral Density (PSD) of the magnetic field and optionally smooth it
-    f_B, psd_B, psd_B_R, psd_B_T, psd_B_N, f_B_mid, f_B_mean, psd_B_smooth, psd_Mod = estimate_B_psd_and_smooth(mag_resampled,
+    f_B, psd_B, psd_B_R, psd_B_T, psd_B_N, f_B_mid, f_B_mean, psd_B_smooth, psd_Mod = estimate_B_psd_and_smooth(df_mag,
                                                                                                                 dtb, 
                                                                                                                 settings)
     
@@ -189,11 +188,6 @@ def estimate_magnetic_field_psd(mag_resampled,
         "resolution"       : diagnostics['Mag']["resol"]
     }
 
-    if return_mag_df:
-        
-        if settings['upsample_low_freq_ts'] ==False:
-            mag_dict["B_resampled_part_res"]  =  mag_low_res.interpolate().dropna()
-        mag_dict["B_resampled"]               =  mag_resampled
     return mag_dict
 
 
@@ -314,33 +308,9 @@ def calculate_diagnostics(
                           diagnostics
                          ):     
             
-    """ Interpolate gaps"""  
-    df_mag       =  df_mag.interpolate().dropna()
-    df_part      =  df_part.interpolate().dropna()
+    # Create final dataframe by joining and cleaning up the data
+    f_df = df_mag.join(df_part)
     
-    # Reindex magnetic field data to particle data index
-    dtv          = func.find_cadence(df_part)
-    
-
-
-    # Determine which dataframe has higher frequency based on dtv and dtb comparison
-
-    try:
-        upsample                       = True if settings['upsample_low_freq_ts']  else False
-
-        mag_resampled, df_part_aligned = func.synchronize_dfs(df_mag.copy(), df_part, upsample)
-
-        # Create final dataframe by joining and cleaning up the data
-        f_df = mag_resampled.join(df_part_aligned).interpolate().dropna()
-        
-
-    except:
-
-        # Create final dataframe by joining and cleaning up the data
-        f_df = df_mag.join(df_part).interpolate().dropna()
-        
-        
-        
     # Estimate fluctuations
     f_df, columns_b, columns_v = apply_rolling_mean_and_get_columns(f_df, settings)
     
@@ -386,10 +356,12 @@ def calculate_diagnostics(
     di, di_mean, di_median, di_std                 = plasma.estimate_di(Np)
 
     # Estimate beta
-    beta,  temp, beta_mean, beta_median, beta_std  = plasma.estimate_beta(Bmag, Vth, Np)
+    from plasmapy.formulary import beta
+    
+    beta, beta_mean, beta_median, beta_std         = plasma.estimate_beta(Bmag, Np, f_df.Tp.values )
 
-    # Estimate rho_ci
-    rho_ci, rho_ci_mean, rho_ci_median, rho_ci_std = plasma.estimate_rho_ci(Vth, Bmag)
+    # Estimate rho_i
+    rho_i, rho_i_mean, rho_i_median, rho_i_std     = plasma.estimate_rho_i(di, beta)
 
     # Calculate the Alfvén speed
     alfv_speed = np.sqrt(np.sum(Va_ts**2, axis=0))
@@ -423,22 +395,12 @@ def calculate_diagnostics(
                                          'va_r'     : Va_ts[0], 'va_t'    : Va_ts[1],     'va_n'    : Va_ts[2],
                                          'v_r'      : V_ts[0],  'v_t'     : V_ts[1],      'v_n'     : V_ts[2],
                                          
-                                         'beta'     : beta,     'np'      : Np,           'Tp'      : temp/kb,
-                                         'VB'       : vbang,    'd_i'     : di,           'Ma'      : Ma_ts, 
+                                         'beta'     : beta,     'np'      : Np,           'Tp'      : f_df.Tp.values,
+                                         'VB'       : vbang,    'd_i'     : di,           'Ma'      : Ma_ts,   'rho_i': rho_i,
                                          'Vsw'      : Vsw,      'kin_norm': kinet_normal, 'Ma_r'    : Ma_r_ts,
                                          'sigma_c'  : sigma_c,  'Va'      : alfv_speed,   'sigma_r' : sigma_r}).set_index('DateTime')
-    sigs_df              = sigs_df.interpolate().dropna()
+    sigs_df              = sigs_df
     
-    
-
-    
-    # Estimate the Power Spectral Density (PSD) of the magnetic field and optionally smooth it
-    mag_dict = estimate_magnetic_field_psd(df_mag,
-                                           mag_resampled,
-                                           func.find_cadence(df_mag),
-                                           settings,
-                                           diagnostics)
-
     # Also keep a dict containing psd_vv, psd_bb, psd_zp, psd_zm
     dict_psd, _ = estimate_psd_dict(settings,
                                     sigs_df,
@@ -491,19 +453,19 @@ def calculate_diagnostics(
                     'Np_std'            : Np_std,
                     'di_mean'           : di_mean,
                     'di_std'            : di_std,
-                    'rho_ci_mean'       : rho_ci_mean,
-                    'rho_ci_std'        : rho_ci_std,
+                    'rho_i_mean'       : rho_i_mean,
+                    'rho_i_std'        : rho_i_std,
                     'VBangle_mean'      : VBangle_mean,
                     'VBangle_std'       : VBangle_std
                 }
 
 
   
-    return mag_dict, part_dict, sigs_df
+    return part_dict, sigs_df
 
 
 def general_dict_func(diagnostics,
-                 mag_resampled,
+                 df_mag,
                  df_par,
                  dist,
                  ):
@@ -511,10 +473,10 @@ def general_dict_func(diagnostics,
     
     """ Make distance dataframe to begin at the same time as magnetic field timeseries """ 
     try:
-        r_psp                = np.nanmean(func.use_dates_return_elements_of_df_inbetween(mag_resampled.index[0], mag_resampled.index[-1], dist['Dist_au']))
+        r_psp                = np.nanmean(func.use_dates_return_elements_of_df_inbetween(df_mag.index[0], df_mag.index[-1], dist['Dist_au']))
     except:
         try:
-            r_psp            = np.nanmean(func.use_dates_return_elements_of_df_inbetween(mag_resampled.index[0], mag_resampled.index[-1], df_par['Dist_au']))
+            r_psp            = np.nanmean(func.use_dates_return_elements_of_df_inbetween(df_mag.index[0], df_mag.index[-1], df_par['Dist_au']))
         except:
             traceback.print_exc()
 
@@ -525,8 +487,8 @@ def general_dict_func(diagnostics,
         diagnostics['part_flag'] = None
         
     general_dict = {
-                        "Start_Time"           :  mag_resampled.index[0],
-                        "End_Time"             :  mag_resampled.index[-1],  
+                        "Start_Time"           :  df_mag.index[0],
+                        "End_Time"             :  df_mag.index[-1],  
                         "d"                    :  r_psp,
                         "Fraction_missing_MAG" :  diagnostics['Mag']["Frac_miss"],
                         "Fract_large_gaps"     :  diagnostics['Mag']["Large_gaps"],

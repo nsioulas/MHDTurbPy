@@ -23,7 +23,7 @@ plt.rcParams['text.usetex'] = True
 import sys
 sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
 
-# from  CUSIA.Colors.CUSIA_Colors import mycmap
+#from  CUSIA.Colors.CUSIA_Colors import mycmap
 
 
 
@@ -197,12 +197,83 @@ def create_colors(hmany, which=None):
     
     return cmap(np.linspace(0, 1, hmany))
 
+# import numpy as np
+# import matplotlib.pyplot as plt
+# from matplotlib.colors import LinearSegmentedColormap
 
-
-
-
-
-
+# def create_colors(hmany, which=None):
+#     """
+#     Returns an (hmany x 4) array of RGBA colors sampled from one of 15 variations
+#     of an "old_rose_misty_blue" gradient. In each variation the gradient is defined
+#     by four color stops: a starting old-rose tone, two intermediate colors that add extra
+#     nuance and adjust the level of dulness, and an ending misty blue tone.
+    
+#     Parameters
+#     ----------
+#     hmany : int
+#         Number of colors (each as an RGBA row) to return.
+#     which : str, optional
+#         One of 15 variant names. If None or an invalid key is passed,
+#         the default 'old_rose_misty_blue_3' is used.
+        
+#         Valid options:
+#             'old_rose_misty_blue_1'
+#             'old_rose_misty_blue_2'
+#             'old_rose_misty_blue_3'
+#             'old_rose_misty_blue_4'
+#             'old_rose_misty_blue_5'
+#             'old_rose_misty_blue_6'
+#             'old_rose_misty_blue_7'
+#             'old_rose_misty_blue_8'
+#             'old_rose_misty_blue_9'
+#             'old_rose_misty_blue_10'
+#             'old_rose_misty_blue_11'
+#             'old_rose_misty_blue_12'
+#             'old_rose_misty_blue_13'
+#             'old_rose_misty_blue_14'
+#             'old_rose_misty_blue_15'
+    
+#     Returns
+#     -------
+#     numpy.ndarray
+#         An (hmany x 4) array of RGBA values (floats in [0,1]) sampled along the gradient.
+#     """
+#     # Define 15 variations of the "old_rose_misty_blue" gradient.
+#     # Each variant is defined by 4 stops: [start, mid1, mid2, end].
+#     # The start is an old rose (redish) tone and the end is a misty blue.
+#     # The two intermediate colors adjust the gradient's dulness.
+#     variants = {
+#         'old_rose_misty_blue_1':  ["#B04A4A", "#A85765", "#A05570", "#7497D0"],
+#         'old_rose_misty_blue_2':  ["#AA4949", "#A04D4F", "#9D546C", "#7093C9"],
+#         'old_rose_misty_blue_3':  ["#A45252", "#9C5258", "#97506A", "#6C8DC2"],
+#         'old_rose_misty_blue_4':  ["#9F4C4C", "#984A59", "#935066", "#6787BB"],
+#         'old_rose_misty_blue_5':  ["#9A4646", "#944C55", "#8F4F62", "#6281B4"],
+#         'old_rose_misty_blue_6':  ["#954040", "#8D473E", "#8A4B5E", "#5D7BAD"],
+#         'old_rose_misty_blue_7':  ["#8F3A3A", "#893C43", "#84475A", "#5775A6"],
+#         'old_rose_misty_blue_8':  ["#8A3434", "#853A3F", "#7F414F", "#52709F"],
+#         'old_rose_misty_blue_9':  ["#853030", "#803434", "#7A3C4B", "#4D6A98"],
+#         'old_rose_misty_blue_10': ["#7F2A2A", "#792C30", "#753645", "#486493"],
+#         'old_rose_misty_blue_11': ["#7A2424", "#743C3A", "#703F40", "#43618C"],
+#         'old_rose_misty_blue_12': ["#75201F", "#6A3C2F", "#6C3A3C", "#3D5D85"],
+#         'old_rose_misty_blue_13': ["#6F1C1A", "#6A1F1D", "#683737", "#38587F"],
+#         'old_rose_misty_blue_14': ["#6A1815", "#652421", "#633332", "#34527A"],
+#         'old_rose_misty_blue_15': ["#650612", "#602518", "#5E2F2F", "#304D75"],
+#     }
+    
+#     # Use default if key not found.
+#     if which not in variants:
+#         which = 'old_rose_misty_blue_3'
+    
+#     # Retrieve the chosen variant's list of 4 color stops.
+#     stops = variants[which]
+    
+#     # Create a LinearSegmentedColormap using these 4 stops.
+#     cmap = LinearSegmentedColormap.from_list(name=which, colors=stops, N=256)
+    
+#     # Sample hmany evenly spaced colors from the colormap.
+#     sampled_colors = cmap(np.linspace(0, 1, hmany))
+    
+#     return sampled_colors
 
 def heatmap_func(x,  y, z,
                  numb_bins, xlabel, ylabel, colbar_label, min_counts =10, what ='mean', ax_scale ='loglog',

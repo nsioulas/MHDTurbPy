@@ -19,12 +19,13 @@ import statistics
 from statistics import mode
 import orderedstructs
 import sys
+import pytplot
 
 import warnings
 warnings.filterwarnings('ignore')
 
 
-# Import TurbPy
+# Import urbPy
 sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
 
 
@@ -140,6 +141,115 @@ def compute_curvature(x, y):
     return curvature
 
 
+def tplot_to_dataframe(file_path, 
+                       var_name=None, 
+                       convert_time_to_datetime=True,
+                       time_unit='s'):
+    """
+    Restore a TPlot file (IDL .tplot or .sav with TPlot variables) using pytplot
+    and convert a specified TPlot variable into a pandas DataFrame with a DateTimeIndex.
+    
+    Parameters
+    ----------
+    file_path : str
+        Full path to the TPlot save file (e.g. '.tplot' or '.sav').
+    var_name : str, optional
+        Name of the TPlot variable inside the file. If None, and the file
+        contains exactly one variable, we use that one. Otherwise, this must be specified.
+    convert_time_to_datetime : bool, optional
+        If True, converts numeric time (often seconds since 1970) to a DateTimeIndex.
+        If False, leaves time as numeric values.
+    time_unit : str, optional
+        If converting time to DateTimeIndex, the unit of the time array. Typically 's' 
+        for seconds. Options include 'ms', 'ns', etc., depending on your data.
+
+    Returns
+    -------
+    df : pandas.DataFrame
+        A DataFrame indexed by time (either numeric or a DateTimeIndex),
+        with one or more columns for the TPlot variable data.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the file_path does not exist on disk.
+    ValueError
+        If the file contains no TPlot variables, or if var_name is specified but not found,
+        or if multiple variables exist and var_name is not specified.
+    """
+
+    # 1. Check if the file exists on disk
+    if not os.path.isfile(file_path):
+        raise FileNotFoundError(f"File not found: {file_path}")
+
+    # 2. Attempt to restore the TPlot file
+    #    If this fails due to the file not being a valid TPlot file,
+    #    pytplot might print a warning or raise an error, and no variables will load.
+    pytplot.tplot_restore(file_path)
+
+    # 3. See which TPlot variables were loaded
+    all_vars = pytplot.tplot_names()
+
+    if len(all_vars) == 0:
+        # Means no TPlot variables recognized from this file
+        raise ValueError(
+            f"No TPlot variables found in file: {file_path}\n"
+            f"Check if it's really a TPlot save file created with IDL tplot_save()."
+        )
+
+    # If user didn't specify var_name, auto-pick if there's exactly one
+    if var_name is None:
+        if len(all_vars) == 1:
+            var_name = all_vars[0]
+            print(f"Auto-selected single TPlot variable: {var_name}")
+        else:
+            raise ValueError(
+                f"Multiple TPlot variables found. Please specify var_name.\n"
+                f"Available variables: {all_vars}"
+            )
+    else:
+        if var_name not in all_vars:
+            raise ValueError(
+                f"Requested var_name='{var_name}' not in loaded TPlot variables: {all_vars}"
+            )
+
+    # 4. Retrieve data for the chosen variable
+    result = pytplot.get_data(var_name)
+    if result is None:
+        raise ValueError(
+            f"Could not retrieve data for TPlot variable '{var_name}'. "
+            "Possibly no valid data in the file."
+        )
+
+    # get_data can return either (time, data) or (time, data, metadata)
+    if len(result) == 2:
+        time_vals, data_vals = result
+    elif len(result) == 3:
+        time_vals, data_vals, _ = result
+    else:
+        raise ValueError("Unexpected format from pytplot.get_data().")
+
+    # 5. Convert time array if requested
+    if convert_time_to_datetime:
+        # By default, TPlot times are often in seconds since 1970.
+        time_index = pd.to_datetime(time_vals, unit=time_unit, origin='unix')
+    else:
+        # Leave time as numeric
+        time_index = pd.Index(time_vals, name='time')
+
+    # 6. Wrap in a DataFrame
+    if data_vals.ndim == 1:
+        # 1D data => single column named after var_name
+        df = pd.DataFrame(data_vals, index=time_index, columns=[var_name])
+    else:
+        # 2D or more => multiple columns
+        # Name each column var_name_0, var_name_1, etc.
+        col_count = data_vals.shape[1]
+        col_names = [f"{var_name}_{i}" for i in range(col_count)]
+        df = pd.DataFrame(data_vals, index=time_index, columns=col_names)
+
+    return df
+
 
 
 # def synchronize_dfs(df_higher_freq, df_lower_freq, upsample=True, 
@@ -194,59 +304,98 @@ def compute_curvature(x, y):
 
 
 
-
-
-
 def synchronize_dfs(df_higher_freq, df_lower_freq, upsample):
     """
-    Align two dataframes based on their frequency, upsample lower frequency dataframe if specified.
-    
-    Args:
-    - df_higher_freq: DataFrame with higher frequency data.
-    - df_lower_freq: DataFrame with lower frequency data.
-    - settings: Dictionary containing settings including 'upsample_low_freq_ts'.
-    
-    Returns:
-    - Tuple of aligned DataFrames.
+    Align two dataframes based on their frequency, upsample lower frequency 
+    dataframe if specified, otherwise downsample the higher frequency one.
+
+    In the end, we ensure that we return two DataFrames that:
+      1. Are strictly in the overlapping time range,
+      2. Have no NaNs at the beginning or end (trimmed away),
+      3. Are time-interpolated (so small internal gaps are filled).
     """
     if upsample:
-        # Upsample the lower frequency dataframe to match the higher frequency one
-        # aligned_lower_freq = newindex(df_lower_freq, df_higher_freq.index)
-        # return df_higher_freq, aligned_lower_freq
-        
+        # 1) Upsample lower frequency to match higher frequency
         aligned_lower_freq = signal_processing.upsample_dataframe(df_lower_freq, df_higher_freq)
-        
-        # Determine overlapping time range
-        overlapping_start    = max(df_higher_freq.dropna().index.min(), aligned_lower_freq.dropna().index.min())
-        overlapping_end      = min(df_higher_freq.dropna().index.max(), aligned_lower_freq.dropna().index.max())
 
-        df_higher_freq       = df_higher_freq.loc[overlapping_start:overlapping_end]#.copy()
-        aligned_lower_freq  = aligned_lower_freq.loc[overlapping_start:overlapping_end]#.copy()
+        # 2) Overlap clamp
+        overlapping_start = max(df_higher_freq.index.min(), aligned_lower_freq.index.min())
+        overlapping_end   = min(df_higher_freq.index.max(), aligned_lower_freq.index.max())
 
-            
+        df_higher_freq     = df_higher_freq.loc[overlapping_start:overlapping_end]
+        aligned_lower_freq = aligned_lower_freq.loc[overlapping_start:overlapping_end]
+
+        # 3) Interpolate both to fill small gaps
+        df_higher_freq     = df_higher_freq.interpolate(method='time')
+        aligned_lower_freq = aligned_lower_freq.interpolate(method='time')
+
+        # 4) Remove leading/trailing NaNs from both
+
+        # (a) Find first/last valid index in each
+        fvi_high = df_higher_freq.first_valid_index()
+        lvi_high = df_higher_freq.last_valid_index()
+
+        fvi_low  = aligned_lower_freq.first_valid_index()
+        lvi_low  = aligned_lower_freq.last_valid_index()
+
+        # If either is entirely NaN, just return empty slices
+        if fvi_high is None or fvi_low is None:
+            return (df_higher_freq.iloc[0:0], aligned_lower_freq.iloc[0:0])
+
+        # (b) Take the maximum of first_valid_indices => start
+        new_start = max(fvi_high, fvi_low)
+        # (c) Take the minimum of last_valid_indices  => end
+        new_end   = min(lvi_high, lvi_low)
+
+        # (d) Trim both DataFrames
+        df_higher_freq     = df_higher_freq.loc[new_start:new_end]
+        aligned_lower_freq = aligned_lower_freq.loc[new_start:new_end]
+
         return df_higher_freq, aligned_lower_freq
 
     else:
-        # Attempt to align the higher frequency dataframe to the lower frequency one
+        # 1) Downsample higher frequency to match lower frequency
         try:
+            # Interpolate + dropna inside, if needed (unchanged)
+            aligned_higher_freq = signal_processing.downsample_and_filter(
+                df_higher_freq.interpolate().dropna(),
+                df_lower_freq.interpolate().dropna()
+            )
             
-            
-            aligned_higher_freq = signal_processing.downsample_and_filter(df_higher_freq.interpolate().dropna().copy(), 
-                                                                          df_lower_freq.interpolate().dropna().copy())
-            
-            # Determine overlapping time range
-            overlapping_start    = max(aligned_higher_freq.dropna().index.min(), df_lower_freq.dropna().index.min())
-            overlapping_end      = min(aligned_higher_freq.dropna().index.max(), df_lower_freq.dropna().index.max())
+            # 2) Overlap clamp
+            overlapping_start = max(aligned_higher_freq.index.min(), df_lower_freq.index.min())
+            overlapping_end   = min(aligned_higher_freq.index.max(), df_lower_freq.index.max())
 
-            aligned_higher_freq = aligned_higher_freq.loc[overlapping_start:overlapping_end]#.copy()
-            df_lower_freq       = df_lower_freq.loc[overlapping_start:overlapping_end]#.copy()
+            aligned_higher_freq = aligned_higher_freq.loc[overlapping_start:overlapping_end]
+            df_lower_freq       = df_lower_freq.loc[overlapping_start:overlapping_end]
 
- 
+            # 3) Interpolate both (fills small internal gaps)
+            aligned_higher_freq = aligned_higher_freq.interpolate(method='time')
+            df_lower_freq       = df_lower_freq.interpolate(method='time')
+
+            # 4) Remove leading/trailing NaNs from both
+            fvi_high = aligned_higher_freq.first_valid_index()
+            lvi_high = aligned_higher_freq.last_valid_index()
+
+            fvi_low  = df_lower_freq.first_valid_index()
+            lvi_low  = df_lower_freq.last_valid_index()
+
+            if fvi_high is None or fvi_low is None:
+                return (aligned_higher_freq.iloc[0:0], df_lower_freq.iloc[0:0])
+
+            new_start = max(fvi_high, fvi_low)
+            new_end   = min(lvi_high, lvi_low)
+
+            aligned_higher_freq = aligned_higher_freq.loc[new_start:new_end]
+            df_lower_freq       = df_lower_freq.loc[new_start:new_end]
+
             return aligned_higher_freq, df_lower_freq
-        except Exception as e:  # Consider specifying the exact exception if known
+
+        except Exception as e:
             print(f'Error aligning dataframes: {e}')
-            # Optionally, handle the error or return the original dataframes
+            # Optionally handle error or return the original dataframes
             return df_higher_freq, df_lower_freq
+
 
 def clean_data(x, y):
     """Remove non-finite values from the data."""
@@ -1358,7 +1507,8 @@ def smoothing_function(x, y, mean=True, window=2):
                     yout[i] = np.nanmean(y_range)
                 else:
                     yout[i] = np.nanmedian(y_range)
-                xoutmid[i] = x0 + np.log10(0.5) * (x0 - x[e])
+                xoutmid[i] = x0 + np.log10(0.4) * (x0 - x[e])
+                #xoutmid[i] = np.nanmedian(x_range)
                
 
     return xoutmid, yout
@@ -1460,49 +1610,42 @@ def simple_python_rolling_median(vector: np.ndarray,
     return ret
 
 
-def use_dates_return_elements_of_df_inbetween(t0, t1, df):
-    """
-    Find the mean of values in a DataFrame `df` within the range of the nearest indices of `t0` and `t1`.
 
-    This function locates the nearest indices of `t0` and `t1` in the DataFrame `df`, which has a datetime-like
-    index. It then returns the mean of the values in `df` within the range defined by the nearest indices.
+
+def  use_dates_return_elements_of_df_inbetween(t0, t1, df):
+    """
+    Return the rows of df between the nearest indices to t0 and t1 using iloc.
 
     Parameters:
-    ----------
-    t0 : datetime-like object or str
-        The start date to find the nearest index for. If provided as a string, it will be converted to a
-        datetime-like object using `pd.to_datetime`.
-    t1 : datetime-like object or str
-        The end date to find the nearest index for. If provided as a string, it will be converted to a
-        datetime-like object using `pd.to_datetime`.
-    df : pandas DataFrame
-        The DataFrame to use. The DataFrame's index should be a datetime-like object.
+    -----------
+    t0 : datetime-like or str
+        Start date (if str, converted to datetime).
+    t1 : datetime-like or str
+        End date (if str, converted to datetime).
+    df : pd.DataFrame
+        DataFrame with a sorted datetime-like index.
 
     Returns:
-    -------
-    pandas DataFrame
-        A DataFrame containing the values of `df` within the range defined by the nearest indices of `t0` and `t1`.
-
-    Notes:
-    -----
-    The function sorts the index of the DataFrame `df` in increasing order before locating the nearest indices for `t0`
-    and `t1`. It is assumed that the DataFrame's index is sorted and consists of unique datetime-like values.
-
+    --------
+    pd.DataFrame
+        A DataFrame slice from the nearest index to t0 up to the nearest index to t1.
     """
-    
-    # sort the index in increasing order
-    df = df.sort_index(ascending=True)
+    df = df.sort_index()
 
-    if type(t0)==str:
+    # Convert to datetime if necessary
+    if isinstance(t0, str):
         t0 = pd.to_datetime(t0)
+    if isinstance(t1, str):
         t1 = pd.to_datetime(t1)
-    
-    r8  = df.index.unique().get_indexer([t0], method='nearest')[0]
-    r8a = df.index.unique().get_indexer([t1], method='nearest')[0]
-    
-    f_df = df[r8:r8a]
-    
-    return f_df
+
+    # Find nearest indices
+    unique_idx = df.index.unique()
+    start_idx = unique_idx.get_indexer([t0], method="nearest")[0]
+    end_idx = unique_idx.get_indexer([t1], method="nearest")[0]
+
+    # Slice using iloc
+    return df.iloc[start_idx:end_idx]
+
 
 # def find_big_gaps(df, gap_time_threshold):
 #     """
@@ -1524,42 +1667,192 @@ def use_dates_return_elements_of_df_inbetween(t0, t1, df):
 #     return big_gaps
 
 
-def find_big_gaps(df, gap_time_threshold=10):
+def find_big_gaps(
+    df, 
+    gap_time_threshold  = 10.0, 
+    expected_start      = None, 
+    expected_end        = None
+):
     """
-    Identifies gaps where the time difference between consecutive filtered entries
-    exceeds the gap_time_threshold, in a vectorized manner.
-    
-    Parameters:
-    - df: pandas DataFrame with a datetime index and at least one column.
-    - gap_time_threshold: float, the gap size threshold in seconds.
-    
-    Returns:
-    - A DataFrame with the start and end times of the gaps.
+    Identifies "big gaps" where:
+      1) The gap between consecutive filtered data points exceeds `gap_time_threshold`.
+      2) The gap from an `expected_start` (if given) to the first filtered data point 
+         exceeds `gap_time_threshold`.
+      3) The gap from the last filtered data point to an `expected_end` (if given) 
+         exceeds `gap_time_threshold`.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame with a DateTimeIndex and at least one column.
+        Rows whose first column <= -1e10 will be excluded from gap checks.
+    gap_time_threshold : float, optional
+        The gap size threshold in seconds. Default=10.0 seconds.
+    expected_start : None or str or pd.Timestamp, optional
+        If provided (e.g. "2025-01-01 09:00:00"), we also check if there's a large
+        gap between this time and the first valid row. If that difference in seconds 
+        is > gap_time_threshold, it's listed as a gap.
+    expected_end : None or str or pd.Timestamp, optional
+        If provided, we also check if there's a large gap between the last valid row 
+        and this time. If that difference is > gap_time_threshold, it's listed as a gap.
+
+    Returns
+    -------
+    gaps_df : pandas.DataFrame
+        A DataFrame with columns ["Start", "End"] listing the start and end of each
+        detected gap. Gaps are returned if they exceed `gap_time_threshold` in seconds.
+
+    Notes
+    -----
+    - We filter out rows in which the **first column** is <= -1e10 (same as your
+      original logic).
+    - The function sorts the DataFrame by its DateTimeIndex if not already sorted.
+    - If there is no valid data, or if only 1 valid row remains, only the "start"
+      or "end" gap (if any) can be reported (no consecutive row gaps).
     """
-    # Filter rows based on the condition for the first column
-    filtered_df = df[df.iloc[:, 0] > -1e10]
+
+    def _check_full_empty_gap_only(expected_start, expected_end, gap_time_threshold):
+        """
+        Helper for the case where we have no valid data in the DF after filtering.
+        If both expected_start and expected_end are given and the time difference
+        is > threshold, we'll return one big gap from start->end. Otherwise, empty.
     
-    # Calculate time differences in seconds between consecutive rows
+        Returns a DataFrame with columns ["Start", "End"].
+        """
+        if (expected_start is not None) and (expected_end is not None):
+            # measure difference from expected_start to expected_end
+            diff_sec = (expected_end - expected_start).total_seconds()
+            if diff_sec > gap_time_threshold:
+                return pd.DataFrame([{"Start": expected_start, "End": expected_end}],
+                                    columns=["Start", "End"])
+        # No gap or incomplete info, return empty
+        return pd.DataFrame(columns=["Start", "End"])
+
+    # ------------------------------------------------------------------------
+    # 1) Ensure the DF is sorted by DateTimeIndex
+    # ------------------------------------------------------------------------
+    if not df.index.is_monotonic_increasing:
+        df = df.sort_index()
+
+    # ------------------------------------------------------------------------
+    # 2) Filter out rows where the first column <= -1e10
+    # ------------------------------------------------------------------------
+    filtered_df = df[df.iloc[:, 0] > -1e10].dropna()
+    if filtered_df.empty:
+        # No valid data at all => any "start" or "end" gap is measured purely
+        # from expected_start to expected_end (if both are given).
+        # Typically, we interpret: if expected_start & expected_end are present
+        # and the gap is bigger than threshold => one big gap.
+        # Otherwise, we just return empty. 
+        return None
+
+    # ------------------------------------------------------------------------
+    # 3) Convert expected_start / expected_end to Timestamps if not None
+    # ------------------------------------------------------------------------
+    if expected_start is not None and not isinstance(expected_start, pd.Timestamp):
+        expected_start = pd.Timestamp(expected_start)
+    if expected_end is not None and not isinstance(expected_end, pd.Timestamp):
+        expected_end = pd.Timestamp(expected_end)
+
+      # Prepare a list to accumulate gap rows
+    gap_rows = []
+
+    # ------------------------------------------------------------------------
+    # 4) Check gap from expected_start to first valid row
+    # ------------------------------------------------------------------------
+    if expected_start is not None:
+        first_time = filtered_df.index[0]
+        start_diff_sec = (first_time - expected_start).total_seconds()
+        if start_diff_sec > gap_time_threshold:
+            gap_rows.append({"Start": expected_start, "End": first_time})
+
+    # ------------------------------------------------------------------------
+    # If only 1 valid row, we won't find any consecutive row gaps, 
+    # but we might still check from that row to expected_end.
+    # ------------------------------------------------------------------------
+    if len(filtered_df) == 1:
+        # Only one valid row => skip consecutive checks, but check end gap
+        if expected_end is not None:
+            last_time = filtered_df.index[0]
+            end_diff_sec = (expected_end - last_time).total_seconds()
+            if end_diff_sec > gap_time_threshold:
+                gap_rows.append({"Start": last_time, "End": expected_end})
+        return pd.DataFrame(gap_rows, columns=["Start", "End"])
+
+    # ------------------------------------------------------------------------
+    # 5) Compute consecutive time differences (in seconds) in filtered data
+    #    time_diffs[i] is gap from row (i-1) to row i.
+    # ------------------------------------------------------------------------
     time_diffs = filtered_df.index.to_series().diff().dt.total_seconds()
-    
-    # Identify indices where time differences exceed the threshold
+    # Boolean mask: True at index i => gap between i-1 and i > threshold
     gap_mask = time_diffs > gap_time_threshold
-    
-    # Using the mask, find the end times of the gaps
-    gap_ends = filtered_df.index[gap_mask]
-    
-    # The start times are just before the ends, adjust indices accordingly
-    gap_starts = filtered_df.index[gap_mask.shift(-1, fill_value=False)]
-    
-    # Remove the last element from starts and the first element from ends to align
-    if len(gap_starts) > 0 and len(gap_ends) > 0:  # Ensure there are gaps
-        gap_starts = gap_starts[:-1]
-        gap_ends = gap_ends[1:]
-    
-    # Create a DataFrame to return the start and end times of gaps
-    gaps_df = pd.DataFrame({'Start': gap_starts, 'End': gap_ends})
-    
+    gap_mask_values = gap_mask.values  # convert to numpy boolean array
+
+    # ------------------------------------------------------------------------
+    # 6) Vectorized detection: we want all i where gap_mask[i] is True
+    #    The "start" is index[i-1], "end" is index[i]
+    # ------------------------------------------------------------------------
+    gap_indices = np.where(gap_mask_values)[0]  # array of int positions
+    f_idx = filtered_df.index  # DatetimeIndex
+
+    # For each i in gap_indices, gap is (f_idx[i-1], f_idx[i])
+    for i in gap_indices:
+        # i-1 must be >= 0, which it should be for i>0
+        start_time = f_idx[i - 1]
+        end_time = f_idx[i]
+        gap_rows.append({"Start": start_time, "End": end_time})
+
+    # ------------------------------------------------------------------------
+    # 7) Check gap from last valid row to expected_end
+    # ------------------------------------------------------------------------
+    if expected_end is not None:
+        last_time = filtered_df.index[-1]
+        end_diff_sec = (expected_end - last_time).total_seconds()
+        if end_diff_sec > gap_time_threshold:
+            gap_rows.append({"Start": last_time, "End": expected_end})
+
+    # ------------------------------------------------------------------------
+    # 8) Build a DataFrame of all gaps found
+    # ------------------------------------------------------------------------
+    gaps_df = pd.DataFrame(gap_rows, columns=["Start", "End"])
     return gaps_df
+
+# def find_big_gaps(df, gap_time_threshold=10):
+#     """
+#     Identifies gaps where the time difference between consecutive filtered entries
+#     exceeds the gap_time_threshold, in a vectorized manner.
+    
+#     Parameters:
+#     - df: pandas DataFrame with a datetime index and at least one column.
+#     - gap_time_threshold: float, the gap size threshold in seconds.
+    
+#     Returns:
+#     - A DataFrame with the start and end times of the gaps.
+#     """
+#     # Filter rows based on the condition for the first column
+#     filtered_df = df[df.iloc[:, 0] > -1e10]
+    
+#     # Calculate time differences in seconds between consecutive rows
+#     time_diffs = filtered_df.index.to_series().diff().dt.total_seconds()
+    
+#     # Identify indices where time differences exceed the threshold
+#     gap_mask = time_diffs > gap_time_threshold
+    
+#     # Using the mask, find the end times of the gaps
+#     gap_ends = filtered_df.index[gap_mask]
+    
+#     # The start times are just before the ends, adjust indices accordingly
+#     gap_starts = filtered_df.index[gap_mask.shift(-1, fill_value=False)]
+    
+#     # Remove the last element from starts and the first element from ends to align
+#     if len(gap_starts) > 0 and len(gap_ends) > 0:  # Ensure there are gaps
+#         gap_starts = gap_starts[:-1]
+#         gap_ends = gap_ends[1:]
+    
+#     # Create a DataFrame to return the start and end times of gaps
+#     gaps_df = pd.DataFrame({'Start': gap_starts, 'End': gap_ends})
+    
+#     return gaps_df
 
 def percentile(y,percentile):
     return(np.percentile(y,percentile))
@@ -1917,6 +2210,207 @@ def binned_quantity(x, y, what='mean', std_or_error_of_mean=True, bins=100, logl
         result += (percentiles,)
 
     return result
+
+
+# # --- Numba Helper Functions ---
+# @njit(inline='always')
+# def find_bin(x, bin_edges):
+#     n = len(bin_edges)
+#     if x < bin_edges[0]:
+#         return 0
+#     if x >= bin_edges[n - 1]:
+#         return n - 2  # Last valid index for n-1 bins.
+#     lo = 0
+#     hi = n - 1
+#     while hi - lo > 1:
+#         mid = (lo + hi) // 2
+#         if x < bin_edges[mid]:
+#             hi = mid
+#         else:
+#             lo = mid
+#     return lo
+
+# @njit(parallel=True)
+# def compute_bins_numba_no_atomic(valid_x, valid_y, bin_edges, nbins, counts, sums, sumsqs, nchunks):
+#     n = valid_x.shape[0]
+#     chunk_size = (n + nchunks - 1) // nchunks  # Ceiling division.
+#     # Temporary arrays for each chunk.
+#     temp_counts = np.zeros((nchunks, nbins), dtype=np.int64)
+#     temp_sums   = np.zeros((nchunks, nbins), dtype=np.float64)
+#     temp_sumsqs = np.zeros((nchunks, nbins), dtype=np.float64)
+    
+#     for i in prange(nchunks):
+#         start = i * chunk_size
+#         end = start + chunk_size
+#         if end > n:
+#             end = n
+#         for j in range(start, end):
+#             bin_index = find_bin(valid_x[j], bin_edges)
+#             temp_counts[i, bin_index] += 1
+#             temp_sums[i, bin_index]   += valid_y[j]
+#             temp_sumsqs[i, bin_index] += valid_y[j] * valid_y[j]
+    
+#     # Reduce temporary arrays into final arrays.
+#     for i in range(nchunks):
+#         for b in range(nbins):
+#             counts[b] += temp_counts[i, b]
+#             sums[b]   += temp_sums[i, b]
+#             sumsqs[b] += temp_sumsqs[i, b]
+
+# # --- Numba Version ---
+# def binned_quantity_numba(x, y, what='mean', std_or_error_of_mean=True,
+#                           bins=100, loglog=True, return_counts=False,
+#                           return_percentiles=False, lower_percentile=25,
+#                           higher_percentile=75, nchunks=16):
+#     """
+#     Numba-accelerated binned statistic computation.
+    
+#     Parameters
+#     ----------
+#     x, y : array_like
+#         Input arrays.
+#     what : {'mean', 'sum', 'std', 'median'}, optional
+#         The binned statistic to compute. For 'mean', 'sum', and 'std' the aggregation is done
+#         using a Numba-accelerated summation routine. For 'median', the binning is computed in pure NumPy.
+#     std_or_error_of_mean : bool, optional
+#         For what=='mean', if True the third output is the standard deviation,
+#         otherwise it is the error-of-mean. (Ignored for other statistics.)
+#     bins : int or array_like, optional
+#         Number of bins (if int) or the bin edges.
+#     loglog : bool, optional
+#         If True, logarithmic bins are used (requires x > 0).
+#     return_counts : bool, optional
+#         If True, also return the counts per bin.
+#     return_percentiles : bool, optional
+#         If True, also return the (lower, upper) percentiles per bin.
+#     nchunks : int, optional
+#         Number of chunks to use for parallelization.
+    
+#     Returns
+#     -------
+#     bin_centers : ndarray
+#         The centers of the bins.
+#     stat : ndarray
+#         The binned statistic (mean, sum, std, or median).
+#     z : ndarray
+#         For what=='mean': the standard deviation (or error-of-mean if std_or_error_of_mean is False);
+#         for what=='sum' or 'std': the standard deviation of the bin values;
+#         for what=='median': the standard deviation of the values in each bin.
+#     [counts] : ndarray, optional
+#         The counts per bin (if return_counts is True).
+#     [percentiles] : tuple of ndarrays, optional
+#         The (lower, upper) percentiles per bin (if return_percentiles is True).
+#     """
+#     # Convert inputs to float arrays.
+#     x = np.asarray(x, dtype=float)
+#     y = np.asarray(y, dtype=float)
+    
+#     # Filter data.
+#     if loglog:
+#         mask = (y > -1e10) & (x > 0)
+#     else:
+#         mask = (y > -1e10) & (x > -1e10)
+#     x = x[mask]
+#     y = y[mask]
+    
+#     # Determine bin edges.
+#     if loglog:
+#         if np.isscalar(bins):
+#             bin_edges = np.logspace(np.log10(np.nanmin(x)),
+#                                     np.log10(np.nanmax(x)),
+#                                     int(bins))
+#         else:
+#             bin_edges = np.asarray(bins, dtype=np.float64)
+#     else:
+#         if np.isscalar(bins):
+#             bin_edges = np.linspace(np.nanmin(x),
+#                                     np.nanmax(x),
+#                                     int(bins) + 1)
+#         else:
+#             bin_edges = np.asarray(bins, dtype=np.float64)
+    
+#     nbins = len(bin_edges) - 1
+#     bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    
+#     # --- Compute the requested statistic ---
+#     if what == 'median':
+#         # For median, compute bin indices and then loop over bins.
+#         bin_indices = np.searchsorted(bin_edges, x, side='right') - 1
+#         bin_indices = np.clip(bin_indices, 0, nbins - 1)
+#         stat = np.empty(nbins, dtype=np.float64)
+#         z = np.empty(nbins, dtype=np.float64)
+#         if return_counts:
+#             counts = np.empty(nbins, dtype=np.int64)
+#         for i in range(nbins):
+#             y_in_bin = y[bin_indices == i]
+#             if y_in_bin.size > 0:
+#                 stat[i] = np.median(y_in_bin)
+#                 z[i] = np.std(y_in_bin)
+#                 if return_counts:
+#                     counts[i] = y_in_bin.size
+#             else:
+#                 stat[i] = np.nan
+#                 z[i] = np.nan
+#                 if return_counts:
+#                     counts[i] = 0
+#     elif what in ('mean', 'sum', 'std'):
+#         counts = np.zeros(nbins, dtype=np.int64)
+#         sums   = np.zeros(nbins, dtype=np.float64)
+#         sumsqs = np.zeros(nbins, dtype=np.float64)
+#         compute_bins_numba_no_atomic(x, y, bin_edges, nbins, counts, sums, sumsqs, nchunks)
+        
+#         if what == 'mean':
+#             stat = sums / np.where(counts == 0, 1, counts)
+#         elif what == 'sum':
+#             stat = sums
+#         elif what == 'std':
+#             means = sums / np.where(counts == 0, 1, counts)
+#             variance = sumsqs / np.where(counts == 0, 1, counts) - means**2
+#             stat = np.sqrt(np.maximum(variance, 0))
+        
+#         # Also compute z as the standard deviation (or error) per bin.
+#         means_for_std = sums / np.where(counts == 0, 1, counts)
+#         variance = sumsqs / np.where(counts == 0, 1, counts) - means_for_std**2
+#         z = np.sqrt(np.maximum(variance, 0))
+#         if what == 'mean' and not std_or_error_of_mean:
+#             z = z / np.where(counts == 0, 1, np.sqrt(counts))
+#     else:
+#         raise NotImplementedError("Unsupported statistic. Use 'mean', 'sum', 'std', or 'median'.")
+    
+#     extra = ()
+#     if return_percentiles:
+#         bin_indices = np.searchsorted(bin_edges, x, side='right') - 1
+#         bin_indices = np.clip(bin_indices, 0, nbins - 1)
+#         perc_lower = np.empty(nbins, dtype=np.float64)
+#         perc_upper = np.empty(nbins, dtype=np.float64)
+#         for i in range(nbins):
+#             y_in_bin = y[bin_indices == i]
+#             if y_in_bin.size > 0:
+#                 perc_lower[i] = np.percentile(y_in_bin, lower_percentile)
+#                 perc_upper[i] = np.percentile(y_in_bin, higher_percentile)
+#             else:
+#                 perc_lower[i] = np.nan
+#                 perc_upper[i] = np.nan
+#         extra += ((perc_lower, perc_upper),)
+    
+#     if return_counts and what != 'median':
+#         extra = (counts,) + extra
+#     elif return_counts and what == 'median':
+#         extra = (counts,) + extra
+    
+#     return (bin_centers, stat, z) + extra
+
+# # --- Numba Wrapper for Warmup ---
+# def binned_quantity(x, y, *args, **kwargs):
+#     """
+#     Wrapper that first calls binned_quantity_numba on a tiny subset (using only the first element)
+#     to trigger the JIT compilation and then calls binned_quantity_numba on the full data.
+#     Returns only the full-data results.
+#     """
+#     x = np.asarray(x)
+#     if x.size > 0:
+#         _ = binned_quantity_numba(x[:1], y[:1], *args, **kwargs)
+#     return binned_quantity_numba(x, y, *args, **kwargs)
 
 
 
@@ -2737,6 +3231,86 @@ def freq2wavenum_only_kdi(freq, Vtot, di):
     return k_star
 
 import numpy as np
+
+def freq2wavenum_only_kdi_arrays(freq, Vtot, di):
+    """
+    Returns a 2D array k_star of shape (len(Vtot), len(freq)),
+    i.e. (14401, 184).
+    """
+    freq = np.asarray(freq).reshape(1, -1)     # (1, 184)
+    Vtot = np.asarray(Vtot).reshape(-1, 1)     # (14401, 1)
+    di   = np.asarray(di).reshape(-1, 1)       # (14401, 1)
+
+    # Elementwise: (1,184) / (14401,1) * 2*pi*(14401,1) 
+    # => shape (14401, 184)
+    k_star = freq / Vtot * (2 * np.pi * di)  
+
+    return k_star.T
+
+
+
+import numpy as np
+
+def integrate_psd_in_k_range_2d(kdi_2d, psd_2d, kmin, kmax):
+    """
+    Integrate the PSD in each column of `psd_2d` over the k-range
+    [kmin, kmax], using the corresponding k-values in `kdi_2d`.
+
+    Parameters
+    ----------
+    kdi_2d : (M, N) array
+        2D array of wavenumbers. Each column can have its own k-values.
+    psd_2d : (M, N) array
+        2D array of PSD values matching the shape of kdi_2d.
+    kmin : float
+        Lower limit of k-range to integrate over.
+    kmax : float
+        Upper limit of k-range to integrate over.
+
+    Returns
+    -------
+    integrated : (N,) ndarray
+        The integrated PSD for each of the N columns.
+        If no valid data in a column, returns np.nan in that position.
+    """
+    kdi_2d = np.asarray(kdi_2d)
+    psd_2d = np.asarray(psd_2d)
+    M, N   = kdi_2d.shape
+
+    result = np.full(N, np.nan)  # Default to NaN
+
+    for i in range(N):
+        kvals = kdi_2d[:, i]
+        pvals = psd_2d[:, i]
+
+        # 1) Remove NaNs
+        valid_mask = ~np.isnan(kvals) & ~np.isnan(pvals)
+        kvals = kvals[valid_mask]
+        pvals = pvals[valid_mask]
+        
+        # 2) Restrict to k in [kmin, kmax]
+        range_mask = (kvals >= kmin) & (kvals <= kmax)
+        kvals = kvals[range_mask]
+        pvals = pvals[range_mask]
+        
+        # If nothing remains, leave result[i] = np.nan
+        if kvals.size == 0:
+            continue
+
+        # 3) Sort k in ascending order (so integration is positive if pvals >= 0)
+        sort_inds = np.argsort(kvals)
+        kvals = kvals[sort_inds]
+        pvals = pvals[sort_inds]
+
+        # 4) Integrate with trapezoidal rule
+        result[i] = np.trapz(pvals, x=kvals)
+
+    return result
+
+
+
+
+import numpy as np
 from scipy.interpolate import griddata
 
 def smooth_2d_data(X, Y, Z, Ntimes):
@@ -3325,8 +3899,145 @@ def find_cadence(df, mean_or_median_cadence='median'):
         return np.nanmean((df[keys[0]].dropna().index.to_series().diff() / np.timedelta64(1, 's')))
     else:
         return np.nanmedian((df[keys[0]].dropna().index.to_series().diff() / np.timedelta64(1, 's')))
-    
 
+
+
+
+
+#def resample_timeseries_estimate_gaps(df, resolution, large_gaps=5)
+
+
+
+# def resample_timeseries_estimate_gaps(
+#     df,
+#     resolution_ms=1000,
+#     large_gaps=10.0,
+#     aggregator="mean",
+#     do_interpolation=True,
+#     interpolation_method="time",
+#     handle_infs_as_nans=True,
+#     enforce_res_not_smaller=True,
+#     gap_mode="median"
+# ):
+#     """
+#     Resample a time series and estimate gaps, returning a dictionary with 
+#     the same keys as originally specified.
+#     """
+#     # Prepare the return dictionary with default (in case of error).
+#     results = {
+#         "Init_dt"      : None,
+#         "resampled_df" : None,
+#         "Frac_miss"    : 100.0,  # 100% if something fails
+#         "Large_gaps"   : None,
+#         "Tot_gaps"     : None,
+#         "resol"        : np.nan
+#     }
+
+#     try:
+#         # 1) Ensure DataFrame is sorted by its DateTimeIndex
+#         if not df.index.is_monotonic_increasing:
+#             df = df.sort_index()
+
+#         # 2) Optionally replace inf/-inf with NaN
+#         if handle_infs_as_nans:
+#             df = df.replace([np.inf, -np.inf], np.nan)
+
+#         # 3) Compute original cadence (Init_dt) in seconds from consecutive diffs
+#         time_diffs = df.index.to_series().diff().dt.total_seconds().dropna()
+#         if len(time_diffs) < 1:
+#             # if we cannot measure dt
+#             init_dt = 0.0
+#         else:
+#             if gap_mode == "mean":
+#                 init_dt = time_diffs.mean()
+#             else:
+#                 init_dt = time_diffs.median()
+#         results["Init_dt"] = init_dt
+
+#         # 4) Compute the total interval duration
+#         if len(df.index) < 2:
+#             interval_dur_s = 0.0
+#         else:
+#             interval_dur_s = (df.index[-1] - df.index[0]).total_seconds()
+
+#         # 5) If there's a positive total duration, measure large & total gaps
+#         if interval_dur_s > 0:
+#             # Large gaps fraction
+#             large_gap_mask = time_diffs > large_gaps
+#             sum_large_gaps = time_diffs[large_gap_mask].sum()
+#             total_large_gaps = 100.0 * sum_large_gaps / interval_dur_s
+#             results["Large_gaps"] = total_large_gaps
+
+#             # Possibly enforce final resolution not < init_dt
+#             desired_res_s = resolution_ms / 1000.0
+#             if enforce_res_not_smaller and init_dt > 0 and (desired_res_s < init_dt):
+#                 desired_res_s = init_dt
+
+#             final_res_ms = desired_res_s * 1000.0
+#             results["resol"] = final_res_ms
+
+#             # measure total gaps fraction above that final interval
+#             tot_gap_mask = time_diffs > desired_res_s
+#             sum_tot_gaps = time_diffs[tot_gap_mask].sum()
+#             total_gaps = 100.0 * sum_tot_gaps / interval_dur_s
+#             results["Tot_gaps"] = total_gaps
+
+#             # 6) Resample with aggregator to get uniform time steps
+#             resample_rule = f"{int(round(final_res_ms))}ms"
+#             df_resampled_raw = getattr(df.resample(resample_rule), aggregator)()
+
+#             # 7) OPTIONAL: measure fraction missing before interpolation
+#             #    (If you only want the fraction in final, skip or keep for debugging)
+#             n_vals_raw = df_resampled_raw.size
+#             if n_vals_raw > 0:
+#                 n_missing_raw = df_resampled_raw.isna().sum().sum()
+#                 fraction_missing_raw = 100.0 * n_missing_raw / n_vals_raw
+#             else:
+#                 fraction_missing_raw = 0.0
+#             # print("Fraction missing (pre‐interpolation):", fraction_missing_raw, "%")
+
+#             # 8) Interpolate if requested
+#             if do_interpolation:
+#                 df_resampled_filled = df_resampled_raw.interpolate(method=interpolation_method)
+#             else:
+#                 df_resampled_filled = df_resampled_raw
+
+#             # 9) Now measure final fraction of missing
+#             n_vals_res = df_resampled_filled.size
+#             if n_vals_res > 0:
+#                 n_missing_res = df_resampled_filled.isna().sum().sum()
+#                 fraction_missing = 100.0 * n_missing_res / n_vals_res
+#             else:
+#                 fraction_missing = 0.0
+
+#             # 10) If you want absolutely no missing data in final (no NaNs),
+#             #     you could do a second fill method:
+#             #       df_resampled_filled = df_resampled_filled.fillna(method="ffill").fillna(method="bfill")
+#             #
+#             #     Or if there's an unbounded region, you might choose a constant fill:
+#             #       df_resampled_filled = df_resampled_filled.fillna(0)
+
+#             # Crucially: DO NOT dropna() if you want to keep a continuous time axis
+#             #   Because dropna() would remove entire timestamps (rows), reintroducing time gaps
+
+#             results["Frac_miss"]    = fraction_missing
+#             results["resampled_df"] = df_resampled_filled
+
+#         else:
+#             # If there's no real duration, we can't measure these
+#             results["Large_gaps"] = 0.0
+#             results["Tot_gaps"]   = 0.0
+#             results["Frac_miss"]  = 100.0
+#             # We'll leave the rest as is
+#     except Exception as e:
+#         # If something goes wrong, results dict stays with safe defaults
+#         print(f"ERROR in resample_timeseries_estimate_gaps: {e}")
+
+#     return results
+
+
+
+    
 def resample_timeseries_estimate_gaps(df, resolution, large_gaps=5):
     """
     Resample a time series and estimate gaps.
@@ -3385,7 +4096,7 @@ def resample_timeseries_estimate_gaps(df, resolution, large_gaps=5):
         total_gaps = 100 * (res[res > resolution * 1e-3].sum() / interval_dur)
 
         # Resample time-series to desired resolution
-        df_resampled = df.resample(f"{int(resolution)}ms").mean().interpolate()
+        df_resampled = df.resample(f"{int(resolution)}ms").median().interpolate()
 
 
     except:

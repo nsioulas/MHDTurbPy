@@ -234,8 +234,11 @@ def download_SWA_SOLO(t0, t1, settings,  varnames):
                             columns=col_names[i]) for i, data in enumerate(swadata)]
         dfswa = dfs[0].join(dfs[1:])
 
+        # Rename Proton temperature [eV]
+        dfswa['Tp'] = dfspan.pop('T')
+        
         #  Estimate Vth
-        dfswa['Vth'] = 13.84112218 * np.sqrt(dfswa['T']) 
+        dfswa['Vth'] = 13.84112218 * np.sqrt(dfswa['Tp']) 
 
         # Fix datetime index
         dfswa.index       = time_string.time_datetime(time=dfswa.index)

@@ -44,6 +44,7 @@ import general_functions as func
 import TurbPy as turb
 import polarization_analysis
 import calibrate_efield as efield
+import calibrate_sc_potential as sc_potential
 
 sys.path.insert(1, os.path.join(os.getcwd(), 'functions/downloading_helpers'))
 from  PSP import  LoadTimeSeriesPSP, download_ephemeris_PSP
@@ -98,7 +99,7 @@ def download_files( ok,
             
               
             # Running the main function
-            big_gaps, big_gaps_par, big_gaps_elec, big_gaps_qtn, flag_good, final, general, sig_c_sig_r_timeseries, dfdis, diagnostics =     main_function(
+            big_gaps_SC_pot, big_gaps, big_gaps_par, big_gaps_elec, big_gaps_qtn, flag_good, final, general, sig_c_sig_r_timeseries, dfdis, diagnostics = main_function(
                                                                                                     start_time         , 
                                                                                                     end_time           , 
                                                                                                     settings           , 
@@ -122,7 +123,7 @@ def download_files( ok,
                 
                 
                 """ Calibrate e-field data if requested"""
-                if (settings.get('E_field', {}).get('flag', False)) & (settings['in_rtn']== False):
+                if (settings.get('E_field', {}).get('flag', False)) & (settings['in_rtn']== False) & (settings['sc']== 'PSP'):
                     
                     try:
                     
@@ -134,7 +135,7 @@ def download_files( ok,
                                                         final['E'].copy(),
                                                         cadence_seconds      = settings.get('E_field', {}).get('cadence_seconds', 6),      # Block-averaging cadence in second
                                                         fit_interval_minutes = settings.get('E_field', {}).get('fit_interval_minutes', 4), # Length of each fitting interval in minutes
-                                                        stride_minutes       = settings.get('E_field', {}).get('stride_minutes', 0.1),       # Stride length between intervals in minutes
+                                                        stride_minutes       = settings.get('E_field', {}).get('stride_minutes', 0.1),     # Stride length between intervals in minutes
                                                         min_correlation      = settings.get('E_field', {}).get('min_correlation', 0.8)    # Minimum acceptable cross-correlation value
                         )
 
@@ -142,6 +143,33 @@ def download_files( ok,
                         final['E'] =  efield.calibrate_data(final['E'], coeffs_low_res) 
                     except:
                         traceback.print_exc()
+
+                """ Calibrate sc_pot data if requested"""
+                if (settings.get('sc_pot', {}).get('flag', False)) & (settings['sc']== 'PSP'):
+                    
+                    try:
+
+                        print('Calibrating sc potential data')
+                        cal_res, roll_qtn, save_a, save_b, save_c, save_err_a, save_err_b, save_err_c, df_highfreq = sc_potential.calibrate_highfreq_in_intervals(
+                                    pd.DataFrame(final['SC_pot']).copy(),
+                                    pd.DataFrame(final['Par']['V_resampled']['np']).copy() ,
+                                    interval_size = settings.get('sc_pot', {}).get('fit_interval_minutes', '20min'), # Length of each fitting interval in minutes,
+                                    rol_med_wind  = settings.get('sc_pot', {}).get('roll_wind_minutes', '4min'),
+                                    est_roll_med  = settings.get('sc_pot', {}).get('est_roll_med', False),
+                                    n_sigma       = settings.get('sc_pot', {}).get('n_sigma_outliers', 3))
+
+                       
+                        final['np_sc_pot'] =  {'dens_df'     : pd.DataFrame(cal_res["sc_pot_dens"]), 
+                                            'fit_params'  : { 'a'      : save_a,
+                                                              'b'      : save_b,
+                                                              'c'      : save_c,
+                                                              'err_a'  : save_err_a,
+                                                              'err_b'  : save_err_b,
+                                                              'err_c'  : save_err_c}
+                                            }
+                         
+                    except:
+                        traceback.print_exc()          
                 
                 # In case we want smaller windows
                 if settings['cut_in_small_windows']['flag']:
@@ -175,6 +203,7 @@ def download_files( ok,
                         func.savepickle(big_gaps, str(path0.joinpath(foldername)), "mag_gaps.pkl" )
                         func.savepickle(big_gaps_qtn, str(path0.joinpath(foldername)), "qtn_gaps.pkl" )
                         func.savepickle(big_gaps_elec, str(path0.joinpath(foldername)), "elec_gaps.pkl" )
+                        func.savepickle(big_gaps_SC_pot, str(path0.joinpath(foldername)), "sc_pot_gaps.pkl" )
                         
                         func.savepickle(big_gaps_par, str(path0.joinpath(foldername)), "par_gaps.pkl" )
 
@@ -293,10 +322,16 @@ def small_sub_intervals_parallel_process(
                     
                     coh_dicts = {}
                     
+
+                    Bdf, Vdf     = func.synchronize_dfs(Bdf, Vdf, True)
                     
-                    Vdf          = func.newindex(Vdf, Bdf.index)
-                    np_mean      = Vdf['np'].rolling('10s', center=True).mean().interpolate()
-                    kinet_normal = func.newindex(1e-15 / np.sqrt(mu0 * np_mean * m_p),Bdf.index).values
+
+                    # To take the alfven velocity into account
+                    np_mean      = V_df['np'].rolling('30s', center=True).mean().interpolate()
+                    kinet_normal = pd.DataFrame(1e-15 / np.sqrt(mu0 * np_mean * m_p))
+                    _, kinet_normal = func.synchronize_dfs(B_df, kinet_normal, True)
+                    kinet_normal    = kinet_normal.values
+
 
                     if ('Vr' in Vdf) and (settings['sc'] == 'PSP'):
 
@@ -427,230 +462,259 @@ def small_sub_intervals_parallel_process(
     return combined_dict
         
 
-def main_function( 
-                start_time         , 
-                end_time           , 
-                settings           , 
-                vars_2_downnload   ,
-                cdf_lib_path       ,
-                credentials
-              ):
+def main_function(start_time, end_time, settings, vars_2_downnload, cdf_lib_path, credentials):
+    import traceback
 
-    
-    # Parker Solar Probe
-    if settings['sc']=='PSP':
-        
-        print('Working on PSP data')
-        mag_flag                                     = None
-        df_elec, big_gaps_elec                       = None, None
-        
+    # Initialize variables
+    dfqtn           = None
+    df_sc_pot       = None
+    mag_flag        = None
+    df_elec         = None
+    big_gaps_elec   = None
+    big_gaps        = None
+    big_gaps_qtn    = None
+    big_gaps_par    = None
+    big_gaps_SC_pot = None
+    mis             = None
+    df_e_field      = None  # needed later for PSP and SOLO
+    qtn_flag        = None
 
-        dfmag, dfpar, df_e_field,  dfdis, big_gaps, big_gaps_qtn, big_gaps_par, misc = LoadTimeSeriesPSP(
-                                                                          start_time, 
-                                                                          end_time, 
-                                                                          settings, 
-                                                                          vars_2_downnload,
-                                                                          cdf_lib_path,
-                                                                          credentials        = credentials,
-                                                                          time_amount        = settings['addit_time_around'],
-                                                                          time_unit          = 'h')
-        
-        # Delete na because it is causing issues!
-        try:
-            del dfpar['na']
-        except:
-            print('No na')
-        
-        
-    # Solar Orbiter
-    elif settings['sc']=='SOLO':
-        
-        
-        print('Working on SOLO data')
-        
-        try:
-            df_elec, big_gaps_elec                             = None, None
-            dfmag, mag_flag, dfpar, dfdis, big_gaps, big_gaps_qtn,  big_gaps_par, misc           =  LoadTimeSeriesSOLO(
-                                                                                          start_time, 
-                                                                                          end_time, 
-                                                                                          settings, 
-                                                                                          vars_2_downnload,
-                                                                                          cdf_lib_path,
-                                                                                          credentials        = credentials,
-                                                                                          time_amount        = settings['addit_time_around'],
-                                                                                          time_unit          = 'h')
+    sc = settings.get('sc', None)
 
-            if (settings['SOLO_use_burst']) and (mag_flag != 'Burst'):
-                dfmag, dfapr =None, None
-                print('We dont have Burst Data, thus we wont consider this interval')
-                
-        except:
-            traceback.print_exc()
-    elif settings['sc']=='HELIOS_A':
-        
-        print('Working on HELIOS_A data')
+    # Load data based on spacecraft type
+    if sc == 'PSP':
+        print("Working on PSP data")
         try:
-            mag_flag                              = None
-            big_gaps, big_gaps_qtn,  big_gaps_par = None, None, None
-            df_elec, big_gaps_elec                = None, None
-            dfmag, dfpar, dfdis, big_gaps, misc =  LoadTimeSeriesHELIOS_A(
-                                                                              start_time, 
-                                                                              end_time, 
-                                                                              settings) 
-        except:
-            traceback.print_exc()
-            
-            
-    elif settings['sc']=='HELIOS_B':
-        
-        print('Working on HELIOS_B data')
-        try:
-            mag_flag                              = None
-            big_gaps, big_gaps_qtn,  big_gaps_par = None, None, None
-            df_elec, big_gaps_elec                = None, None
-            dfmag, dfpar, dfdis, big_gaps, misc   =  LoadTimeSeriesHELIOS_B(
-                                                                          start_time, 
-                                                                          end_time, 
-                                                                          settings) 
-        except:
-            traceback.print_exc()
-        
-    elif settings['sc']=='WIND':
-
-        print('Working on WIND data')
-        try:
-             
-            
-            
-            
-            dfmag, mag_flag, dfpar, df_elec, dfdis, big_gaps, big_gaps_qtn,  big_gaps_par, big_gaps_elec, misc, qtn_flag=  LoadTimeSeriesWIND(
-                                                                                                                          start_time, 
-                                                                                                                          end_time, 
-                                                                                                                          settings) 
-        except:
-            traceback.print_exc()
-            
-            
-    elif settings['sc']=='Ulysses':
-
-        print('Working on Ulysses data')
-        
-        try:
-            
-            mag_flag, big_gaps_qtn,  big_gaps_par, qtn_flag    = None, None,  None, None
-            df_elec, big_gaps_elec                             = None, None
-            dfmag,  dfpar, dfdis, big_gaps, misc               = LoadTimeSeriesUlysses(start_time, 
-                                                                                        end_time, 
-                                                                                        settings
-                                                                                     )
-        except:
+            (
+                dfqtn,
+                dfmag,
+                dfpar,
+                df_e_field,
+                df_sc_pot,
+                dfdis,
+                big_gaps,
+                big_gaps_qtn,
+                big_gaps_par,
+                big_gaps_SC_pot,
+                misc
+            ) = LoadTimeSeriesPSP(
+                start_time,
+                end_time,
+                settings,
+                vars_2_downnload,
+                cdf_lib_path,
+                credentials    = credentials,
+                time_amount    = settings['addit_time_around'],
+                time_unit      = 'h'
+            )
+        except Exception:
             traceback.print_exc()
 
+        # Delete "na" entry in dfpar if it exists
+        try:
+            if dfpar is not None:
+                del dfpar['na']
+        except Exception:
+            print("No na")
+
+    elif sc == 'SOLO':
+        print("Working on SOLO data")
+        try:
+            (
+                dfmag,
+                mag_flag,
+                dfpar,
+                dfdis,
+                big_gaps,
+                big_gaps_qtn,
+                big_gaps_par,
+                misc
+            ) = LoadTimeSeriesSOLO(
+                start_time,
+                end_time,
+                settings,
+                vars_2_downnload,
+                cdf_lib_path,
+                credentials   = credentials,
+                time_amount   = settings['addit_time_around'],
+                time_unit     = 'h'
+            )
+            if settings.get('SOLO_use_burst') and (mag_flag != 'Burst'):
+                dfmag, dfapr = None, None  # dfapr is set to None as in the original code
+                print("We dont have Burst Data, thus we wont consider this interval")
+        except Exception:
+            traceback.print_exc()
+
+    elif sc == 'HELIOS_A':
+        print("Working on HELIOS_A data")
+        try:
+            (dfmag, dfpar, dfdis, big_gaps, misc) = LoadTimeSeriesHELIOS_A(start_time, end_time, settings)
+        except Exception:
+            traceback.print_exc()
+
+    elif sc == 'HELIOS_B':
+        print("Working on HELIOS_B data")
+        try:
+            (dfmag, dfpar, dfdis, big_gaps, misc) = LoadTimeSeriesHELIOS_B(start_time, end_time, settings)
+        except Exception:
+            traceback.print_exc()
+
+    elif sc == 'WIND':
+        print("Working on WIND data")
+        try:
+            (
+                dfmag,
+                dfpar,
+                df_elec,
+                dfdis,
+                big_gaps,
+                big_gaps_qtn,
+                big_gaps_par,
+                big_gaps_elec,
+                misc,
+                qtn_flag
+            ) = LoadTimeSeriesWIND(start_time, end_time, settings)
+        except Exception:
+            traceback.print_exc()
+
+    elif sc == 'Ulysses':
+        print("Working on Ulysses data")
+        try:
+            (dfmag, dfpar, dfdis, big_gaps, misc) = LoadTimeSeriesUlysses(start_time, end_time, settings)
+        except Exception:
+            traceback.print_exc()
+
+    # Process and validate particle data
     if dfpar is not None:
-
-        if misc['Par']['Frac_miss'] < settings['Max_par_missing'] :
+        # Check if the fraction of missing particles is acceptable
+        if misc.get('Par', {}).get('Frac_miss', 1) < settings.get('Max_par_missing', 0):
             try:
-                
+
+         
+                # Synchronize the df's
+                if settings.get('upsample_low_freq_ts'):
+                    B_df, V_df                       = func.synchronize_dfs(dfmag, dfpar, True)
+                else:
+                    B_df_low, V_df                    = func.synchronize_dfs(dfmag, dfpar, False)
+                    B_df    , _                       = func.synchronize_dfs(dfmag, B_df_low, True)
+                    
+                # Compute general dictionary
                 try:
-                    general_dict =  calc.general_dict_func(misc,
-                                                          dfmag.copy(),
-                                                          dfpar.copy(),
-                                                          dfdis)
+                    general_dict = calc.general_dict_func(misc, dfmag.copy(), dfpar.copy(), dfdis)
                     
-                    
-                    if settings['sc'] == 'WIND':
-                    
+                    if sc == 'WIND':
                         general_dict['qtn_flag'] = qtn_flag
 
-                    
-                    if settings['estimate_derived_param']:
-                        mag_dict, part_dict, sig_c_sig_r_timeseries                 = calc.calculate_diagnostics(
-                                                                                                                    dfmag.copy(),
-                                                                                                                    dfpar.copy(),
-                                                                                                                    dfdis, 
-                                                                                                                    settings,
-                                                                                                                    misc
-                                                                                                                )
+                    if settings.get('estimate_derived_param'):
+                        part_dict, sig_c_sig_r_timeseries = calc.calculate_diagnostics(
+                            B_df if settings.get('upsample_low_freq_ts') else  B_df_low, 
+                            V_df, 
+                            dfdis,
+                            settings, 
+                            misc)
+                        
+                        # Estimate the Power Spectral Density (PSD) of the magnetic field and optionally smooth it
+                        mag_dict = calc.estimate_magnetic_field_psd(
+                                                                    B_df,
+                                                                    func.find_cadence(B_df),
+                                                                    settings,
+                                                                    misc)
                     else:
                         mag_dict, part_dict, sig_c_sig_r_timeseries = {}, {}, {}
-                        mag_dict['B_resampled']                     = dfmag.interpolate().dropna()
 
-                except:
-                    traceback.print_exc()   
 
-                
-                # Also keep Velocity field data
-                if settings['upsample_low_freq_ts' ]:
-                    part_dict['V_resampled'] = func.newindex(dfpar.interpolate().dropna(), mag_dict['B_resampled'].index)
-                else:
-                    part_dict['V_resampled'] = dfpar.interpolate().dropna()
-                
-                
-                # Now save everything in final_dict as a dictionary
-                final_dict = { 
-                               "Mag"          : mag_dict,
-                               "Par"          : part_dict,
-                               "Elec"         : df_elec,
-                               "Mag_flag"     : mag_flag
-                                
-                              }
+                    # Keep final timeseries
+                    part_dict['V_resampled']          = V_df
+                    mag_dict['B_resampled']           = B_df
+                    
+                except Exception:
+                    traceback.print_exc()
 
-                # also save a general dict with basic info (add what is missing from particletimeseries)
-                general_dict["Fraction_missing_part"]  = misc['Par']['Frac_miss']
-                general_dict["Resolution_part"]        = misc['Par']["resol"]
-                
+
+                # Build final output dictionary
+                final_dict = {
+                    "Mag"      : mag_dict,
+                    "Par"      : part_dict,
+                    "Elec"     : df_elec,
+                    "Mag_flag" : mag_flag,
+                }
+
+                # Update general_dict with particle information
+                general_dict["Fraction_missing_part"] = misc['Par']['Frac_miss']
+                general_dict["Resolution_part"]       = misc['Par']["resol"]
+
                 try:
-                    general_dict["Fraction_missing_elec"]  = misc['Elec']['Frac_miss']
-                    general_dict["Resolution_elec"]        = misc['Elec']["resol"]
-                except:
-                    general_dict["Fraction_missing_elec"]  = None
-                    general_dict["Resolution_elec"]        = None                 
-                
-                
-                if (settings['sc']=='PSP') | (settings['sc']=='SOLO'):
+                    general_dict["Fraction_missing_elec"] = misc['Elec']['Frac_miss']
+                    general_dict["Resolution_elec"]       = misc['Elec']["resol"]
+                except Exception:
+                    general_dict["Fraction_missing_elec"] = None
+                    general_dict["Resolution_elec"]       = None
+
+                if sc in ('PSP', 'SOLO'):
                     try:
-                        general_dict["Fraction_missing_qtn"]  = misc['QTN']['Frac_miss']
-                        general_dict["Resolution_qtn"]        = misc['QTN']["resol"]
-                    except:
-                        general_dict["Fraction_missing_qtn"]  = None
-                        general_dict["Resolution_qtn"]        = None
-                        
+                        general_dict["Fraction_missing_qtn"] = misc['QTN']['Frac_miss']
+                        general_dict["Resolution_qtn"]       = misc['QTN']["resol"]
+                    except Exception:
+                        general_dict["Fraction_missing_qtn"] = None
+                        general_dict["Resolution_qtn"]       = None
+
                     try:
-                        final_dict['E']                     = df_e_field                
-                        general_dict["Fraction_missing_E"]  = misc['E']['Frac_miss']
-                        general_dict["Resolution_E"]        = misc['E']["resol"]
-                    except:
-                        general_dict["Fraction_missing_E"]  = None
-                        general_dict["Resolution_E"]        = None
+                        final_dict['E'] = df_e_field
+                        general_dict["Fraction_missing_E"]    = misc['E']['Frac_miss']
+                        general_dict["Resolution_E"]          = misc['E']["resol"]
+                    except Exception:
+                        general_dict["Fraction_missing_E"]    = None
+                        general_dict["Resolution_E"]          = None
 
-                general_dict["sc"]                            = settings["sc"]
+                    try:
+                        final_dict['SC_pot']                    = df_sc_pot
+                        general_dict["Fraction_missing_SC_pot"] = misc['SC_pot']['Frac_miss']
+                        general_dict["Resolution_SC_pot"]       = misc['SC_pot']["resol"]
+                    except Exception:
+                        general_dict["Fraction_missing_SC_pot"] = None
+                        general_dict["Resolution_SC_pot"]       = None
 
-                flag_good = 1
+                general_dict["sc"] = sc
+                flag_good          = 1
 
-            except:
+            except Exception:
                 traceback.print_exc()
-
+                print("No MAG data!")
                 flag_good = 0
-                print('No MAG data!')
-                big_gaps, final_dict, general_dict, sig_c_sig_r_timeseries = None, None, None, None
+                big_gaps = None
+                final_dict = None
+                general_dict = None
+                sig_c_sig_r_timeseries = None
         else:
             traceback.print_exc()
+            print("No particle data!")
             final_dict = None
-            print('No particle data!')
-
             flag_good = 0
-            big_gaps, final_dict, general_dict, sig_c_sig_r_timeseries = None, None, None, None
+            big_gaps = None
+            general_dict = None
+            sig_c_sig_r_timeseries = None
     else:
-        final_dict = None
         traceback.print_exc()
-        print('No particle data!')
-
+        print("No particle data!")
+        final_dict = None
         flag_good = 0
-        big_gaps, final_dict, general_dict, sig_c_sig_r_timeseries = None, None, None, None
+        big_gaps = None
+        general_dict = None
+        sig_c_sig_r_timeseries = None
 
-        
-    return big_gaps, big_gaps_par, big_gaps_elec,  big_gaps_qtn,  flag_good, final_dict, general_dict, sig_c_sig_r_timeseries,  dfdis, misc
-    
+    return (
+        big_gaps_SC_pot,
+        big_gaps,
+        big_gaps_par,
+        big_gaps_elec,
+        big_gaps_qtn,
+        flag_good,
+        final_dict,
+        general_dict,
+        sig_c_sig_r_timeseries,
+        dfdis,
+        misc
+    )
 
 
 
@@ -680,7 +744,7 @@ def generate_intervals(start_time_str,
     # Parse the start and end times
     try:
         start_date = datetime.datetime.strptime(start_time_str, '%Y-%m-%d %H:%M')
-        end_date = datetime.datetime.strptime(end_time_str, '%Y-%m-%d %H:%M')
+        end_date   = datetime.datetime.strptime(end_time_str, '%Y-%m-%d %H:%M')
     except ValueError as ve:
         logging.error("Incorrect time format. Please use 'YYYY-MM-DD HH:MM'. Error: %s", ve)
         raise
@@ -688,11 +752,11 @@ def generate_intervals(start_time_str,
     if not generate_1_interval:
         # Generate only one interval
         start_times = [start_date]
-        end_times = [end_date]
+        end_times   = [end_date]
         logging.info("Generating only one interval based on the provided start and end times.")
     else:
         # Validate 'Step' and 'duration' in settings
-        step = settings.get('Step')
+        step     = settings.get('Step')
         duration = settings.get('duration')
         
         if not step or not duration:
@@ -714,8 +778,8 @@ def generate_intervals(start_time_str,
 
         # Ensure that end_times do not exceed the specified end_date
         valid_indices = end_times <= end_date
-        start_times = start_times[valid_indices]
-        end_times = end_times[valid_indices]
+        start_times  = start_times[valid_indices]
+        end_times    = end_times[valid_indices]
         
         logging.info("Generated intervals with Step: %s and Duration: %s", step, duration)
         logging.info("Number of Intervals: %d", len(start_times))

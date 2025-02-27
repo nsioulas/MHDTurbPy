@@ -1384,98 +1384,98 @@ def calculate_dhtf(v, b):
     return dhtf
 
 
-from scipy.signal import stft, istft
-def remove_wheel_noise(data,
-                       fs, 
-                       window_size      = 2**15, 
-                       avg_length       = 2,
-                       power_threshold  = 3.0,
-                       freq_min         = 1.0):
-    """
-    Remove noise tones from a time series of magnetic field measurements.
+# from scipy.signal import stft, istft
+# def remove_wheel_noise(data,
+#                        fs, 
+#                        window_size      = 2**15, 
+#                        avg_length       = 2,
+#                        power_threshold  = 3.0,
+#                        freq_min         = 1.0):
+#     """
+#     Remove noise tones from a time series of magnetic field measurements.
 
-    Parameters:
-    data : numpy.ndarray
-        Input time series data.
-    fs : float
-        Sampling frequency in Hz.
-    window_size : int, optional
-        Window size for STFT (number of data points). Default is 2**15.
-    avg_length : int, optional
-        Number of consecutive STFT windows to average. Default is 5.
-    power_threshold : float, optional
-        Power threshold factor to detect noise frequencies. Default is 3.0.
-    freq_min : float, optional
-        Minimum frequency (Hz) to consider for noise detection. Default is 1.0 Hz.
+#     Parameters:
+#     data : numpy.ndarray
+#         Input time series data.
+#     fs : float
+#         Sampling frequency in Hz.
+#     window_size : int, optional
+#         Window size for STFT (number of data points). Default is 2**15.
+#     avg_length : int, optional
+#         Number of consecutive STFT windows to average. Default is 5.
+#     power_threshold : float, optional
+#         Power threshold factor to detect noise frequencies. Default is 3.0.
+#     freq_min : float, optional
+#         Minimum frequency (Hz) to consider for noise detection. Default is 1.0 Hz.
 
-    Returns:
-    cleaned_data : numpy.ndarray
-        Time series data with noise tones removed.
-    extracted_noise : numpy.ndarray
-        Time series of the extracted noise.
-    """
-    # Compute STFT (removed boundary=None to use default padding)
-    f, t_stft, Zxx = stft(data, fs=fs, window='hann', nperseg=window_size,
-                          noverlap=window_size//2)
+#     Returns:
+#     cleaned_data : numpy.ndarray
+#         Time series data with noise tones removed.
+#     extracted_noise : numpy.ndarray
+#         Time series of the extracted noise.
+#     """
+#     # Compute STFT (removed boundary=None to use default padding)
+#     f, t_stft, Zxx = stft(data, fs=fs, window='hann', nperseg=window_size,
+#                           noverlap=window_size//2)
 
-    # Compute power spectrum (magnitude squared)
-    power_spectrum = np.abs(Zxx)**2
+#     # Compute power spectrum (magnitude squared)
+#     power_spectrum = np.abs(Zxx)**2
 
-    # Average spectra: For every avg_length consecutive windows, average the spectra
-    n_segments = Zxx.shape[1]
-    n_groups = n_segments // avg_length
-    if n_groups == 0:
-        raise ValueError("Not enough data to form at least one group for averaging spectra. "
-                         "Reduce avg_length or provide more data.")
+#     # Average spectra: For every avg_length consecutive windows, average the spectra
+#     n_segments = Zxx.shape[1]
+#     n_groups = n_segments // avg_length
+#     if n_groups == 0:
+#         raise ValueError("Not enough data to form at least one group for averaging spectra. "
+#                          "Reduce avg_length or provide more data.")
 
-    averaged_power_spectra = []
-    for i in range(n_groups):
-        start_idx = i * avg_length
-        end_idx   = start_idx + avg_length
-        avg_power = np.mean(power_spectrum[:, start_idx:end_idx], axis=1)
-        averaged_power_spectra.append(avg_power)
+#     averaged_power_spectra = []
+#     for i in range(n_groups):
+#         start_idx = i * avg_length
+#         end_idx   = start_idx + avg_length
+#         avg_power = np.mean(power_spectrum[:, start_idx:end_idx], axis=1)
+#         averaged_power_spectra.append(avg_power)
 
-    averaged_power_spectra = np.array(averaged_power_spectra)  # Shape: (n_groups, n_frequencies)
+#     averaged_power_spectra = np.array(averaged_power_spectra)  # Shape: (n_groups, n_frequencies)
 
-    # Compute background spectrum by averaging over all averaged spectra
-   # background_spectrum = np.mean(averaged_power_spectra, axis=0)  # Shape: (n_frequencies,)
+#     # Compute background spectrum by averaging over all averaged spectra
+#    # background_spectrum = np.mean(averaged_power_spectra, axis=0)  # Shape: (n_frequencies,)
 
-    # Identify noise frequencies where the power exceeds threshold times the background spectrum
-    noise_mask = np.zeros_like(Zxx, dtype=bool)
-    for i in range(n_groups):
-        start_idx   = i * avg_length
-        end_idx     = start_idx + avg_length
-        group_power = power_spectrum[:, start_idx:end_idx]  # Shape: (n_frequencies, avg_length)
+#     # Identify noise frequencies where the power exceeds threshold times the background spectrum
+#     noise_mask = np.zeros_like(Zxx, dtype=bool)
+#     for i in range(n_groups):
+#         start_idx   = i * avg_length
+#         end_idx     = start_idx + avg_length
+#         group_power = power_spectrum[:, start_idx:end_idx]  # Shape: (n_frequencies, avg_length)
 
-        # Thresholding
-        hamp     = func.hampel(averaged_power_spectra[i], 1201, 2.5)
-        threshold = power_threshold *hamp[0][:, np.newaxis]  # Shape: (n_frequencies, 1)
-        # Identify noise frequencies
-        noise_frequencies = (group_power > threshold) & (f[:, np.newaxis] >= freq_min)  # Shape: (n_frequencies, avg_length)
+#         # Thresholding
+#         hamp     = func.hampel(averaged_power_spectra[i], 1201, 2.5)
+#         threshold = power_threshold *hamp[0][:, np.newaxis]  # Shape: (n_frequencies, 1)
+#         # Identify noise frequencies
+#         noise_frequencies = (group_power > threshold) & (f[:, np.newaxis] >= freq_min)  # Shape: (n_frequencies, avg_length)
 
-        # Assign to noise_mask
-        noise_mask[:, start_idx:end_idx] = noise_frequencies
+#         # Assign to noise_mask
+#         noise_mask[:, start_idx:end_idx] = noise_frequencies
 
-    # Use the inverse STFT on the identified noise coefficients to create a noise time series
-    noise_Zxx = np.zeros_like(Zxx, dtype=complex)
-    noise_Zxx[noise_mask] = Zxx[noise_mask]
+#     # Use the inverse STFT on the identified noise coefficients to create a noise time series
+#     noise_Zxx = np.zeros_like(Zxx, dtype=complex)
+#     noise_Zxx[noise_mask] = Zxx[noise_mask]
 
-    # Generate noise time series
-    _, noise_time_series = istft(noise_Zxx, fs=fs, window='hann', nperseg=window_size,
-                                 noverlap=window_size//2)
+#     # Generate noise time series
+#     _, noise_time_series = istft(noise_Zxx, fs=fs, window='hann', nperseg=window_size,
+#                                  noverlap=window_size//2)
 
-    # Ensure the noise time series has the same length as original data
-    if len(noise_time_series) > len(data):
-        # Trim the reconstructed noise to match the original data length
-        noise_time_series = noise_time_series[:len(data)]
-    elif len(noise_time_series) < len(data):
-        # Pad the reconstructed noise with zeros to match the original data length
-        noise_time_series = np.pad(noise_time_series, (0, len(data) - len(noise_time_series)), 'constant')
+#     # Ensure the noise time series has the same length as original data
+#     if len(noise_time_series) > len(data):
+#         # Trim the reconstructed noise to match the original data length
+#         noise_time_series = noise_time_series[:len(data)]
+#     elif len(noise_time_series) < len(data):
+#         # Pad the reconstructed noise with zeros to match the original data length
+#         noise_time_series = np.pad(noise_time_series, (0, len(data) - len(noise_time_series)), 'constant')
 
-    # Subtract the noise time series from the original data
-    cleaned_data = data - noise_time_series
+#     # Subtract the noise time series from the original data
+#     cleaned_data = data - noise_time_series
 
-    return cleaned_data
+#     return cleaned_data
 
 
 # def remove_wheel_noise(data, 
@@ -1575,95 +1575,95 @@ def remove_wheel_noise(data,
 
 
 
-# def remove_wheel_noise(signal,
-#                    fs, 
-#                    freq_threshold         =  1.5,
-#                    windows_width_hz       = [0.1, 2],
-#                    empirical_threshold    = 1.3
-#                   ):
-#     for window_hz in func.ensure_iterable(windows_width_hz):
-#     #for window_hz in (windows_width_hz if len(windows_width_hz) > 1 else [windows_width_hz]):
+def remove_wheel_noise(signal,
+                   fs, 
+                   freq_threshold         =  1.5,
+                   windows_width_hz       = [0.1, 2],
+                   empirical_threshold    = 1.3
+                  ):
+    for window_hz in func.ensure_iterable(windows_width_hz):
+    #for window_hz in (windows_width_hz if len(windows_width_hz) > 1 else [windows_width_hz]):
 
-#         # Calculate the Fourier transform and power spectrum of the signal
-#         N = len(signal)
-#         signal_fft = np.fft.rfft(signal)
-#         power_spec = np.abs(signal_fft)**2
-#         frequencies = np.fft.rfftfreq(N, d=1/fs)
+        # Calculate the Fourier transform and power spectrum of the signal
+        N = len(signal)
+        signal_fft = np.fft.rfft(signal)
+        power_spec = np.abs(signal_fft)**2
+        frequencies = np.fft.rfftfreq(N, d=1/fs)
 
-#         # Filter frequencies higher than the threshold
-#         valid_indices        = frequencies > freq_threshold
-#         frequencies_filtered = frequencies[valid_indices]
-#         power_spec_filtered  = power_spec[valid_indices]
+        # Filter frequencies higher than the threshold
+        valid_indices        = frequencies > freq_threshold
+        frequencies_filtered = frequencies[valid_indices]
+        power_spec_filtered  = power_spec[valid_indices]
 
-#         # Calculate moving-window mean and standard deviation
-#         window_size_samples  = int(np.ceil(window_hz / (frequencies[1] - frequencies[0])))*2 + 1
+        # Calculate moving-window mean and standard deviation
+        window_size_samples  = int(np.ceil(window_hz / (frequencies[1] - frequencies[0])))*2 + 1
 
-#         moving_mean          = np.convolve(power_spec_filtered, np.ones(window_size_samples)/window_size_samples, mode='same')
+        moving_mean          = np.convolve(power_spec_filtered, np.ones(window_size_samples)/window_size_samples, mode='same')
         
-#         #_, moving_mean       = func.smoothing_function(frequencies_filtered, power_spec_filtered)
-#         moving_std           = np.sqrt(np.convolve((power_spec_filtered - moving_mean)**2, np.ones(window_size_samples)/window_size_samples, mode='same'))
+        #_, moving_mean       = func.smoothing_function(frequencies_filtered, power_spec_filtered)
+        moving_std           = np.sqrt(np.convolve((power_spec_filtered - moving_mean)**2, np.ones(window_size_samples)/window_size_samples, mode='same'))
 
 
-#         # Define z(f)
-#         z_f  =  moving_std / moving_mean
+        # Define z(f)
+        z_f  =  moving_std / moving_mean
 
 
-#         # Calculate empirical threshold based on the mean value of z(f)
-#         z_cutoff =  empirical_threshold* np.mean(z_f)
-
-
-
-#         roling_median        = func.simple_python_rolling_median(z_f, 5*window_size_samples)
-#         quant                = empirical_threshold* roling_median
-#         #noise_mask           = (z_f > quant) | ( np.isnan(roling_median) & (frequencies_filtered > 2*freq_threshold)) | ((z_f >empirical_threshold) & (frequencies_filtered > 3*freq_threshold))
-#         noise_mask           = (z_f > quant)
-#         f_noise              = frequencies_filtered[noise_mask]
-
-
-#         # Mask for frequencies without noise
-
-#         # Calculate moving-window mean for no-noise frequencies     
-#         power_spec_no_noise = power_spec_filtered[~noise_mask]
-#         frequencies_no_noise = frequencies_filtered[~noise_mask]
-#         moving_mean_no_noise = np.convolve(power_spec_no_noise, np.ones(window_size_samples)/window_size_samples, mode='same')
-
-
-#         #frequencies_no_noise, _, moving_mean_no_noise = func.smoothing_function(frequencies_no_noise, power_spec_no_noise, 2)
-
-#         # Interpolate moving-window mean for the noise frequencies
-#         moving_mean_interpolated = np.interp(frequencies_filtered, frequencies_no_noise, moving_mean_no_noise)
-
-#         # Replace power spectrum values at noise frequencies with interpolated moving mean
-#         power_spec_noise_removed                                     = power_spec.copy()
-
-#         # First, find the indices in the full frequency array where noise is present
-#         noise_indices = np.where(frequencies > freq_threshold)[0][noise_mask]
-
-#         # Now update the power_spec_noise_removed at those indices with the interpolated values
-#         power_spec_noise_removed[noise_indices] = moving_mean_interpolated[noise_mask]
-
-#         # Recalculate magnitude for noise-removed Fourier transform
-#         magnitude_noise_removed = np.sqrt(power_spec_noise_removed)
-
-#         # Retain phases for no-noise frequencies, randomize for noise frequencies
-#         phases = np.angle(signal_fft)
-#         # Generate random phases only for the noise frequencies
-#         random_phases = np.random.uniform(-np.pi, np.pi, len(f_noise))
-
-#         # Assign random phases only to the noise frequencies
-#         phases_noise_indices = np.where(np.isin(frequencies, f_noise))[0]
-#         phases[phases_noise_indices] = random_phases
-
-
-#         # Construct the noise-removed Fourier transform
-#         noise_removed_fft = magnitude_noise_removed * np.exp(1j * phases)
-
-#         # Perform the inverse Fourier transform to get the noise-removed signal
-#         signal = np.fft.irfft(noise_removed_fft, n=N)
+        # Calculate empirical threshold based on the mean value of z(f)
+        z_cutoff =  empirical_threshold* np.mean(z_f)
 
 
 
-#     return signal
+        roling_median        = func.simple_python_rolling_median(z_f, 5*window_size_samples)
+        quant                = empirical_threshold* roling_median
+        #noise_mask           = (z_f > quant) | ( np.isnan(roling_median) & (frequencies_filtered > 2*freq_threshold)) | ((z_f >empirical_threshold) & (frequencies_filtered > 3*freq_threshold))
+        noise_mask           = (z_f > quant)
+        f_noise              = frequencies_filtered[noise_mask]
+
+
+        # Mask for frequencies without noise
+
+        # Calculate moving-window mean for no-noise frequencies     
+        power_spec_no_noise = power_spec_filtered[~noise_mask]
+        frequencies_no_noise = frequencies_filtered[~noise_mask]
+        moving_mean_no_noise = np.convolve(power_spec_no_noise, np.ones(window_size_samples)/window_size_samples, mode='same')
+
+
+        #frequencies_no_noise, _, moving_mean_no_noise = func.smoothing_function(frequencies_no_noise, power_spec_no_noise, 2)
+
+        # Interpolate moving-window mean for the noise frequencies
+        moving_mean_interpolated = np.interp(frequencies_filtered, frequencies_no_noise, moving_mean_no_noise)
+
+        # Replace power spectrum values at noise frequencies with interpolated moving mean
+        power_spec_noise_removed                                     = power_spec.copy()
+
+        # First, find the indices in the full frequency array where noise is present
+        noise_indices = np.where(frequencies > freq_threshold)[0][noise_mask]
+
+        # Now update the power_spec_noise_removed at those indices with the interpolated values
+        power_spec_noise_removed[noise_indices] = moving_mean_interpolated[noise_mask]
+
+        # Recalculate magnitude for noise-removed Fourier transform
+        magnitude_noise_removed = np.sqrt(power_spec_noise_removed)
+
+        # Retain phases for no-noise frequencies, randomize for noise frequencies
+        phases = np.angle(signal_fft)
+        # Generate random phases only for the noise frequencies
+        random_phases = np.random.uniform(-np.pi, np.pi, len(f_noise))
+
+        # Assign random phases only to the noise frequencies
+        phases_noise_indices = np.where(np.isin(frequencies, f_noise))[0]
+        phases[phases_noise_indices] = random_phases
+
+
+        # Construct the noise-removed Fourier transform
+        noise_removed_fft = magnitude_noise_removed * np.exp(1j * phases)
+
+        # Perform the inverse Fourier transform to get the noise-removed signal
+        signal = np.fft.irfft(noise_removed_fft, n=N)
+
+
+
+    return signal
 
 
 

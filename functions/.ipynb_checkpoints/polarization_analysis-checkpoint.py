@@ -40,17 +40,17 @@ import traceback
 from numba import njit, prange
 from joblib import Parallel, delayed
 from tqdm import tqdm
+from CWTPy import cwt_module
 
 
-
-def estimate_cwt(signal,
+def estimate_cwt_old(signal,
                  dt,
                  nv            = 32,
                  omega0        = 6,
                  scale_type    = 'log-piecewise',
                  vectorized    = True,
                  l1_norm       = False,
-                 min_frequency = None):
+                 min_freq = None):
     """
     Estimate continuous wavelet transform of the signal.
 
@@ -59,7 +59,7 @@ def estimate_cwt(signal,
     - dt (float): Sampling interval.
     - nv (int): Number of voices per octave.
     - omega0 (int): Morlet wavelet parameter.
-    - min_frequency (float, optional): Minimum frequency to retain.
+    - min_freq (float, optional): Minimum frequency to retain.
 
     Returns:
     - w_df (dict or np.ndarray): Wavelet coefficients per column or array.
@@ -82,16 +82,24 @@ def estimate_cwt(signal,
                                        vectorized = vectorized)
             # Compute frequencies corresponding to scales
             freqs = ssqueezepy.experimental.scale_to_freq(scales, wavelet, len(signal[col]), fs)
-            scales = (omega0) / (2 * np.pi * freqs) * (1 + 1 / (2 * omega0**2))*fs
+            scales = (omega0) / (2 * np.pi * freqs) * (1 + 1 / (2 * omega0**2))
 
             # Remove the first five scales and corresponding coefficients
-            W      = W[5:, :]
-            scales = scales[5:]
-            freqs  = freqs[5:]
 
-            # Remove frequencies lower than min_frequency
-            if min_frequency is not None:
-                indices = np.where(freqs >= min_frequency)[0]
+            fs = 1 / dt
+            nyquist = fs / 2.0
+            cutoff = 0.95 * nyquist
+            
+            # Create a boolean mask to keep frequencies below the cutoff.
+            mask = freqs < cutoff
+            
+            W      = W[mask, :]
+            scales = scales[mask]
+            freqs  = freqs[mask]
+
+            # Remove frequencies lower than min_freq
+            if min_freq is not None:
+                indices = np.where(freqs >= min_freq)[0]
                 W       = W[indices, :]
                 scales  = scales[indices]
                 freqs   = freqs[indices]
@@ -107,16 +115,16 @@ def estimate_cwt(signal,
                                    vectorized = vectorized)
         # Compute frequencies corresponding to scales
         freqs = ssqueezepy.experimental.scale_to_freq(scales, wavelet, len(signal), fs)
-        scales = (omega0) / (2 * np.pi * freqs) * (1 + 1 / (2 * omega0**2))*fs
+        scales = (omega0) / (2 * np.pi * freqs) * (1 + 1 / (2 * omega0**2))*fs 
 
         # Remove the first five scales and corresponding coefficients
         W       = W[5:, :]
         scales  = scales[5:]
         freqs   = freqs[5:]
 
-        # Remove frequencies lower than min_frequency
-        if min_frequency is not None:
-            indices = np.where(freqs >= min_frequency)[0]
+        # Remove frequencies lower than min_freq
+        if min_freq is not None:
+            indices = np.where(freqs >= min_freq)[0]
             W       = W[indices, :]
             scales  = scales[indices]
             freqs   = freqs[indices]
@@ -125,45 +133,145 @@ def estimate_cwt(signal,
 
     coi = None
 
-    return w_df, scales, freqs, coi
+    return w_df, scales, freqs, 2*dt, coi
 
 
-def local_gaussian_averaging(signal,
-                             dt, 
-                             scale,
-                             num_efoldings = 3,
-                             alpha         = 1):
+def estimate_cwt    (signal,
+                     dt,
+                     nv                = 16,
+                     omega0            = 6.0,
+                     min_freq          = None,
+                     max_freq          = None,
+                     use_omp           = False,
+                     consider_coi      = False,
+                     compute_trace_psd = False,
+                     scale_type       = 'log'):
     """
-    Averages a signal using a Gaussian window scaled by a dimensionless factor alpha.
+    Estimate the CWT of the given signal using cwt_module.cwt_morlet_full.
     
-    Parameters:
-        signal (array-like): The input signal to be smoothed.
-        sigma (float): Base standard deviation of the Gaussian window.
-        dt (float): Time step of the signal.
-        alpha (float): Scaling factor for the Gaussian width.
-
-    Returns:
-        smoothed_signal (array): The signal convolved with the Gaussian window.
+    This wrapper accepts a 1D numpy array or a pandas DataFrame (processed column-wise) 
+    and returns a dictionary with:
+      - 'W': wavelet coefficients (2D array, num_scales x time_points)
+      - 'scales': 1D array of scales
+      - 'freqs': 1D array of wavelet frequencies (Hz)
+      - 'psd_norm': normalization factor for converting power to a PSD
+      - 'fft_freqs': 1D array of FFT frequencies (Hz)
+      - (optionally) 'trace_psd': the trace PSD (if compute_trace_psd is True)
+      - (optionally) 'coi': the cone-of-influence (if consider_coi is True)
+    
+    Parameters
+    ----------
+    signal : np.ndarray or pd.DataFrame
+        Input time-series data.
+    dt : float
+        Sampling interval.
+    nv : int, optional
+        Voices per octave (default 16).
+    omega0 : float, optional
+        Morlet wavelet parameter (default 6.0).
+    min_freq : float or None, optional
+        Lowest frequency of interest (Hz). If None, C++ uses ~1/(N*dt).
+    max_freq : float or None, optional
+        Highest frequency of interest (Hz). If None, defaults to fs/2.
+    use_omp : bool, optional
+        If True, parallelize using OpenMP.
+    consider_coi : bool, optional
+        If True, return the cone of influence (COI) and use it in PSD masking.
+    compute_trace_psd : bool, optional
+        If True, compute the trace PSD from the wavelet coefficients.
+    
+    Returns
+    -------
+    dict or dict of dicts
+        For a 1D input, returns a dictionary with keys:
+          'W', 'scales', 'freqs', 'psd_norm', 'fft_freqs', and optionally 'trace_psd', 'coi'.
+        For a DataFrame, returns a dictionary mapping column names to such dictionaries.
     """
+    # Convert None to 0.0 so C++ defaults are used.
+    if min_freq is None:
+        min_freq = 0.0
+    if max_freq is None:
+        max_freq = 0.0
 
-    # Effective width of the Gaussian
-    sigma_b          = alpha * scale
+    def _process_1d(sig_1d):
+        sig_1d = np.asarray(sig_1d, dtype=np.float64)
+        # Call the C++ function, with always returning FFT frequencies.
+        ret = cwt_module.cwt_morlet_full(
+            sig_1d,
+            float(dt),
+            int(nv),
+            float(omega0),
+            float(min_freq),
+            float(max_freq),
+            bool(use_omp),
+            1.0,              # norm_mult, can be adjusted if needed4
+            str(scale_type),
+            bool(consider_coi),
+            True              # Always return FFT frequencies.
+        )
+        # Unpack outputs.
+        W         = ret[0]
+        scales    = ret[1]
+        freqs     = ret[2]
+        psd_norm  = ret[3]
+        fft_freqs = ret[4]
+
+        return W, scales, freqs, psd_norm
+
+    w_df = {}
+    if isinstance(signal, pd.DataFrame):
+        result_dict = {}
+        trace_psd   = 0
+        for col in signal.columns:
+            W, scales, freqs, psd_norm = _process_1d(signal[col].values)
+            w_df[col]       = W   
+    else:
+        W, scales,freqs,psd_norm = _process_1d(signal)
+        w_df            = W
+
+    return w_df, scales, freqs, psd_norm, None
+
+
+
+
+def local_gaussian_averaging(signal, dt, scale, alpha=1.0, num_efoldings=3):
+    """
+    Smooth `signal` with a Gaussian of standard deviation sigma = alpha * scale (seconds).
+    We convert that to sample units and do a 'same' convolution.
+
+    Parameters
+    ----------
+    signal : 1D array
+        The input signal, sampled at uniform dt.
+    dt : float
+        The sampling interval in seconds.
+    scale : float
+        The wavelet scale in seconds.
+    alpha : float
+        The dimensionless parameter in eqn(22).
+    num_efoldings : float
+        The half-width in standard deviations for the kernel. Default=3 => ±3σ.
+
+    Returns
+    -------
+    smoothed_signal : 1D array, same length as input
+    """
+    # 1) The "sigma" in time
+    sigma_time = alpha * scale
     
-    # Calculate window size to include the desired number of e-foldings of the Gaussian distribution
-    sigma_b_samples  = sigma_b
-    N                = int(np.ceil(num_efoldings * sigma_b_samples))
-    N                = max(1, N)
-    t_samples        = np.arange(-N, N + 1)
+    # 2) Convert to sample units
+    sigma_samples = sigma_time / dt
     
-    # Define the Gaussian window
-    gaussian_kernel  = np.exp(- (t_samples ** 2) / (2 * sigma_b_samples ** 2))
-    
+    # 3) Build the kernel in sample units over ±num_efoldings*sigma_samples
+    half_width = int(np.ceil(num_efoldings * sigma_samples))
+    t_samples  = np.arange(-half_width, half_width+1)
+    kernel     = np.exp(-(t_samples**2)/(2*sigma_samples**2))
+
     # Normalize the Gaussian window to ensure it sums to one, maintaining the total signal energy after convolution
-    gaussian_kernel /= gaussian_kernel.sum()
+    kernel /= kernel.sum()
     
-    # Convolve the input signal with the Gaussian window using 'same' mode 
-    return scipy.signal.convolve(signal, gaussian_kernel, mode='same')
-
+    # 4) Convolve
+    return scipy.signal.convolve(signal, kernel, mode='same')
 
 
 
@@ -247,13 +355,6 @@ def coherence_analysis(B0_f_o,
                            sufix       = '', 
                            vector_cols =['eigen_1_hat', 'eigen_2_hat', 'eigen_3_hat'])
 
-    
-    # Extract necessary arrays without copying
-    #sign_B_0_R = np.sign(B0_f_o['R'].to_numpy(copy=False))
-
-    # Update the columns 'B_0_R_hat' and 'B_0_T_hat' by multiplying with -sign_B_0_R
-    #B0_f_o[['R', 'T']] =  -sign_B_0_R[:, np.newaxis] * B0_f_o[['R', 'T']].to_numpy(copy=False)
-    #df_w[['R', 'T']]   =  sign_B_0_R[:, np.newaxis] * df_w[['R', 'T']].to_numpy(copy=False)
 
     # Estimate the unit vectors
     B0_f_o = unit_vectors(B0_f_o, prefix = 'B_0_', vector_cols= ['R', 'T', 'N'])
@@ -364,6 +465,98 @@ def calculate_polarization_spectra(Bx, By):
 
     return PL, PR
 
+
+
+def calculate_wavelet_flatness(df_ws_needed, rolling_params, step):
+    """
+    Calculate  Wavelet flatness.
+
+    Parameters:
+    - df_ws_needed (pd.DataFrame or np.ndarray): Input wavelet spectrogram data.
+    - rolling_params (dict): Parameters for rolling window operations.
+    - step (str): Resampling step size.
+
+    Returns:
+    - pd.Series: wavelet flatness values.
+    """
+    # Ensure DataFrame structure
+    df_ws_needed = df_ws_needed if isinstance(df_ws_needed, pd.DataFrame) else df_ws_needed.to_frame()
+
+
+    flatness = (
+        (
+            ((df_ws_needed * np.conj(df_ws_needed)).sum(axis=1).pow(2))
+            .rolling(**rolling_params)
+            .mean()
+        )
+        /
+        (
+            (df_ws_needed * np.conj(df_ws_needed)).sum(axis=1)
+            .rolling(**rolling_params)
+            .mean().pow(2)
+        )
+    ).resample(step).mean()
+
+    return flatness
+
+
+
+
+def compute_norm_psd(df_ws_needed, rolling_params, dt, counts, window_size, step, psd_norm):
+    """
+    Compute Power Spectral Density (PSD).
+
+    Parameters:
+    - df_ws_needed (pd.DataFrame or np.ndarray): Input wavelet spectrogram data.
+    - rolling_params (dict): Parameters for rolling window operations.
+    - dt (float): Time step interval.
+    - counts (pd.Series or np.ndarray): Normalization counts.
+    - window_size (int): Window size for normalization.
+    - step (str): Resampling step size.
+
+    Returns:
+    - pd.Series: Power Spectral Density (PSD).
+    """
+    # Ensure DataFrame structure
+    df_ws_needed =  df_ws_needed if isinstance(df_ws_needed, pd.DataFrame) else df_ws_needed.to_frame()
+
+    
+    psd_sum = psd_norm*(df_ws_needed * np.conj(df_ws_needed)).rolling(**rolling_params).mean().sum(axis=1)
+    PSD    = ( psd_sum * (counts / window_size)).resample(step).mean()
+    
+    return PSD
+
+
+def compute_psd_with_counts(df_ws_needed, rolling_params, dt, index_mask, step, psd_norm):
+    """
+    Compute Power Spectral Density (PSD) and return associated counts.
+
+    Parameters:
+    - df_ws_needed (pd.DataFrame or np.ndarray): Input wavelet spectrogram data.
+    - rolling_params (dict): Parameters for rolling window operations.
+    - dt (float): Time step interval.
+    - index_mask (pd.Series or np.ndarray): Boolean mask indicating relevant indices.
+    - step (str): Resampling step size.
+
+    Returns:
+    - PSD (pd.Series): Computed Power Spectral Density.
+    - counts (pd.Series): Number of relevant events in the rolling window.
+    """
+
+    # Ensure DataFrame structure
+    df_ws_needed = df_ws_needed if isinstance(df_ws_needed, pd.DataFrame) else df_ws_needed.to_frame()
+
+    psd_sum = psd_norm * (df_ws_needed * np.conj(df_ws_needed)).rolling(**rolling_params).mean().sum(axis=1)
+    if index_mask is not None:
+        counts  = index_mask.rolling(**rolling_params).sum().resample(step).mean()
+    else:
+        counts  = np.nan
+    PSD     = (psd_sum).resample(step).mean()
+
+    return PSD, counts
+
+
+
     
     
 def est_anisotropic_PSDs(df_w,
@@ -371,70 +564,66 @@ def est_anisotropic_PSDs(df_w,
                          index_par,
                          index_per,
                          dt,
-                         func_params = None):
-    
+                         psd_norm,
+                         func_params=None):
+
     use_rolling_mean = func_params.get('use_rolling_mean', False)
 
     if func_params["estimate_PSDs"]:
-        
-
         if use_rolling_mean:
-            
             averaging_window = func_params['averaging_window']  # e.g., '60s'
-            step             = func_params['step']  # e.g., '10s'
-            coh_th           = func_params['coh_th']
-            rolling_params   = {'window': averaging_window, 'center': True, 'min_periods': 10}
+            step = func_params['step']  # e.g., '10s'
+            rolling_params = {'window': averaging_window, 'center': True, 'min_periods': 10}
 
-            
-            PSD_par         = (((df_w.where(pd.Series(index_par, index=df_w.index))* np.conj(df_w.where(pd.Series(index_par, index=df_w.index)))).rolling(**rolling_params).mean()).sum(axis=1)* 2 * dt).resample(step).mean()
-            PSD_per         = (((df_w.where(pd.Series(index_per, index=df_w.index))* np.conj(df_w.where(pd.Series(index_per, index=df_w.index)))).rolling(**rolling_params).mean()).sum(axis=1)* 2 * dt).resample(step).mean()
+            """ Estimate Parallel PSD and SDK """
+            index_mask   = pd.Series(index_par, index=df_w.index)
+            df_ws_needed = df_w.where(index_mask)
+            PSD_par, _   = compute_psd_with_counts(df_ws_needed, rolling_params, dt, index_mask, step, psd_norm)
+            SDK_par      = calculate_wavelet_flatness(df_ws_needed, rolling_params, step)
 
-            
-                    
-            SDK_par         = ((((((df_w.where(pd.Series(index_par, index=df_w.index)) * np.conj(df_w.where(pd.Series(index_par, index=df_w.index))))
-                             .sum(axis=1)).pow(2))
-                             .rolling(**rolling_params)
-                             .mean()))/(((df_w.where(pd.Series(index_par, index=df_w.index)) * np.conj(df_w.where(pd.Series(index_par, index=df_w.index))))
-                             .sum(axis=1))
-                             .rolling(**rolling_params).mean().pow(2))).resample(step).mean()
-            
-            
-            SDK_per         = ((((((df_w.where(pd.Series(index_per, index=df_w.index)) * np.conj(df_w.where(pd.Series(index_per, index=df_w.index))))
-                             .sum(axis=1)).pow(2))
-                             .rolling(**rolling_params)
-                             .mean()))/(((df_w.where(pd.Series(index_per, index=df_w.index)) * np.conj(df_w.where(pd.Series(index_per, index=df_w.index))))
-                             .sum(axis=1))
-                             .rolling(**rolling_params)
-                             .mean().pow(2))).resample(step).mean()
+            """ Estimate Perpendicular PSD and SDK """
+            index_mask = pd.Series(index_per, index=df_w.index)
+            df_ws_needed = df_w.where(index_mask)
+            PSD_per, _ = compute_psd_with_counts(df_ws_needed, rolling_params, dt, index_mask, step, psd_norm)
+            SDK_per = calculate_wavelet_flatness(df_ws_needed, rolling_params, step)
 
+            """ Estimate PSDs for the modulus of the fields """
             if func_params['est_mod']:
-                PSD_par_mod     = (((pd.Series(df_mod, index=df_w.index).where(pd.Series(index_par, index=df_w.index))* np.conj(pd.Series(df_mod, index=df_w.index).where(pd.Series(index_par, index=df_w.index)))).rolling(**rolling_params).mean())* 2 * dt).resample(step).mean()
-                PSD_per_mod     = (((pd.Series(df_mod, index=df_w.index).where(pd.Series(index_per, index=df_w.index))* np.conj(pd.Series(df_mod, index=df_w.index).where(pd.Series(index_per, index=df_w.index)))).rolling(**rolling_params).mean())* 2 * dt).resample(step).mean()
-            else:
-                PSD_par_mod     = np.nan
-                PSD_per_mod     = np.nan            
-        else:
-            # Estimate anisotropic PSDs
-            PSD_par                 = np.nanmean(np.real(df_w.iloc[index_par].values*np.conj(df_w.iloc[index_par].values)), axis=0).sum() * 2 * dt
-            PSD_per                 = np.nanmean(np.real(df_w.iloc[index_per].values*np.conj(df_w.iloc[index_per].values)), axis=0).sum() * 2 * dt
-            #Trace_PSD               = np.nanmean(np.real(df_w.values*np.conj(df_w.values)), axis=0).sum() * 2 * dt
+                index_mask = pd.Series(index_par, index=df_w.index)
+                df_mod_needed = pd.Series(df_mod, index=df_w.index).where(index_mask)
+                PSD_par_mod, _ = compute_psd_with_counts(df_mod_needed, rolling_params, dt, index_mask, step, psd_norm)
 
-            # Estimate anisotropic PSDs for modulus of fields
-            PSD_par_mod, PSD_per_mod = (np.nanmean(np.real(df_mod[idx]*np.conj(df_mod[idx]))) * 2 * dt for idx in [index_par, index_per]) if func_params['est_mod'] else (np.nan, np.nan)
+                index_mask = pd.Series(index_per, index=df_w.index)
+                df_mod_needed = pd.Series(df_mod, index=df_w.index).where(index_mask)
+                PSD_per_mod, _ = compute_psd_with_counts(df_mod_needed, rolling_params, dt, index_mask, step, psd_norm)
+            else:
+                PSD_par_mod = np.nan
+                PSD_per_mod = np.nan
+
+        else:
+            """ Estimate anisotropic PSDs without rolling means """
+            PSD_par = psd_norm*np.nanmean(np.real(df_w.iloc[index_par].values * np.conj(df_w.iloc[index_par].values)), axis=0).sum() 
+            PSD_per = psd_norm*np.nanmean(np.real(df_w.iloc[index_per].values * np.conj(df_w.iloc[index_per].values)), axis=0).sum() 
+
+            """ Estimate anisotropic PSDs for modulus of fields """
+            if func_params['est_mod']:
+                PSD_par_mod = psd_norm*np.nanmean(np.real(df_mod[index_par] * np.conj(df_mod[index_par]))) 
+                PSD_per_mod = psd_norm*np.nanmean(np.real(df_mod[index_per] * np.conj(df_mod[index_per]))) 
+            else:
+                PSD_par_mod = np.nan
+                PSD_per_mod = np.nan
 
     else:
-        PSD_par                      = PSD_per = PSD_par_mod = PSD_per_mod = np.nan
+        PSD_par = PSD_per = PSD_par_mod = PSD_per_mod = SDK_par = SDK_per = np.nan
 
     return {
-            'PSD_par'    : PSD_par,
-            'PSD_per'    : PSD_per,
-            'SDK_par'    : SDK_par,
-            'SDK_per'    : SDK_per,
-            'PSD_par_mod': PSD_par_mod,
-            'PSD_per_mod': PSD_per_mod,
-            #'Trace_PSD'  : Trace_PSD
+        'PSD_par': PSD_par,
+        'PSD_per': PSD_per,
+        'SDK_par': SDK_par,
+        'SDK_per': SDK_per,
+        'PSD_par_mod': PSD_par_mod,
+        'PSD_per_mod': PSD_per_mod,
     }
-
 
 
 
@@ -505,7 +694,8 @@ def est_compress(df_mod,
                  index_par,
                  index_per,
                  dt,
-                 func_params = None):
+                 psd_norm,
+                 func_params=None):
 
     use_rolling_mean = func_params.get('use_rolling_mean', False)
     
@@ -513,78 +703,51 @@ def est_compress(df_mod,
         try:
             if use_rolling_mean:
                 averaging_window = func_params['averaging_window']  # e.g., '60s'
-                step             = func_params['step']              # e.g., '10s'
-                rolling_params   = {'window': averaging_window, 'center': True, 'min_periods': 10}
+                step = func_params['step']  # e.g., '10s'
+                rolling_params = {'window': averaging_window, 'center': True, 'min_periods': 10}
 
-                # Calculate PSDs for W0 component (compressive fluctuations)
-                PSD_W0 = ((df_w['W0'] * np.conj(df_w['W0']))
-                          .rolling(**rolling_params)
-                          .mean() * 2 * dt)
-                        
-                # Calculate PSD for modulus of fields
-                PSD_mod = ((pd.Series(df_mod, index=df_w.index) * np.conj(df_mod))
-                           .rolling(**rolling_params)
-                           .mean() * 2 * dt)
+                """ Calculate PSDs for W0 component (compressive fluctuations) """
+                df_ws_needed = df_w['W0']
+                PSD_W0, _ = compute_psd_with_counts(df_ws_needed, rolling_params, dt, None, step, psd_norm)
 
-                # Calculate total PSDs (trace) for all components
-                Trace_PSD = ((df_w * np.conj(df_w))
-                             .rolling(**rolling_params)
-                             .mean()
-                             .sum(axis=1) * 2 * dt)
-                
+                """ Calculate PSD for modulus of fields """
+                df_ws_needed = pd.Series(df_mod, index=df_w.index)
+                PSD_mod, _ = compute_psd_with_counts(df_ws_needed, rolling_params, dt, None, step, psd_norm)
+
+                """ Calculate total PSDs (trace) for all components """
+                df_ws_needed = df_w
+                Trace_PSD, _ = compute_psd_with_counts(df_ws_needed, rolling_params, dt, None, step, psd_norm)
+
+                """ Compute compressibility """
                 compress_MOD = (PSD_mod / Trace_PSD).resample(step).mean()
                 compress     = (PSD_W0 / Trace_PSD).resample(step).mean()
-                
-                del  PSD_W0, PSD_mod, Trace_PSD
 
-                # Calculate PSDs for W0 in parallel modes
-                PSD_W0_par = ((df_w['W0']
-                               .where(pd.Series(index_par, index=df_w.index)) * 
-                               np.conj(df_w['W0']
-                               .where(pd.Series(index_par, index=df_w.index))))
-                              .rolling(**rolling_params)
-                              .mean() * 2 * dt)
-                
-                # Calculate total PSDs for parallel modes
-                PSD_par = ((df_w
-                            .where(pd.Series(index_par, index=df_w.index)) *
-                            np.conj(df_w
-                            .where(pd.Series(index_par, index=df_w.index))))
-                           .rolling(**rolling_params)
-                           .mean()
-                           .sum(axis=1) * 2 * dt)
-                
+                """ Calculate PSDs for W0 in parallel modes """
+                index_mask = pd.Series(index_par, index=df_w.index)
+                df_ws_needed = df_w['W0'].where(index_mask)
+                PSD_W0_par, _ = compute_psd_with_counts(df_ws_needed, rolling_params, dt, index_mask, step, psd_norm)
+
+                """ Calculate total PSDs for parallel modes """
+                df_ws_needed = df_w.where(index_mask)
+                PSD_par, _ = compute_psd_with_counts(df_ws_needed, rolling_params, dt, index_mask, step, psd_norm)
+
+                """ Compute parallel compressibility """
                 compress_par = (PSD_W0_par / PSD_par).resample(step).mean()
-                
-                
-                del  PSD_W0_par, PSD_par
-                
-                # Calculate PSDs for W0 in perpendicular modes
-                PSD_W0_per = ((df_w['W0']
-                               .where(pd.Series(index_per, index=df_w.index)) * 
-                               np.conj(df_w['W0']
-                               .where(pd.Series(index_per, index=df_w.index))))
-                              .rolling(**rolling_params)
-                              .mean() * 2 * dt)
 
+                """ Calculate PSDs for W0 in perpendicular modes """
+                index_mask = pd.Series(index_per, index=df_w.index)
+                df_ws_needed = df_w['W0'].where(index_mask)
+                PSD_W0_per, _ = compute_psd_with_counts(df_ws_needed, rolling_params, dt, index_mask, step, psd_norm)
 
-                # Calculate total PSDs for perpendicular modes
-                PSD_per = ((df_w
-                            .where(pd.Series(index_per, index=df_w.index)) *
-                            np.conj(df_w
-                            .where(pd.Series(index_per, index=df_w.index))))
-                           .rolling(**rolling_params)
-                           .mean()
-                           .sum(axis=1) * 2 * dt)
+                """ Calculate total PSDs for perpendicular modes """
+                df_ws_needed = df_w.where(index_mask)
+                PSD_per, _ = compute_psd_with_counts(df_ws_needed, rolling_params, dt, index_mask, step, psd_norm)
 
-                # Calculate compressibility
+                """ Compute perpendicular compressibility """
                 compress_per = (PSD_W0_per / PSD_per).resample(step).mean()
 
-
-                del  PSD_W0_per, PSD_per
-
             else:
-                # Existing computation without rolling mean
+                """ Compute compressibility without rolling means """
                 compress_par = (np.nanmean(np.real(df_w['W0'][index_par].values * 
                                                    np.conj(df_w['W0'][index_par].values))) /
                                 np.nanmean(np.real(df_w.iloc[index_par].values * 
@@ -593,29 +756,28 @@ def est_compress(df_mod,
                                                    np.conj(df_w['W0'][index_per].values))) /
                                 np.nanmean(np.real(df_w.iloc[index_per].values * 
                                                    np.conj(df_w.iloc[index_per].values)), axis=0).sum())
-                compress     = (np.nanmean(np.real(df_w['W0'].values * 
-                                                   np.conj(df_w['W0'].values))) /
-                                np.nanmean(np.real(df_w.values * 
-                                                   np.conj(df_w.values)), axis=0).sum())
+                compress = (np.nanmean(np.real(df_w['W0'].values * 
+                                               np.conj(df_w['W0'].values))) /
+                            np.nanmean(np.real(df_w.values * 
+                                               np.conj(df_w.values)), axis=0).sum())
                 compress_MOD = (np.nanmean(np.real(df_mod * 
                                                    np.conj(df_mod))) /
                                 np.nanmean(np.real(df_w.values * 
                                                    np.conj(df_w.values)), axis=0).sum())
         except:
-            #traceback.print_exc()
+            # traceback.print_exc()
             compress_par = compress_per = compress = compress_MOD = np.nan
     else:
         compress_par = compress_per = compress = compress_MOD = np.nan
 
-    return {'compress_MOD': compress_MOD,
-            'compress'    : compress,
-            'compress_par': compress_par,
-            'compress_per': compress_per
+    return {
+        'compress_MOD'   : compress_MOD,
+        'compress'       : compress,
+        'compress_par'   : compress_par,
+        'compress_per'   : compress_per,
+        'PSD_mod'        : PSD_mod,
+        'PSD_Trace_v2'   : Trace_PSD,
     }
-
-
-
-    
 
 
 def do_coh_analysis(df_w,
@@ -627,6 +789,7 @@ def do_coh_analysis(df_w,
                     index_per,
                     dt,
                     scale,
+                    psd_norm,
                     func_params=None):
     """
     Calculate coherent and non-coherent sums for wave components.
@@ -647,6 +810,7 @@ def do_coh_analysis(df_w,
         return None
 
     use_rolling_mean = func_params.get('use_rolling_mean', False)
+    estimate_KAW_psd = func_params.get('est_sig_yz_cond_moms', False)
 
     if use_rolling_mean:
         # Ensure df_w has a DateTimeIndex
@@ -659,13 +823,7 @@ def do_coh_analysis(df_w,
         rolling_params   = {'window': averaging_window, 'center': True, 'min_periods': 10}
         
         
-        # # Use gaussian averaging for sigma_yz
-        # num_value_yz = local_gaussian_averaging(Syz, dt, scale,
-        #                      num_efoldings=func_params.get('num_efoldings', 3))
-        # den_value_yz = local_gaussian_averaging(S0_full, dt, scale,
-        #                                          alpha=func_params.get('alpha_sigma', 1),
-        #                                          num_efoldings=func_params.get('num_efoldings', 3))
-        
+
         # Estmate sigma_yz for heatmaps!
         sigma_av_yz  = np.nan#(pd.Series(num_value_yz / den_value_yz, index=df_w.index)).resample(step).mean()
 
@@ -692,7 +850,39 @@ def do_coh_analysis(df_w,
         # Estmate sigma_xy for heatmaps!
         sigma_av_xy       = (pd.Series(sigma, index=df_w.index)).resample(step).mean()
 
-        del den_value, num_value, sigma
+        del sigma, den_value, num_value, 
+
+
+        # Estimate counts
+        coh_counts       = (pd.Series(index_coh,  index=df_w.index)).rolling(**rolling_params).sum()
+        non_coh_counts   = (pd.Series(~index_coh, index=df_w.index)).rolling(**rolling_params).sum()
+        window_size      = (coh_counts + non_coh_counts)
+        
+
+
+        if estimate_KAW_psd:
+
+            # Use gaussian averaging for sigma_xy
+            num_value = local_gaussian_averaging(Syz, dt, scale,
+                                                 alpha=1,
+                                                 num_efoldings=func_params.get('num_efoldings', 3))
+            den_value = local_gaussian_averaging(S0_full, dt, scale,
+                                                 alpha=1,
+                                                 num_efoldings=func_params.get('num_efoldings', 3))
+            
+
+            # Don't downsample at first to find coh indices
+            sigma_yz_ind = num_value/den_value
+    
+            # Boolean indices for coherent and non-coherent conditions based on the threshold
+            index_p           = sigma_yz_ind > func_params['sigma_yz_thresh']['pos']
+            index_n           = sigma_yz_ind < func_params['sigma_yz_thresh']['neg']
+            index_z           = np.abs(sigma_yz_ind) < func_params['sigma_yz_thresh']['zer']
+            
+       
+            del sigma_yz_ind, den_value, num_value#, sigma_yz_ind 
+            
+                 
 
         # Compute sigma_xy, sigma_yz
         sigma_xy     = (pd.Series(S3, index=df_w.index).rolling(**rolling_params).mean()  / pd.Series(S0, index=df_w.index).rolling(**rolling_params).mean()).resample(step).mean()
@@ -720,92 +910,108 @@ def do_coh_analysis(df_w,
         sigma_xy_per    = (num_mean_per / den_mean_per).resample(step).mean()
         
         del num_mean_per, den_mean_per
-        
-        
-        # Calculate the coherent component sum
-#         freq              = pd.infer_freq(df_w.index)
-#         data_timedelta    = pd.to_timedelta(freq)
-#         window_timedelta  = pd.to_timedelta(func_params['averaging_window'])
-#         window_size       = int(window_timedelta / data_timedelta)
-        
-        # Estimate counts
-        coh_counts       = (pd.Series(index_coh,  index=df_w.index)).rolling(**rolling_params).sum()
-        non_coh_counts   = (pd.Series(~index_coh, index=df_w.index)).rolling(**rolling_params).sum()
-        window_size      = (coh_counts + non_coh_counts)
-        
-        coherent_sum     = ((df_w.where(pd.Series(index_coh, index=df_w.index))* np.conj(df_w.where(pd.Series(index_coh, index=df_w.index)))).rolling(**rolling_params).mean()).sum(axis=1)
-        PSD_coh          = (2*dt*coherent_sum*(coh_counts/window_size)).resample(step).mean()
-        
-        del coherent_sum
-        
-        
-        # Calculate the non-coherent component sum       
-        non_coherent_sum = ((df_w.where(pd.Series(~index_coh, index=df_w.index))*np.conj(df_w.where(pd.Series(~index_coh, index=df_w.index)))).rolling(**rolling_params).mean()).sum(axis=1)
-        PSD_non_coh      = (2*dt*non_coherent_sum*(non_coh_counts/window_size)).resample(step).mean()
-                            
-        del non_coherent_sum
-        
-        
-        # Estimae PSDs for  coh and non_coh coefficients 
-        Trace_PSD        = np.nansum([PSD_coh, PSD_non_coh ], axis=0)
 
-        window_size      = (window_size).resample(step).sum()
-        coh_counts       = (coh_counts).resample(step).sum()
-        non_coh_counts   = (non_coh_counts).resample(step).sum()
+
+        """Coherent"""
+        index_mask   = pd.Series(index_coh, index=df_w.index)
+        df_ws_needed = df_w.where(index_mask)
+        PSD_coh      = compute_norm_psd(df_ws_needed, rolling_params, dt, coh_counts, window_size, step, psd_norm)
+
+        """Non coherent"""
+        index_mask   =  pd.Series(~index_coh, index=df_w.index)
+        df_ws_needed = df_w.where(index_mask)
+        PSD_non_coh  = compute_norm_psd(df_ws_needed, rolling_params, dt, non_coh_counts, window_size, step, psd_norm)
+        SDK_non_coh  = calculate_wavelet_flatness(df_ws_needed, rolling_params, step)
         
-             
+        """Trace"""
+        Trace_PSD = np.nansum([PSD_coh, PSD_non_coh], axis=0)
+        SDK       = calculate_wavelet_flatness(df_w, rolling_params, step)
 
         
-        # Calculate the non-coherent & perp component sum       
-        non_coherent_per_sum = ((df_w.where(pd.Series(((~index_coh) & (index_per)), index=df_w.index))*np.conj(df_w.where(pd.Series(((~index_coh) & (index_per)), index=df_w.index)))).rolling(**rolling_params).mean()).sum(axis=1)
-        non_coh_per_counts   = ((pd.Series(((~index_coh) & (index_per)), index=df_w.index)).rolling(**rolling_params).sum()).resample(step).mean()
-        PSD_non_coh_per      = (2*dt*non_coherent_per_sum).resample(step).mean()
-        
-        del non_coherent_per_sum
-        
-        # Calculate the non-coherent & perp component sum       
-        non_coherent_par_sum = ((df_w.where(pd.Series(((~index_coh) & (index_par)), index=df_w.index))*np.conj(df_w.where(pd.Series(((~index_coh) & (index_par)), index=df_w.index)))).rolling(**rolling_params).mean()).sum(axis=1)
-        non_coh_par_counts   = ((pd.Series(((~index_coh) & (index_par)), index=df_w.index)).rolling(**rolling_params).sum()).resample(step).mean()
-        PSD_non_coh_par      = (2*dt*non_coherent_par_sum).resample(step).mean()
-        
-        del non_coherent_par_sum
-        
+        # Resample if they are pandas objects
+        if isinstance(window_size, (pd.Series, pd.DataFrame)):
+            window_size = window_size.resample(step).sum()
+        if isinstance(coh_counts, (pd.Series, pd.DataFrame)):
+            coh_counts = coh_counts.resample(step).sum()
+        if isinstance(non_coh_counts, (pd.Series, pd.DataFrame)):
+            non_coh_counts = non_coh_counts.resample(step).sum()
+
+
 
         
+        """Non coherent_perp"""
+        index_mask                          =  pd.Series(~index_coh & index_per, index=df_w.index)
+        df_ws_needed                        = df_w.where(index_mask)
+        PSD_non_coh_per, non_coh_per_counts = compute_psd_with_counts(df_ws_needed, rolling_params, dt, index_mask, step, psd_norm)
+        SDK_non_coh_per                     = calculate_wavelet_flatness(df_ws_needed, rolling_params, step)
+
+
+        """Non coherent_par"""
+        index_mask                          = pd.Series(~index_coh & index_par, index=df_w.index)
+        df_ws_needed                        = df_w.where(index_mask)
+        PSD_non_coh_par, non_coh_par_counts = compute_psd_with_counts(df_ws_needed, rolling_params, dt, index_mask, step, psd_norm)
+        SDK_non_coh_par                     = calculate_wavelet_flatness(df_ws_needed, rolling_params, step)
+
+
+
+        if estimate_KAW_psd:
+            """KAW: Positive Component"""
+            index_mask                              = pd.Series(index_p, index=df_w.index)
+            df_ws_needed                            = df_w.where(index_mask)
+            PSD_sig_yz_p, sig_yz_p_counts           = compute_psd_with_counts(df_ws_needed, rolling_params, dt, index_mask, step, psd_norm)
+            SDK_sig_yz_p                            = calculate_wavelet_flatness(df_ws_needed, rolling_params, step)
         
-        # Calculate total Wavelet flatness
-        SDK = ((((((df_w * np.conj(df_w))
-                     .sum(axis=1)).pow(2))
-                     .rolling(**rolling_params)
-                     .mean()))/(((df_w * np.conj(df_w))
-                     .sum(axis=1))
-                     .rolling(**rolling_params)
-                     .mean().pow(2))).resample(step).mean()
+            """KAW: Positive Perpendicular Component"""
+            index_mask                              = pd.Series(index_p & index_per, index=df_w.index)
+            df_ws_needed                            = df_w.where(index_mask)
+            PSD_sig_yz_p_per, sig_yz_p_per_counts   = compute_psd_with_counts(df_ws_needed, rolling_params, dt, index_mask, step, psd_norm)
+            SDK_sig_yz_p_per                        = calculate_wavelet_flatness(df_ws_needed, rolling_params, step)
         
+            """KAW: Negative Component"""
+            index_mask                              = pd.Series(index_n, index=df_w.index)
+            df_ws_needed                            = df_w.where(index_mask)
+            PSD_sig_yz_n, sig_yz_n_counts           = compute_psd_with_counts(df_ws_needed, rolling_params, dt, index_mask, step, psd_norm)
+            SDK_sig_yz_n                            = calculate_wavelet_flatness(df_ws_needed, rolling_params, step)
         
-        SDK_non_coh = ((((((df_w.where(pd.Series(~index_coh, index=df_w.index)) * np.conj(df_w.where(pd.Series(~index_coh, index=df_w.index))))
-                         .sum(axis=1)).pow(2))
-                         .rolling(**rolling_params)
-                         .mean()))/(((df_w.where(pd.Series(~index_coh, index=df_w.index)) * np.conj(df_w.where(pd.Series(~index_coh, index=df_w.index))))
-                         .sum(axis=1))
-                         .rolling(**rolling_params)
-                         .mean().pow(2))).resample(step).mean()
+            """KAW: Negative Perpendicular Component"""
+            index_mask                              = pd.Series(index_n & index_per, index=df_w.index)
+            df_ws_needed                            = df_w.where(index_mask)
+            PSD_sig_yz_n_per, sig_yz_n_per_counts   = compute_psd_with_counts(df_ws_needed, rolling_params, dt, index_mask, step, psd_norm)
+            SDK_sig_yz_n_per                        = calculate_wavelet_flatness(df_ws_needed, rolling_params, step)
         
-        SDK_non_coh_per = ((((((df_w.where(pd.Series(((~index_coh) & (index_per)), index=df_w.index)) * np.conj(df_w.where(pd.Series(((~index_coh) & (index_per)), index=df_w.index))))
-                         .sum(axis=1)).pow(2))
-                         .rolling(**rolling_params)
-                         .mean()))/(((df_w.where(pd.Series(((~index_coh) & (index_per)), index=df_w.index)) * np.conj(df_w.where(pd.Series(((~index_coh) & (index_per)), index=df_w.index))))
-                         .sum(axis=1))
-                         .rolling(**rolling_params)
-                         .mean().pow(2))).resample(step).mean()
+            """KAW: Positive + Negative Component"""
+            index_mask                              = pd.Series(index_n | index_p, index=df_w.index)
+            df_ws_needed                            = df_w.where(index_mask)
+            PSD_sig_yz_pn, sig_yz_pn_counts         = compute_psd_with_counts(df_ws_needed, rolling_params, dt, index_mask, step, psd_norm)
+            SDK_sig_yz_pn                           = calculate_wavelet_flatness(df_ws_needed, rolling_params, step)
         
-        SDK_non_coh_par = ((((((df_w.where(pd.Series(((~index_coh) & (index_par)), index=df_w.index)) * np.conj(df_w.where(pd.Series(((~index_coh) & (index_par)), index=df_w.index))))
-                         .sum(axis=1)).pow(2))
-                         .rolling(**rolling_params)
-                         .mean()))/(((df_w.where(pd.Series(((~index_coh) & (index_par)), index=df_w.index)) * np.conj(df_w.where(pd.Series(((~index_coh) & (index_par)), index=df_w.index))))
-                         .sum(axis=1))
-                         .rolling(**rolling_params)
-                         .mean().pow(2))).resample(step).mean()
+            """KAW: Positive + Negative Perpendicular Component"""
+            index_mask                              = pd.Series((index_n | index_p) & index_per, index=df_w.index)
+            df_ws_needed                            = df_w.where(index_mask)
+            PSD_sig_yz_pn_per, sig_yz_pn_per_counts = compute_psd_with_counts(df_ws_needed, rolling_params, dt, index_mask, step, psd_norm)
+            SDK_sig_yz_pn_per                       = calculate_wavelet_flatness(df_ws_needed, rolling_params, step)
+        
+            """KAW: Zero Component"""
+            index_mask                              = pd.Series(index_z, index=df_w.index)
+            df_ws_needed                            = df_w.where(index_mask)
+            PSD_sig_yz_z, sig_yz_z_counts           = compute_psd_with_counts(df_ws_needed, rolling_params, dt, index_mask, step, psd_norm)
+            SDK_sig_yz_z                            = calculate_wavelet_flatness(df_ws_needed, rolling_params, step)
+        
+            """KAW: Zero Perpendicular Component"""
+            index_mask                              = pd.Series(index_z & index_per, index=df_w.index)
+            df_ws_needed                            = df_w.where(index_mask)
+            PSD_sig_yz_z_per, sig_yz_z_per_counts   = compute_psd_with_counts(df_ws_needed, rolling_params, dt, index_mask, step, psd_norm)
+            SDK_sig_yz_z_per                        = calculate_wavelet_flatness(df_ws_needed, rolling_params, step)
+        
+        else:
+            PSD_sig_yz_n = PSD_sig_yz_p = PSD_sig_yz_z = PSD_sig_yz_pn = np.nan
+            PSD_sig_yz_z_per = PSD_sig_yz_p_per = PSD_sig_yz_n_per = PSD_sig_yz_pn_per = np.nan
+            SDK_sig_yz_n = SDK_sig_yz_p = SDK_sig_yz_z = SDK_sig_yz_pn = np.nan
+            SDK_sig_yz_z_per = SDK_sig_yz_p_per = SDK_sig_yz_n_per = SDK_sig_yz_pn_per = np.nan
+            sig_yz_p_counts = sig_yz_n_counts = sig_yz_z_counts = sig_yz_pn_counts = np.nan
+            sig_yz_p_per_counts = sig_yz_n_per_counts = sig_yz_z_per_counts = sig_yz_pn_per_counts = np.nan
+        
+                
 
         return {
                     'sigma_xy_av'        : sigma_av_xy,
@@ -826,26 +1032,57 @@ def do_coh_analysis(df_w,
                     'SDK_non_coh'        : SDK_non_coh,
                     'SDK_non_coh_par'    : SDK_non_coh_par,
                     'SDK_non_coh_per'    : SDK_non_coh_per,
-            
+                    'SDK_sig_yz_n'       : SDK_sig_yz_n,
+                    'SDK_sig_yz_p'       : SDK_sig_yz_p,
+                    'SDK_sig_yz_z'       : SDK_sig_yz_z,
+                    'SDK_sig_yz_pn'      : SDK_sig_yz_pn,
+                    'SDK_sig_yz_z_per'   : SDK_sig_yz_z_per,
+                    'SDK_sig_yz_p_per'   : SDK_sig_yz_p_per,
+                    'SDK_sig_yz_n_per'   : SDK_sig_yz_n_per,
+                    'SDK_sig_yz_pn_per'  : SDK_sig_yz_pn_per,
                     
             
                     'PSD_non_coh_per'    : PSD_non_coh_per,
                     'counts_non_coh_per' : non_coh_per_counts,
-            
+                    
                     'PSD_non_coh_par'    : PSD_non_coh_par,
                     'counts_non_coh_par' : non_coh_par_counts,
-                                            
+                    
+                    'PSD_sig_yz_n'       : PSD_sig_yz_n,
+                    'PSD_sig_yz_p'       : PSD_sig_yz_p,
+                    'PSD_sig_yz_z'       : PSD_sig_yz_z,
+                    'PSD_sig_yz_pn'      : PSD_sig_yz_pn,
+                
+                    'PSD_sig_yz_z_per'   : PSD_sig_yz_z_per,
+                    'PSD_sig_yz_p_per'   : PSD_sig_yz_p_per,        
+                    'PSD_sig_yz_n_per'   : PSD_sig_yz_n_per,              
+                    'PSD_sig_yz_pn_per'  : PSD_sig_yz_pn_per,
+                
+
+                
+                    'counts_sig_yz_p'    : sig_yz_p_counts,
+                    'counts_sig_yz_n'    : sig_yz_n_counts,
+                    'counts_sig_yz_z'    : sig_yz_z_counts,
+                    'counts_sig_yz_pn'   : sig_yz_pn_counts,
+                
+                    'counts_sig_yz_p_per' : sig_yz_p_per_counts,
+                    'counts_sig_yz_n_per' : sig_yz_n_per_counts,
+                    'counts_sig_yz_z_per' : sig_yz_z_per_counts,
+                    'counts_sig_yz_pn_per': sig_yz_pn_per_counts,
             
-                    'counts_par'         : ((pd.Series(index_par, index=df_w.index)).rolling(**rolling_params).sum()).resample(step).sum(),
-                    'counts_per'         : ((pd.Series(index_per, index=df_w.index)).rolling(**rolling_params).sum()).resample(step).sum(),
-                    'counts_coh'         : coh_counts,
-                    'counts_non_coh'     : non_coh_counts,
+                    'counts_par'          : ((pd.Series(index_par, index=df_w.index)).rolling(**rolling_params).sum()).resample(step).sum(),
+                    'counts_per'          : ((pd.Series(index_per, index=df_w.index)).rolling(**rolling_params).sum()).resample(step).sum(),
+                    'counts_coh'          : coh_counts,
+                    'counts_non_coh'      : non_coh_counts,
+            
                     'counts'             : window_size,
                     'coh_thresh'         : func_params['coh_th']
         }
         
 
     else:
+
+        print('WRONG NORMALIZATION HERE FIX with psd_norm!!!!')
         num_value = local_gaussian_averaging(S3, dt, scale,  alpha = func_params['alpha'], num_efoldings = func_params['num_efoldings'])
         den_value = local_gaussian_averaging(S0, dt, scale,  alpha = func_params['alpha'], num_efoldings = func_params['num_efoldings'])
 
@@ -872,8 +1109,8 @@ def do_coh_analysis(df_w,
         non_coherent_sum = np.nanmean(np.real(df_w.iloc[index_non_coh].values*np.conj(df_w.iloc[index_non_coh].values)), axis=0).sum() 
 
         # Estimae PSDs for  coh and non_coh coefficients 
-        PSD_coh          = 2 * np.sum(index_coh) / len(index_coh) * dt * coherent_sum
-        PSD_non_coh      = 2 * np.sum(index_non_coh) / len(index_coh) * dt * non_coherent_sum
+        PSD_coh          =  np.sum(index_coh) / len(index_coh)  * coherent_sum
+        PSD_non_coh      =  np.sum(index_non_coh) / len(index_coh) * non_coherent_sum
         Trace_PSD        = PSD_coh + PSD_non_coh
 
         return {
@@ -905,6 +1142,7 @@ def return_desired_quants( df_w,
                            VBangles,
                            dt,
                            scale,
+                           psd_norm,
                            func_params = None):
     
 
@@ -927,10 +1165,10 @@ def return_desired_quants( df_w,
     
     
     # Do polarization analysis
-    coh_res = do_coh_analysis(df_w, S0, S3, S0_full, Syz, index_par, index_per, dt, scale, func_params=func_params)
+    coh_res = do_coh_analysis(df_w, S0, S3, S0_full, Syz, index_par, index_per, dt, scale, psd_norm, func_params=func_params)
     
     # Estimate Anisotropic PSD
-    anis_res = est_anisotropic_PSDs(df_w, df_mod, index_par, index_per, dt, func_params=func_params)
+    anis_res = est_anisotropic_PSDs(df_w, df_mod, index_par, index_per, dt, psd_norm, func_params=func_params)
     
     # Estimate Structure functions
     sf_res = est_sfuncs(df_w,
@@ -942,7 +1180,7 @@ def return_desired_quants( df_w,
                         func_params = func_params )
     
     # Estimate compressibility diagnostics
-    comp_res = est_compress(df_mod, df_w, index_par, index_per, dt, func_params=func_params)
+    comp_res = est_compress(df_mod, df_w, index_par, index_per, dt,psd_norm, func_params=func_params)
 
     # Merge all dictionaries into one and return
     return {**coh_res, **anis_res, **comp_res, **sf_res}
@@ -1006,6 +1244,7 @@ def anisotropy_coherence2(
                       V_df, 
                       df_w,
                       df_mod,
+                      psd_norm,
                       method      = 'min_var',
                       func_params = None):
         try:
@@ -1057,6 +1296,7 @@ def anisotropy_coherence2(
                                                VBangles,
                                                dt,
                                                scale,
+                                               psd_norm,
                                                func_params = func_params)
 
             if func_params['return_coeffs'] is False:
@@ -1114,37 +1354,52 @@ def anisotropy_coherence2(
        # print('Got here', len(B_df), len(E_df))
         
     if E_df is not None :
-        B_df = func.newindex(B_df, E_df.index)
+        E_df, B_df = func.synchronize_dfs(E_df, B_df,True)#(B_df, E_df.index)
        
 
 
     # Synchronize B_df and V_df if necessary
     if dt_V != dt_B:
-        V_df = func.newindex(V_df, B_df.index)
-    print('here') 
+        B_df, V_df = func.synchronize_dfs(B_df, V_df,True)#(B_df, E_df.index)
 
     # Determine the common dt
     dt = dt_E if dt_E is not None else dt_B
     
-    print('GOT HERE')
-
     # Estimate wavelet coefficients
-    Wvec, scales, freqs, coi       = estimate_cwt(E_df if E_df is not None else  B_df, 
-                                                  dt,
-                                                  nv            = func_params['nv'],
-                                                  min_frequency = func_params['freq_min'])
+    if func_params['use_custom_cwt']:
+        Wvec, scales, freqs, psd_norm, coi= estimate_cwt(E_df if E_df is not None else  B_df, 
+                                                      dt,
+                                                      nv       = func_params['nv'],
+                                                      min_freq = func_params['min_freq'],
+                                                      use_omp  = func_params['open_mp'])
+    else:
+
+        Wvec, scales, freqs, psd_norm, coi= estimate_cwt_old(E_df if E_df is not None else  B_df, 
+                                                      dt,
+                                                      nv       = func_params['nv'],
+                                                      min_freq = func_params['min_freq'])
+
+
 
     # Estimate magnitude of magnetic field
     if func_params['est_mod']:
-        Wmod, _, _, _ = estimate_cwt(np.sqrt(B_df.values.T[0]**2 + B_df.values.T[1]**2 + B_df.values.T[2]**2),
-                                        dt, 
-                                        nv            = func_params['nv'],
-                                        min_frequency = func_params['freq_min'])
+        if func_params['use_custom_cwt']:
+            Wmod, _, _, _ ,_= estimate_cwt(np.sqrt(B_df.values.T[0]**2 + B_df.values.T[1]**2 + B_df.values.T[2]**2),
+                                            dt, 
+                                            nv       = func_params['nv'],
+                                            min_freq = func_params['min_freq'],
+                                            use_omp  = func_params['open_mp'])
+        else:
+            Wmod, _, _, _ ,_= estimate_cwt(np.sqrt(B_df.values.T[0]**2 + B_df.values.T[1]**2 + B_df.values.T[2]**2),
+                                            dt, 
+                                            nv       = func_params['nv'],
+                                            min_freq = func_params['min_freq'])            
         
         # Wmod, _, _, _ = estimate_cwt(np_df.values.T[0],
         #                         dt, 
-        #                         nv            = func_params['nv'],
-        #                         min_frequency = func_params['freq_min'])
+        #                         nv       = func_params['nv'],
+        #                         min_freq = func_params['min_freq'],
+        #                          use_omp  = func_params['open_mp'])
     else:
         Wmod             = None
         
@@ -1166,6 +1421,7 @@ def anisotropy_coherence2(
                                 V_df.copy(), 
                                 define_W_df(B_df.index, Wvec['R'][ii], Wvec['T'][ii], Wvec['N'][ii]),
                                 Wmod[ii],
+                                psd_norm,
                                 method                = method,
                                 func_params           = func_params
         ) for ii, scale in tqdm(enumerate(scales), total=len(scales))
@@ -1825,50 +2081,6 @@ def estimate_polarization(num_coh, den_coh, scales, dt, alpha=1, num_efoldings=3
 
 
 
-
-def calculate_coherence_PSDs(num_coh, sigma, Wr, Wt, Wn, dt, coh_th=0.7):
-    """
-    Calculate coherent and non-coherent sums for wave components.
-
-    Parameters:
-    - num_coh: List or array of indices or lengths corresponding to the number of elements to process.
-    - sigma: List of arrays containing the sigma values for threshold comparison.
-    - Wr, Wt, Wn: Lists of arrays representing different wave components (real, tangential, normal).
-    - dt: Time step or similar scale factor for the calculations.
-    - coh_th: Threshold value for determining coherence (default is 0.7).
-
-    Returns:
-    - coh: List of calculated coherent sums.
-    - non_coh: List of calculated non-coherent sums.
-    """
-
-    # Lists to store coherent and non-coherent values
-    coh = []
-    non_coh = []
-
-    # Iterate through each index in num_coh
-    for i in range(len(num_coh)):
-        # Boolean indices for coherent and non-coherent conditions based on the threshold
-        index_coh     = np.abs(sigma[i]) > coh_th
-        index_non_coh = ~index_coh  # Logical negation of index_coh
-
-        # Calculate the coherent component sum
-        coherent_sum  = (np.nanmean(Wr[i][index_coh] * np.conj(Wr[i][index_coh])) +
-                         np.nanmean(Wt[i][index_coh] * np.conj(Wt[i][index_coh])) +
-                         np.nanmean(Wn[i][index_coh] * np.conj(Wn[i][index_coh])))
-
-        # Calculate the non-coherent component sum
-        non_coherent_sum = (np.nanmean(Wr[i][index_non_coh] * np.conj(Wr[i][index_non_coh])) +
-                            np.nanmean(Wt[i][index_non_coh] * np.conj(Wt[i][index_non_coh])) +
-                            np.nanmean(Wn[i][index_non_coh] * np.conj(Wn[i][index_non_coh])))
-
-        # Append computed values to coh and non_coh lists
-        coh.append(2 * np.sum(index_coh) / len(index_coh) * dt * coherent_sum)
-        non_coh.append(2 * np.sum(index_non_coh) / len(index_coh) * dt * non_coherent_sum)
-        
-    overall_psd = np.real(np.nansum([np.array(coh), np.array(non_coh)], axis=0))
-
-    return coh, non_coh, overall_psd
 
 
 def choose_dates_heatmap(freqs, inds,  data, original, target):

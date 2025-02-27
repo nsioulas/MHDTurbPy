@@ -40,7 +40,13 @@ m_p             =  constants.m_p   # Proton mass [kg]
 k               = constants.k                  # Boltzman's constant     [j/K]
 au_to_rsun      = 215.032
 T_to_Gauss      = 1e4
+import scipy.constants as const
 
+# Retrieve Boltzmann constant in eV/K
+k_B_ev_per_K = const.physical_constants['Boltzmann constant in eV/K'][0]
+
+# Calculate the conversion factor from eV to Kelvin
+ev_2_K = 1 / k_B_ev_per_K
 
 def LoadTimeSeriesWind_electrons(start_time,
                                  end_time,
@@ -148,7 +154,8 @@ def LoadTimeSeriesWind_particles(start_time,
                 'Vn'     : data['P_VELS'][:,2],
                 #'np_3DP' : data['P_DENS'],
                 'np'     : data['P_DENS'],
-                'Tp'     : data['P_TEMP']
+                'Tp'     : data['P_TEMP'],
+                'Tp_K'   : ev_2_K*data['P_TEMP']
             }
         )
         
@@ -187,7 +194,7 @@ def LoadTimeSeriesWind_particles(start_time,
         
         qtn_flag                   = 'No_QTN'
         dfpar[dfpar['Vr'] < -1e30] = np.nan
-        dfpar['Vth']               = 0.128487*np.sqrt(dfpar['Tp']) # vth[km/s] = 0.128487 * √Tp[K]
+        dfpar['Vth']               = 0.128487*np.sqrt(dfpar['Tp_K']) # vth[km/s] = 0.128487 * √Tp[K]
         
         
         length = len(data['P_VELS'][:,0][::2])
@@ -211,12 +218,16 @@ def LoadTimeSeriesWind_particles(start_time,
                 'Vt' : data['MOM$P$VELOCITY'].T[1],
                 'Vn' : data['MOM$P$VELOCITY'].T[2],
                 'np' : data['MOM$P$DENSITY'],
-                'Vth': data['MOM$P$VTHERMAL']
+                'Vth': data['MOM$P$VTHERMAL'],
             }
         )
         
         dfpar[dfpar['Vr'] < -1e30] = np.nan
-        
+
+        # Estimate Tp[eV]
+        from astropy.constants import m_p, k_B 
+        from astropy import units as u
+        dfpar['Tp'] = np.array(((m_p * ((dfpar['Vth'].values * u.km/u.s).to(u.m/u.s)**2)) / (2 * k_B)).to(u.eV, equivalencies=u.temperature_energy()))
 
         length = len(data['MOM$P$VELOCITY'].T[0][::2])
         
@@ -480,6 +491,8 @@ def LoadTimeSeriesWIND(start_time,
                 
             ws_hampel  = settings['hampel_params']['w']
             n_hampel   = settings['hampel_params']['std']
+
+            dfpar      = diagnostics_PAR["resampled_df"]
                 
             for k in list_2_hampel:
                 try:
@@ -498,6 +511,6 @@ def LoadTimeSeriesWIND(start_time,
 
         }
 
-        return diagnostics_MAG["resampled_df"], None, dfpar, df_ELE,  dfdis, big_gaps, None, big_gaps_par, big_gaps_ELE,  misc, qtn_flag
+        return diagnostics_MAG["resampled_df"],  dfpar, df_ELE,  dfdis, big_gaps, None, big_gaps_par, big_gaps_ELE,  misc, qtn_flag
     except:
         traceback.print_exc()
