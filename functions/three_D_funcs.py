@@ -8,7 +8,7 @@ sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
 import general_functions as func
 import TurbPy as turb
 import traceback
-
+import astropy.units as u
 from scipy import constants
 mu_0            = constants.mu_0  # Vacuum magnetic permeability [N A^-2]
 mu0             = constants.mu_0   #
@@ -82,7 +82,7 @@ def est_alignment_angles(
     weighted_sins       = np.nan # We don't need it either
                       
     if return_mag_align_correl== False:
-        sins, xvec_mag, yvec_mag = None, None, None
+        sins = None
                                
     return counts, sigma_ts, sigma_mean, sigma_median, numer, numer_cos,  denom, xvec_mag, yvec_mag, reg_align_angle_sin, polar_int_angle_sin, weighted_sins
 
@@ -222,7 +222,7 @@ def local_structure_function(
         
         #Compute the fluctuations in Va
         dVa          = Va.iloc[:-tau].values - Va.iloc[tau:].values
-
+        
         #Compute the fluctuations in V
         du           = (V - V_sc.values).iloc[:-tau].values - (V - V_sc.values).iloc[tau:].values
         
@@ -231,18 +231,37 @@ def local_structure_function(
         
         # Estimate local B
         B_l          = (B.iloc[:-tau].values + B.iloc[tau:].values)/2
-
+        
         # Estimate local Vsw
-        V_l          = ((V - V_sc.values +  Va.values).iloc[:-tau].values + (V - V_sc.values +  Va.values).iloc[tau:].values)/2
-
+        V_l          = ((V - V_sc.values + Va.values).iloc[:-tau].values + (V - V_sc.values + Va.values).iloc[tau:].values)/2
+        
         # Est d
         quant        = 228 / np.sqrt(Np)
         di_array     = (quant.iloc[:-tau].values + quant.iloc[tau:].values)/2
-
-
+        
         #print('bl', np.shape(B_l)), print('dB', np.shape(dB))
         # Keep df index
         needed_index = B.iloc[:-tau,:].index
+        
+        # print('Orig length', dB.shape)
+        
+        # # Pad the computed arrays to the original length with NaNs,
+        # # preserving the original shape along any additional dimensions
+        # orig_len = B.shape[0]
+        # pad = lambda x: np.pad(x, ((0, orig_len - x.shape[0]),) + ((0, 0),) * (x.ndim - 1), mode='constant', constant_values=np.nan)
+        # dB       = pad(dB)
+        # dVa      = pad(dVa)
+        # du       = pad(du)
+        # dN       = pad(dN)
+        # B_l      = pad(B_l)
+        # V_l      = pad(V_l)
+        # di_array = pad(di_array)
+
+
+
+    # print('Orig length', dB)
+    # print('Fin length', len(B_l))
+
                 
 
     # Estimate local perpendicular displacement direction
@@ -300,7 +319,12 @@ def local_structure_function(
 
         if turb_amp_analysis:
             try:
-                dB_mod           = turb.shifted_df_calcs(pd.DataFrame(np.sqrt(B.Br**2 + B.Bt**2 + B.Bn**2)), lag_coefs_db, coefs_db)
+
+                Bmag                 = pd.DataFrame(np.sqrt(B.Br**2 + B.Bt**2 + B.Bn**2))
+                if five_points_sfunc:
+                    dB_mod           = turb.shifted_df_calcs(Bmag, lag_coefs_db, coefs_db)
+                else:
+                    dB_mod          = (Bmag.iloc[:-tau].values + Bmag.iloc[tau:].values)/2
 
                 keep_turb_amp = {
                                  'dva_perp'          : dVa_perp,
@@ -379,11 +403,11 @@ def local_structure_function(
         dVa_perp_amp = np.sqrt(dVa_perp.T[0]**2 + dVa_perp.T[1]**2 + dVa_perp.T[2]**2)
         dVa_par_amp  = np.sqrt(dVa_parallel.T[0]**2 + dVa_parallel.T[1]**2 + dVa_parallel.T[2]**2)
         
-        return Vsw, B_l, keep_turb_amp, dVa, dVa_perp_amp, dVa_par_amp, du, dN, kinet_normal, signBx,  normal_flag,  lmag, l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb,align_angles_zpm, needed_index, local_polarity
+        return Vsw, B_l, V_l, keep_turb_amp, dVa, dVa_perp_amp, dVa_par_amp, du, dN, kinet_normal, signBx,  normal_flag,  lmag, l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb,align_angles_zpm, needed_index, local_polarity
         
         
     else:
-        return Vsw, B_l, keep_turb_amp, dB, dB_perp_amp, dB_parallel_amp, du, dN, kinet_normal, signBx,normal_flag, lmag, l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb, align_angles_zpm, needed_index, local_polarity
+        return Vsw, B_l, V_l, keep_turb_amp, dB, dB_perp_amp, dB_parallel_amp, du, dN, kinet_normal, signBx,normal_flag, lmag, l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb, align_angles_zpm, needed_index, local_polarity
 
 
 
@@ -465,6 +489,8 @@ def vars_2_estimate(ts_list=None):
 
 
 def quants_2_estimate(
+                    l_mag,
+                    V_l,
                     B_l,
                     local_polarity,
                     dB,
@@ -500,6 +526,29 @@ def quants_2_estimate(
 
     #Initialize variables dict
     variables = {}
+
+    if 'puq_pol_heat_rate' in quants:
+
+        V_l_mag       = np.sqrt(np.nansum(V_l**2, axis=1))
+        dzp_longitud  = np.nansum(dzp*(V_l.T/V_l_mag).T, axis=1)* (1e3*u.m/u.s)
+        dzm_longitud  = np.nansum(dzm*(V_l.T/V_l_mag).T, axis=1)* (1e3*u.m/u.s)
+
+
+        
+        # Convert squared velocity magnitudes to SI ((m/s)²)
+        zp_sq = (np.sum(dzp**2, axis=1) * (1e3*u.m/u.s)**2)
+        zm_sq = (np.sum(dzm**2, axis=1) * (1e3*u.m/u.s)**2)
+        
+        # Convert length scale: (l_mag * di) in km to m
+        ell = l_mag * di * 1e3 * u.m
+
+        
+        # Convert number density (cm⁻³) to mass density (kg/m³) assuming proton-only plasma
+        rho = (func.newindex(Np, needed_index).values.ravel() * (u.cm**-3) * (constants.m_p * u.kg)).to(u.kg/u.m**3)
+        
+        # Compute heating rate: [velocity^3/length] yields m²/s³; multiplied by rho gives kg/(m·s³)=W/m³.
+        variables['e_plus']  = - ( ( (3/4) * (dzm_longitud * zp_sq ) / ell ) * rho).to(u.W/u.m**3).value
+        variables['e_minus'] = - ( ( (3/4) * ( dzp_longitud * zm_sq) / ell ) * rho).to(u.W/u.m**3).value
     
     if 'db_perp_amp' in quants:
         variables['db_perp_amp'] = dB_perp
@@ -1082,7 +1131,7 @@ def estimate_3D_sfuncs(
        
 
             # Call the function with keyword arguments directly
-            Vsw, B_l, keep_turb_amp,  dB, dB_perp, dB_parallel, dV, dN,  kinet_normal, sign_Bx, normal_flag,  l_mag,  l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb, align_angles_zpm, needed_index, local_polarity = local_structure_function(
+            Vsw, B_l, V_l, keep_turb_amp,  dB, dB_perp, dB_parallel, dV, dN,  kinet_normal, sign_Bx, normal_flag,  l_mag,  l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb, align_angles_zpm, needed_index, local_polarity = local_structure_function(
                            B.copy(),
                            V.copy(),
                            V_sc.copy(),
@@ -1139,6 +1188,7 @@ def estimate_3D_sfuncs(
                 
                 d_Zp = dV + dB *  sign_B_back[:, None]  
                 d_Zm = dV - dB *  sign_B_back[:, None]
+            
             else:
                 combined = sign_B_back * kinet_normal[:, 0]
 
@@ -1153,6 +1203,8 @@ def estimate_3D_sfuncs(
             # Estimate extra quantities     
             if return_coefs:
                 final_variables = quants_2_estimate(
+                                                    l_mag,
+                                                    V_l,
                                                     B_l,
                                                     local_polarity,
                                                     dB,

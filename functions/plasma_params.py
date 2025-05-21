@@ -30,8 +30,6 @@ def estimate_di(Np):
     di                               = 228 / np.sqrt(Np)
     di[di < 1e-3]                    = np.nan
     return di, np.nanmean(di), np.nanmedian(di), np.nanstd(di)
-
-
 def estimate_beta(magnetic_field_nT, density_cm3, temperature_eV):
     """
     Calculate the plasma beta given density (in cm^-3), temperature (in eV), 

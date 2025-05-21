@@ -84,7 +84,7 @@ def default_variables_to_download_PSP(vars_2_downnload):
         varnames_SPAN          = vars_2_downnload['span']        
     
     if vars_2_downnload['spc'] is None:
-        varnames_SPC          = ['np_moment','wp_moment','vp_moment_RTN', 'sc_pos_HCI','carr_longitude','na_fit']
+        varnames_SPC          = ['np_moment','wp_moment','vp_moment_RTN', 'sc_pos_HCI','carr_longitude']
     else:
         varnames_SPC          = vars_2_downnload['spc']   
         
@@ -148,7 +148,7 @@ def map_col_names_PSP(instrument, varnames):
         'sc_vel_HCI'    : ['sc_vel_x', 'sc_vel_y', 'sc_vel_z'],
         'carr_latitude' : ['carr_lat'],
         'carr_longitude': ['carr_lon'],
-        'na_fit'        : ['na']
+       # 'na_fit'        : ['na']
     }
 
     # Mapping between variable names and column names for SPAN
@@ -271,7 +271,7 @@ def download_MAG_FIELD_PSP(t0,
         dfmag.index = dfmag.index.tz_localize(None)
      
           
-        return dfmag.sort_index()
+        return dfmag.drop_duplicates().sort_index()
     except Exception as e:
         print(f'Error occurred while retrieving MAG data: {e}')
         return None
@@ -330,20 +330,24 @@ def process_mag_field_data(t0,
             
             for key in keys:
                 
-                signal_noise_removed = turb.remove_wheel_noise(diagnostics_MAG["resampled_df"][key].values,
-                                                               1/dt, 
-                                                               window_size      = settings['Mag_SCAM_PSP']['noise_removal']['window_size'], 
-                                                               avg_length       = settings['Mag_SCAM_PSP']['noise_removal']['avg_length'],
-                                                               power_threshold  = settings['Mag_SCAM_PSP']['noise_removal']['power_threshold'],
-                                                               freq_min         = settings['Mag_SCAM_PSP']['noise_removal']['freq_min'])
-
+                signal_noise_removed = turb.remove_wheel_noise(
+                    diagnostics_MAG["resampled_df"][key].values,
+                    1/dt,
+                    window_size     = settings['Mag_SCAM_PSP']['noise_removal']['window_size'],
+                    avg_length      = settings['Mag_SCAM_PSP']['noise_removal']['avg_length'],
+                    power_threshold = settings['Mag_SCAM_PSP']['noise_removal']['power_threshold'],
+                    freq_min        = settings['Mag_SCAM_PSP']['noise_removal']['freq_min'],
+                    hampel_wind     = settings['Mag_SCAM_PSP']['noise_removal'].get('hampel_wind', 51),
+                    hampel_thresh   = settings['Mag_SCAM_PSP']['noise_removal'].get('hampel_thresh', 3.5),
+                )
                 
+                                
                
                 #replace with clean data
                 diagnostics_MAG["resampled_df"][key] = signal_noise_removed
 
         
-        return dfmag, big_gaps, diagnostics_MAG
+        return dfmag.drop_duplicates(), big_gaps, diagnostics_MAG
     except Exception as e:
         logging.exception("An error occurred: %s", e)
         diagnostics_MAG_default = {'Frac_miss': 100, 'Large_gaps': 100, 'Tot_gaps': 100, 'resol': 100}
@@ -392,7 +396,7 @@ def download_SPC_PSP(t0, t1, credentials, varnames, settings):
         dfspc.index = dfspc.index.tz_localize(None)
         dfspc.index.name = 'datetime'
         
-        return dfspc
+        return dfspc.drop_duplicates()
     except Exception as e:
         logging.exception("An error occurred: %s", e)
         return None, None
@@ -437,7 +441,7 @@ def process_spc_data(t0, t1, credentials, varnames_SPC, settings, ind1, ind2):
         # Return None for dfspc and default values for diagnostics_SPC on error
         dfspc, diagnostics_SPC, spc_flag, big_gaps_spc = None, {'Frac_miss': 100, 'Large_gaps': 100, 'Tot_gaps': 100, 'resol': 100}, 'No SPC', None
 
-    return dfspc, diagnostics_SPC, spc_flag, big_gaps_spc
+    return dfspc.drop_duplicates(), diagnostics_SPC, spc_flag, big_gaps_spc
 
 
     
@@ -531,13 +535,13 @@ def download_SPAN_PSP(t0, t1, credentials, varnames, varnames_alpha, settings):
         # Adjust thermal speed by a factor of sqrt(3) for SPAN.
         dfspan['Vth']  = dfspan['Vth'] / np.sqrt(3)
 
-        print("SPAN DataFrame:", dfspan)
+        #print("SPAN DataFrame:", dfspan)
 
     except Exception as proc_err:
         print("Error processing SPAN data:", proc_err)
         return None
 
-    return dfspan
+    return dfspan.drop_duplicates()
 
     
 def process_span_data(t0, t1, credentials, varnames_SPAN, varnames_SPAN_alpha, settings, ind1, ind2):
@@ -584,14 +588,22 @@ def process_span_data(t0, t1, credentials, varnames_SPAN, varnames_SPAN_alpha, s
             columns_for_hampel = ['Vx', 'Vy', 'Vz', 'np', 'Vth', 'Tp']
             
         ws_hampel = settings['hampel_params']['w']
-        n_hampel = settings['hampel_params']['std']
-
+        n_hampel  = settings['hampel_params']['std']
+    
         for column in columns_for_hampel:
             try:
-                outliers_indices = func.hampel(dfspan[column], window_size=ws_hampel, n=n_hampel)
-                dfspan.loc[dfspan.index[outliers_indices], column] = np.nan
+                # Unpack the tuple returned by the revised hampel function:
+                filtered_values, outlier_indices = func.hampel(dfspan[column], window_size=ws_hampel, n=n_hampel)
+                
+                # Option 1: Replace only the detected outliers with NaN.
+                dfspan.loc[dfspan.index[outlier_indices], column] = np.nan
+                
+                # Option 2: Alternatively, replace the entire column with the filtered data.
+                # dfspan[column] = filtered_values
+                
             except Exception as e:
                 logging.exception("Error filtering column %s: %s", column, e)
+        
         print(f"Applied Hampel filter to SPAN columns: {columns_for_hampel} with window size: {ws_hampel}")
 
     # Trim data to the requested interval.
@@ -604,8 +616,8 @@ def process_span_data(t0, t1, credentials, varnames_SPAN, varnames_SPAN_alpha, s
     diagnostics_SPAN = func.resample_timeseries_estimate_gaps(dfspan, settings['part_resol'], large_gaps=10)
     span_flag = 'SPAN'
 
-    print("Final length:", len(dfspan))
-    return dfspan, diagnostics_SPAN, span_flag, big_gaps_span
+    #print("Final length:", len(dfspan))
+    return dfspan.drop_duplicates(), diagnostics_SPAN, span_flag, big_gaps_span
 
 
 def download_QTN_PSP(t0, t1, credentials, varnames, settings):
@@ -667,7 +679,7 @@ def download_QTN_PSP(t0, t1, credentials, varnames, settings):
         
         # Identify big gaps in timeseries
 
-        return dfqtn
+        return dfqtn.drop_duplicates()
     
     except Exception as e:
         logging.exception(f'Error occurred while retrieving QTN data: {e}')
@@ -703,10 +715,25 @@ def process_qtn_data(t0, t1, credentials, varnames_QTN, ind1, ind2, settings):
         # If reading from pickle failed for any reason (path, file missing, etc.)
         print(f"Failed to load Orlando's QTN data: {e}. "
               "Using alternative method...")
-  
-        dfqtn = download_QTN_PSP(t0, t1, credentials, varnames_QTN, settings)
+
+        print("Attempting to load Orlando's QTN data...")
+        dfqtn           = pd.read_pickle('/Users/turbulator/work/MHDTurbPy/psp_data/PSP_QTN_Monc/E22.pkl')
+        dfqtn2           = pd.read_pickle('/Users/turbulator/work/MHDTurbPy/psp_data/PSP_QTN_Monc/E23.pkl')
+
+        dfqtn           = pd.concat([dfqtn, dfqtn2])
+        # Filter the dataframe between t0 and t1
+        df_between = dfqtn.loc[t0:t1]
+    
+        if len(df_between) == 0:
+            # No data in the requested interval
+            print(f"No data found in Moncuquet's QTN DataFrame for {t0} - {t1}. "
+                  "Using alternative download method...")
+            dfqtn = download_QTN_PSP(t0, t1, credentials, varnames_QTN, settings)
+
     
     try:
+
+
         # Process the downloaded data
         dfqtn           = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfqtn)
         big_gaps        = func.find_big_gaps(dfqtn, settings['Big_Gaps']['QTN_big_gaps'], str(ind1), str(ind2))
@@ -726,7 +753,7 @@ def process_qtn_data(t0, t1, credentials, varnames_QTN, ind1, ind2, settings):
                             "resol"           : None
                         }
 
-    return dfqtn, diagnostics_QTN, dfqtn_flag, big_gaps
+    return dfqtn.drop_duplicates(), diagnostics_QTN, dfqtn_flag, big_gaps
 
 def download_ephemeris_PSP(t0, t1, credentials, varnames, settings=None):
     try:
@@ -753,7 +780,7 @@ def download_ephemeris_PSP(t0, t1, credentials, varnames, settings=None):
 
         dfephem['Dist_au'] = np.sqrt(np.sum(dfephem[['sc_pos_r','sc_pos_t','sc_pos_n']]**2, axis=1)) / au_to_km
         
-        return dfephem
+        return dfephem.drop_duplicates()
     
     except Exception as e:
         logging.exception("Ephemeris could not be loaded: %s", e)
@@ -788,9 +815,13 @@ def create_particle_dataframe(end_time,
         """
 
         try:
-
-            source_df, dfqtn       = func.synchronize_dfs(source_df, dfqtn,  True)
+            try:
+                source_df, dfqtn       = func.synchronize_dfs(source_df, dfqtn,  True)
+            except:
+                dfqtn                  = func.newindex(dfqtn, source_df.index)
+                
             source_df['np']        = dfqtn['np_qtn'].values
+            #source_df['Te']        = dfqtn['Te_qtn'].values
 
             return source_df, 'QTN'
 
@@ -850,7 +881,7 @@ def download_efield(t0, t1, credentials, varnames, settings):
         df_efield.index = df_efield.index.tz_localize(None)
         df_efield.index.name = 'datetime'
         
-        return df_efield
+        return df_efield.drop_duplicates()
     except Exception as e:
         logging.exception("An error occurred: %s", e)
         return None, None
@@ -876,7 +907,7 @@ def process_e_field_data(t0, t1,settings, credentials, varnames,  ind1, ind2):
         # Return None for df_efield and default values for diagnostics_e_field on error
         df_efield, diagnostics_e_field, e_field_flag, big_gaps_e_field = None, {'Frac_miss': 100, 'Large_gaps': 100, 'Tot_gaps': 100, 'resol': 100}, 'No e_field', None
 
-    return df_efield, big_gaps_e_field, diagnostics_e_field
+    return df_efield.drop_duplicates(), big_gaps_e_field, diagnostics_e_field
 
 
 
@@ -925,7 +956,7 @@ def sc_potential_derived_density(t0, t1, credentials, varnames, settings):
 
 
         
-        return df_density
+        return df_density.drop_duplicates()
 
     except Exception as e:
         logging.exception("An error occurred: %s", e)
@@ -948,6 +979,7 @@ def process_sc_potential_data(t0, t1, settings, credentials, varnames, ind1, ind
         tuple: (Processed DataFrame, Identified large gaps, Diagnostics dictionary)
     """
     try:
+        print('Working on SC potential')
         # Download spacecraft potential-derived density data
         df_density = sc_potential_derived_density(t0, t1, credentials, varnames, settings)
         
@@ -959,7 +991,6 @@ def process_sc_potential_data(t0, t1, settings, credentials, varnames, ind1, ind
             big_gaps_density = func.find_big_gaps(df_density, settings['Big_Gaps']['SC_pot_big_gaps'], str(ind1), str(ind2))
 
 
-            print('Dens gaps', big_gaps_density  )
             # Calculate diagnostics
             diagnostics_density = func.resample_timeseries_estimate_gaps(df_density, 1, large_gaps=10)
             density_flag = 'sc_pot'
@@ -967,12 +998,171 @@ def process_sc_potential_data(t0, t1, settings, credentials, varnames, ind1, ind
             raise ValueError("Downloaded data is None")
     
     except Exception as e:
-        logging.exception("An error occurred: %s", e)
+        traceback.print_exc()
         # Return None for df_density and default diagnostic values on error
         df_density, diagnostics_density, density_flag, big_gaps_density = None, {'Frac_miss': 100, 'Large_gaps': 100, 'Tot_gaps': 100, 'resol': 100}, 'No sc_potential', None
 
     return df_density, big_gaps_density, diagnostics_density
 
+
+import os
+from pathlib import Path
+import pandas as pd
+# from pyspedas import ...
+# from pytplot import get_data
+# from pytplot import time_string
+
+def get_T_perp_SPAN(t0, t1, credentials, settings=None):
+    """
+    Retrieve SPAN data, project the temperature (or pressure) tensor onto
+    the local magnetic field, and return a DataFrame with parallel,
+    perpendicular, and anisotropy components.
+    
+    Parameters
+    ----------
+    t0, t1 : str
+        Start and end times (e.g., '2020-01-01', '2020-01-02T12:00').
+    credentials : dict
+        Dictionary with user credentials for PSP data download.
+        Example: credentials['psp']['sweap']['username'], ['password'].
+    settings : dict, optional
+        Additional settings or overrides for data retrieval.
+    
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame indexed by datetime containing:
+        - Bx, By, Bz    : Magnetic field components in SPAN coordinates
+        - T_xx, T_yy, ...
+        - T_parallel    : (B_i T_ij B_j) / |B|^2
+        - T_perpendicular : (trace(T) - T_parallel)/2
+        - Anisotropy    : T_perpendicular / T_parallel
+    """
+
+    def project_tensor_onto_B(df_span):
+        """
+        Projects a symmetric tensor onto the magnetic field and computes its
+        parallel and perpendicular components as well as the anisotropy.
+        
+        Parameters
+        ----------
+        df_span : pd.DataFrame
+            Must contain at least the columns:
+                'Bx', 'By', 'Bz',
+                'T_xx', 'T_yy', 'T_zz',
+                'T_xy', 'T_xz', 'T_yz'.
+        
+        Returns
+        -------
+        pd.DataFrame
+            A DataFrame with added columns:
+                'T_parallel', 'T_perpendicular', 'Anisotropy'.
+        """
+        # Compute |B|^2
+        Bsq = df_span['Bx']**2 + df_span['By']**2 + df_span['Bz']**2
+
+        # T_parallel = (B_i T_ij B_j) / |B|^2
+        df_span['T_par'] = (
+            (df_span['Bx']**2 * df_span['T_xx']) +
+            (2.0 * df_span['Bx'] * df_span['By'] * df_span['T_xy']) +
+            (2.0 * df_span['Bx'] * df_span['Bz'] * df_span['T_xz']) +
+            (df_span['By']**2 * df_span['T_yy']) +
+            (2.0 * df_span['By'] * df_span['Bz'] * df_span['T_yz']) +
+            (df_span['Bz']**2 * df_span['T_zz'])
+        ) / Bsq
+
+        # Trace of the tensor
+        trace_T = df_span['T_xx'] + df_span['T_yy'] + df_span['T_zz']
+
+        # T_perp = (trace_T - T_parallel) / 2
+        df_span['T_perp'] = (trace_T - df_span['T_par']) / 2.0
+
+  
+        return df_span
+
+    # Default settings
+    default_settings = {
+        'particle_mode' : '9th_perih_cut',
+        'apply_hampel'  : True,
+        'hampel_params' : {'w': 100, 'std': 3},
+        'part_resol'    : 900,
+        'MAG_resol'     : 1,
+        'Mag_SCAM_PSP'  : {'flag': False, 'noise_flag': False},
+        'Data_path'     : '.'  # Just in case it's not provided
+    }
+
+    # Merge user settings into defaults
+    settings = {**default_settings, **(settings or {})}
+
+    # Ensure a local psp_data directory exists
+    os.chdir(settings['Data_path'])
+    psp_dir = Path.cwd().joinpath("psp_data")
+    psp_dir.mkdir(exist_ok=True)
+
+    # Attempt to retrieve data
+    try:
+        spandata = pyspedas.psp.spi(
+            trange    = [t0, t1],
+            datatype  = 'spi_sf00',
+            level     = 'L3',
+            varnames  = ['T_TENSOR_INST', 'MAGF_INST'],
+            time_clip = True,
+            username  = credentials['psp']['sweap']['username'],
+            password  = credentials['psp']['sweap']['password']
+        )
+
+        T_Tens = get_data('psp_spi_T_TENSOR_INST')
+        B_spi  = get_data('psp_spi_MAGF_INST')
+
+        if not spandata or len(spandata) == 0:
+            raise ValueError("No data returned in first approach.")
+
+    except Exception as e:
+        print("First approach failed:", e)
+        # Fallback: retrieve data without credentials
+        try:
+            spandata = pyspedas.psp.spi(
+                trange    = [t0, t1],
+                datatype  = 'spi_sf00_l3_mom',
+                level     = 'l3',
+                varnames  = ['T_TENSOR_INST', 'MAGF_INST'],
+                time_clip = True
+            )
+            T_Tens = get_data('proton_T_TENSOR_INST')
+            B_spi  = get_data('proton_MAGF_INST')
+
+            if not spandata or len(spandata) == 0:
+                print("No data available in second approach.")
+                return None
+
+        except Exception as e2:
+            print("Second approach also failed:", e2)
+            return None
+
+    # Construct a DataFrame
+    df_span = pd.DataFrame({
+        'Datetime': T_Tens.times,
+        'Bx'      : B_spi.y[:, 0],
+        'By'      : B_spi.y[:, 1],
+        'Bz'      : B_spi.y[:, 2],
+        'T_xx'    : T_Tens.y[:, 0],
+        'T_yy'    : T_Tens.y[:, 1],
+        'T_zz'    : T_Tens.y[:, 2],
+        'T_xy'    : T_Tens.y[:, 3],
+        'T_xz'    : T_Tens.y[:, 4],
+        'T_yz'    : T_Tens.y[:, 5]
+    }).set_index('Datetime')
+
+    # Convert the index to timezone-naive datetimes
+    df_span.index = time_string.time_datetime(time=df_span.index)
+    df_span.index = df_span.index.tz_localize(None)
+    df_span.index.name = 'datetime'
+
+    # Project onto B and compute T_parallel, T_perp, anisotropy
+    df_span = project_tensor_onto_B(df_span)
+
+    # Interpolate and drop any remaining NaNs
+    return df_span[['T_perp', 'T_par']].interpolate().dropna()
 
 
 def LoadTimeSeriesPSP(start_time, 
@@ -1067,7 +1257,8 @@ def LoadTimeSeriesPSP(start_time,
 
 
     if (dist_threshold) & (qtn_threshold):
-        
+
+        print('Passed Dist & QTN thresholds')
         # Download sc_potential data
         df_SC_pot, big_gaps_SC_pot, diagnostics_SC_pot = (
                                                     process_sc_potential_data(t0, t1, settings, credentials, varnames_SC_pot, ind1, ind2)
@@ -1080,6 +1271,7 @@ def LoadTimeSeriesPSP(start_time,
                                                                         "Tot_gaps"        : None,
                                                                         "resol"           : None
                                                                     }))
+
             
         # Download Electric field data
         df_e_field, big_gaps_e_field, diagnostics_e_field = (

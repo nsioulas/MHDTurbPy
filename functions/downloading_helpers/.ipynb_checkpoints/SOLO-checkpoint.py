@@ -150,7 +150,7 @@ from dateutil import parser
 
 def download_MAG_SOLO(t0, t1, settings, varnames):
     def retrieve_mag_data(datatype):
-        MAGdata = pyspedas.solo.mag(trange=[t0, t1], datatype=datatype, level='l2', time_clip=True, no_update=np.invert(settings['use_local_data']))
+        MAGdata = pyspedas.solo.mag(trange=[t0, t1], datatype=datatype, level='l2', time_clip=True, no_update=settings['use_local_data'])
         col_names = map_col_names_SOLO('MAG', [datatype])
         df = pd.DataFrame(index=get_data(MAGdata[0]).times, data=get_data(MAGdata[0]).y, columns=col_names[0])
         return df
@@ -204,28 +204,35 @@ def download_MAG_SOLO(t0, t1, settings, varnames):
         return None
 
 
-
 def download_ephem_SOLO(t0, t1, cdf_lib_path):
-    
-    # Set enivronemnt 
+    # Set environment
     os.environ["CDF_LIB"] = cdf_lib_path
-    
-    time = [(pd.Timestamp(t0)-pd.Timedelta('3d')).to_pydatetime( ).replace(tzinfo=pytz.UTC), (pd.Timestamp(t1)+pd.Timedelta('3d')).to_pydatetime( ).replace(tzinfo=pytz.UTC)]
-    status, data = cdas.get_data('SOLO_HELIO1DAY_POSITION', ['RAD_AU','SE_LAT','SE_LON','HG_LAT','HG_LON','HGI_LAT','HGI_LON'], time[0], time[1])
 
-    dfdis = pd.DataFrame(
-        index = data['Epoch'],
-        data = data[['RAD_AU','SE_LAT','SE_LON','HG_LAT','HG_LON','HGI_LAT','HGI_LON']]
+    time = [
+        (pd.Timestamp(t0) - pd.Timedelta('3d')).to_pydatetime().replace(tzinfo=pytz.UTC),
+        (pd.Timestamp(t1) + pd.Timedelta('3d')).to_pydatetime().replace(tzinfo=pytz.UTC)
+    ]
+    status, data = cdas.get_data(
+        'SOLO_HELIO1DAY_POSITION', 
+        ['RAD_AU', 'SE_LAT', 'SE_LON', 'HG_LAT', 'HG_LON', 'HGI_LAT', 'HGI_LON'], 
+        time[0], time[1]
     )
+
+    # Convert the xarray.Dataset subset to a DataFrame
+    dfdis = data[['RAD_AU', 'SE_LAT', 'SE_LON', 'HG_LAT', 'HG_LON', 'HGI_LAT', 'HGI_LON']].to_dataframe()
+    
+    # Optionally, if the dataset has a coordinate 'Epoch' that should be used as the index:
     dfdis.index.name = 'datetime'
 
+    # Add the additional column
     dfdis['Dist_au'] = dfdis['RAD_AU']
     
     return dfdis
 
+
 def download_SWA_SOLO(t0, t1, settings,  varnames):   
     try:
-        swadata = pyspedas.solo.swa(trange=[t0, t1],varnames = varnames, datatype='pas-grnd-mom', no_update=np.invert(settings['use_local_data']))
+        swadata = pyspedas.solo.swa(trange=[t0, t1],varnames = varnames, datatype='pas-grnd-mom', no_update=settings['use_local_data'])
 
         #SWA protons
         col_names = map_col_names_SOLO('SWA', varnames)
@@ -235,7 +242,7 @@ def download_SWA_SOLO(t0, t1, settings,  varnames):
         dfswa = dfs[0].join(dfs[1:])
 
         # Rename Proton temperature [eV]
-        dfswa['Tp'] = dfspan.pop('T')
+        dfswa['Tp'] = dfswa.pop('T')
         
         #  Estimate Vth
         dfswa['Vth'] = 13.84112218 * np.sqrt(dfswa['Tp']) 
@@ -269,12 +276,12 @@ def download_RPW_SOLO(t0,
             datatype = 'bia-density'
             varname  = ['DENSITY']
 
-        MAGdata = pyspedas.solo.mag(trange=[t0, t1], datatype=datatype, level='l2', time_clip=True, no_update=np.invert(settings['use_local_data']))
+        MAGdata = pyspedas.solo.mag(trange=[t0, t1], datatype=datatype, level='l2', time_clip=True, no_update=settings['use_local_data'])
         
         col_names = map_col_names_SOLO('RPW', [datatype])
 
     try:
-        rpwdata = pyspedas.solo.rpw(trange=[t0, t1], level='l3', varnames = varname, datatype=datatype, no_update=np.invert(settings['use_local_data']))
+        rpwdata = pyspedas.solo.rpw(trange=[t0, t1], level='l3', varnames = varname, datatype=datatype, no_update=settings['use_local_data'])
 
 
         dfs       = [pd.DataFrame(index=get_data(data).times, 
@@ -322,7 +329,7 @@ def LoadTimeSeriesSOLO(start_time,
         'use_hampel'    : False,
         'part_resol'    : 900,
         'MAG_resol'     : 1,
-        'use_local_data': True
+        'use_local_data': False
 
     }
  
@@ -352,7 +359,7 @@ def LoadTimeSeriesSOLO(start_time,
             dfrpw = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfrpw)
             
             # Identify big gaps in timeseries
-            big_gaps_qtn = func.find_big_gaps(dfrpw, settings['Big_Gaps']['QTN_big_gaps'])
+            big_gaps_qtn = func.find_big_gaps(dfrpw, settings['Big_Gaps']['QTN_big_gaps'], ind1, ind2)
 
 
             # Resample the input dataframes
@@ -385,7 +392,7 @@ def LoadTimeSeriesSOLO(start_time,
                 dfpar = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfpar)
                 
                 # Identify big gaps in timeseries
-                big_gaps_par = func.find_big_gaps(dfpar, settings['Big_Gaps']['Par_big_gaps'])
+                big_gaps_par = func.find_big_gaps(dfpar, settings['Big_Gaps']['Par_big_gaps'], ind1, ind2)
 
                 # Resample the input dataframes
                 diagnostics_PAR  = func.resample_timeseries_estimate_gaps(dfpar, settings['part_resol'], large_gaps=10)
@@ -431,7 +438,7 @@ def LoadTimeSeriesSOLO(start_time,
                     dfmag                 = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfmag)
 
                     # Identify big gaps in timeseries
-                    big_gaps              = func.find_big_gaps(dfmag, settings['Big_Gaps']['Mag_big_gaps'])
+                    big_gaps              = func.find_big_gaps(dfmag, settings['Big_Gaps']['Mag_big_gaps'], ind1, ind2)
 
                     # Resample the input dataframes
                     diagnostics_MAG       = func.resample_timeseries_estimate_gaps(dfmag , settings['MAG_resol']  , large_gaps=10)
@@ -444,20 +451,20 @@ def LoadTimeSeriesSOLO(start_time,
 
                 # Load distance data
                 try:
-                        # Since pyspedas does not always return what tou ask for we have to enforce it
+                    # Since pyspedas does not always return what tou ask for we have to enforce it
                         
-                    #t0i, t1i = func.ensure_time_format(start_time, end_time)
-                    #t0a = func.add_time_to_datetime_string(t0i, -30, 'H')
-                    #t1a = func.add_time_to_datetime_string(t1i,  30, 'H')
-                    
-                    fname = '/Volumes/Zesen-4TB/solar_orbiter_data/distance/solo_dist.pkl'
-                    dfdis = pd.read_pickle(fname)
+        
+                    dfdis = pd.read_pickle( settings['SOLO_dist_path'])
                     dfdis = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfdis)
+      
+                    dfdis  = func.newindex(dfdis, diagnostics_PAR["resampled_df"].index)
+      
+                    diagnostics_PAR["resampled_df"]['Dist_au'] = dfdis.values
 
 
                 except Exception as e:
                     dfdis                = None
-                    logging.exception("No qtn data because: %s", e)
+                    logging.exception("No distance data because: %s", e)
                     pass
 
 

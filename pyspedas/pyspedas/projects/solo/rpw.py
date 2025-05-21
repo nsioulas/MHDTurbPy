@@ -116,4 +116,3 @@ def rpw(trange=['2020-06-15', '2020-06-16'],
     """
     return load(instrument='rpw', trange=trange, level=level, datatype=datatype, prefix=prefix, suffix=suffix, get_support_data=get_support_data, varformat=varformat, varnames=varnames, downloadonly=downloadonly, notplot=notplot, time_clip=time_clip, no_update=no_update)
 
-

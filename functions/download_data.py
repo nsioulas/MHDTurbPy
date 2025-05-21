@@ -139,7 +139,24 @@ def download_files( ok,
                                                         min_correlation      = settings.get('E_field', {}).get('min_correlation', 0.8)    # Minimum acceptable cross-correlation value
                         )
 
-                        # Use coefficients to calibrate the df                              
+
+                                                    
+                        # # Estimate coefficients
+                        # E_cal, coeffs = efield.calibrate_electric_field(
+                        #                                 final['E'].copy(),
+                        #                                 final['Par']['V_resampled'][['Vx', 'Vy', 'Vz']].copy(), 
+                        #                                 final['Mag']['B_resampled'].copy(),
+                        #                                 window               = settings.get('E_field', {}).get('fit_window', '30s'), # Length of each fitting interval in minutes
+                        #                                 overlap              = settings.get('E_field', {}).get('overlap_ratio', 0.9),      # Block-averaging cadence in second
+                        #                                 lowpass_hz           = settings.get('E_field', {}).get('cut_off_freq', 1e-3),      # Block-averaging cadence in second
+                        #                                 pct_clip       = settings.get('E_field', {}).get('pct_clip', (0, 99.9)),     # Stride length between intervals in minutes
+                                                       
+                        # )
+
+
+                        # Use coefficients to calibrate the df      
+                        if settings.get('E_field', {}).get('keep_sc_pot', False):
+                            final['sc_pot_E'] = final['E']
                         final['E'] =  efield.calibrate_data(final['E'], coeffs_low_res) 
                     except:
                         traceback.print_exc()
@@ -150,24 +167,18 @@ def download_files( ok,
                     try:
 
                         print('Calibrating sc potential data')
-                        cal_res, roll_qtn, save_a, save_b, save_c, save_err_a, save_err_b, save_err_c, df_highfreq = sc_potential.calibrate_highfreq_in_intervals(
-                                    pd.DataFrame(final['SC_pot']).copy(),
-                                    pd.DataFrame(final['Par']['V_resampled']['np']).copy() ,
-                                    interval_size = settings.get('sc_pot', {}).get('fit_interval_minutes', '20min'), # Length of each fitting interval in minutes,
-                                    rol_med_wind  = settings.get('sc_pot', {}).get('roll_wind_minutes', '4min'),
-                                    est_roll_med  = settings.get('sc_pot', {}).get('est_roll_med', False),
-                                    n_sigma       = settings.get('sc_pot', {}).get('n_sigma_outliers', 3))
 
-                       
-                        final['np_sc_pot'] =  {'dens_df'     : pd.DataFrame(cal_res["sc_pot_dens"]), 
-                                            'fit_params'  : { 'a'      : save_a,
-                                                              'b'      : save_b,
-                                                              'c'      : save_c,
-                                                              'err_a'  : save_err_a,
-                                                              'err_b'  : save_err_b,
-                                                              'err_c'  : save_err_c}
-                                            }
-                         
+                        sc_pot_dens, _ = sc_potential.calibrate_density(
+                                                                        sc_potential.process_sc_pot(pd.DataFrame(final['SC_pot'].interpolate().dropna())),
+                                                                        pd.DataFrame(final['Par']['V_resampled']['np'].interpolate().dropna()),
+                                                                        window_str    = settings.get('sc_pot', {}).get('fit_window', '300s'),
+                                                                        overlap_ratio = settings.get('sc_pot', {}).get('overlap_ratio', 0.99),
+                                                                        cut_off_freq  = settings.get('sc_pot', {}).get('cut_off_freq', 3))
+
+                        
+                        final['np_sc_pot'] =  pd.DataFrame({'DateTime' : sc_pot_dens.index,
+                                                                  'Np' : sc_pot_dens.values} ).set_index('DateTime')
+                                              
                     except:
                         traceback.print_exc()          
                 

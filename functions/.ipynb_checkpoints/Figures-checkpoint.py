@@ -169,33 +169,46 @@ def create_colors_new(hmany, which=None, return_cmap=False):
         return cmap  # Return only the colormap object
     
     
-
 def create_colors(hmany, which=None):
-    
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LinearSegmentedColormap
     import colormaps as cmaps  # Assuming this is a custom colormap module
 
     if which is None:
-        interval = np.hstack([np.linspace(0, 0.45), np.linspace(0.55, 1)])
+        # Create two intervals and combine them for a custom colormap.
+        interval = np.hstack([np.linspace(0, 0.45, num=hmany//2),
+                              np.linspace(0.55, 1, num=hmany - hmany//2)])
         colors = cmaps.w5m4(interval)
         
     elif which == 'bone':
-        interval = np.hstack([np.linspace(0, 0.35), np.linspace(0.65, 1)])
+        # Use two sub-intervals for the OrRd colormap.
+        interval = np.hstack([np.linspace(0, 0.35, num=hmany//2),
+                              np.linspace(0.65, 1, num=hmany - hmany//2)])
         colors = plt.cm.OrRd(interval)
-        colors = plt.cm.RdGy_r(interval)
-
+        
+    elif which == 'rdgy':
+        # Use the full range of the RdGy colormap.
+        interval =  np.hstack([np.linspace(0, 0.35, num=hmany//2),
+                              np.linspace(0.65, 1, num=hmany - hmany//2)])
+        colors = plt.cm.RdGy(interval)
+        
     elif which == 'half_blues':
-        # Define the interval to focus on the lower half of the Blues colormap
+        # Focus on the lower half of the Blues colormap.
         interval = np.linspace(0.25, 0.75, hmany)
         colors = plt.cm.Blues(interval)
         
     elif which == 'cusia':
+        # Use a custom NeutralGrey colormap from a custom mapping function.
         interval = np.linspace(0, 1, hmany)
-        colors   = mycmap(colors ='NeutralGrey')(interval)
+        colors = mycmap(colors='NeutralGrey')(interval)
+    else:
+        raise ValueError("Unknown colormap option: {}".format(which))
 
-    # Create the custom colormap from the selected colors
+    # Create the custom colormap from the selected colors.
     cmap = LinearSegmentedColormap.from_list('custom_colormap', colors)
-    
     return cmap(np.linspace(0, 1, hmany))
+
 
 # import numpy as np
 # import matplotlib.pyplot as plt
@@ -822,6 +835,7 @@ def visualize_downloaded_intervals(
                                   format_2_return  ="%Y_%m_%d",
                                   size             = 21,
                                   numb_subplots    = 7,
+                                  font_size        = 'x-large',
                                   join_path_figs   = True,
                                   save_fig         = True 
 
@@ -838,7 +852,7 @@ def visualize_downloaded_intervals(
     end_date_lim    = final_Par.index[-1]
 
     # Init figure
-    fig, axs        = plt.subplots(numb_subplots, sharex=True,figsize=(30,15), gridspec_kw = {'wspace':0.05, 'hspace':0.05})
+    fig, axs        = plt.subplots(numb_subplots, sharex=True,figsize=(0.95*30,0.95*15), gridspec_kw = {'wspace':0.05, 'hspace':0.05})
     minor_tick_params, major_tick_params = inset_axis_params(size ='xx-large')
 
 
@@ -873,6 +887,8 @@ def visualize_downloaded_intervals(
         axs[0].plot(index, final_Mag['Bz'].values,linewidth=0.4,ls='-', ms=0,color ='darkgreen')
         axs[0].plot(index, final_Mag['B_RTN'].values,linewidth=0.4,ls='-', ms=0,color ='k')
 
+        axs[0].legend([r'$B_{r} ~ [nT]$',r'$B_{t} ~ [nT]$',r'$B_{n} ~ [nT]$',r'$|B| ~ [nT]$'], fontsize=font_size, frameon=False, bbox_to_anchor=(1.01, 0.6), loc = 2, ncol=4)
+
         RTN_Flag =0
 
         """2nd plot"""
@@ -883,7 +899,7 @@ def visualize_downloaded_intervals(
 
     ax2.plot(par_index, final_Par['Vth'].values,linewidth=0.8,ls='-', ms=0,color ='k')#,label='$|B|$')
 
-    ax2.legend(['$V_{th}~ [km/s]$'], fontsize='large', frameon=False, bbox_to_anchor=(1.01, 0.6), loc = 2)
+    ax2.legend(['$T_{p}~ [eV]$'], fontsize=font_size, frameon=False, bbox_to_anchor=(1.01, 0.6), loc = 2)
 
 
     """3rd plot"""
@@ -896,56 +912,64 @@ def visualize_downloaded_intervals(
     axs[3].plot(sig_index, nn_df.sigma_r.values, linewidth=0.8,ls='-', ms=0,color ='darkred')#,label='$|B|$')
 
     """3rd plot"""
-    axs[4].plot(sig_index, nn_df.beta.values, linewidth=0.8,ls='-', ms=0,color ='black')#,label='$|B|$')
+    axs[4].semilogy(sig_index, nn_df.beta.values, linewidth=0.8,ls='-', ms=0,color ='black')#,label='$|B|$')
+    axs[4].axhline(y=1, ls=':', c='k', lw=2)
+    axs[4].set_ylim([1/2*np.nanmin(nn_df.beta.values), 2*np.nanmax(nn_df.beta.values)])
+    try:
+        ax4 = axs[4].twinx()
+        ax4.semilogy(sig_index, nn_df.Ma.values,linewidth=0.8,ls='-', ms=0,color ='darkred')#,label='$|B|$')
+        #dfts[['Vth']].plot(ax = ax, legend=False, style=['C1'], lw = 0.6, alpha = 0.6)
+        ax4.legend(['$M_a$'], fontsize=font_size, frameon=False, bbox_to_anchor=(1.01, 0.6), loc = 2)
+        ax4.axhline(y=1, ls=':', c='darkred', lw=2)
+        ax4.set_ylim([1/3*np.nanmin(nn_df.Ma.values), 3*np.nanmax(nn_df.Ma.values)])
+    except:
+        pass
 
     """3rd plot"""
     axs[5].plot(sig_index, nn_df.VB.values, linewidth=0.8,ls='-', ms=0,color ='black')#,label='$|B|$')
 
     """4th plot"""
-    axs[6].plot(par_index, final_Par.Dist_au.values, linewidth=0.8,ls='-', ms=0,color ='black')#,label='$|B|$')
-    try:
-        ax3 = axs[6].twinx()
-        ax3.plot(final_Par['carr_lon'],linewidth=0.8,ls='-', ms=0,color ='darkred')#,label='$|B|$')
-        #dfts[['Vth']].plot(ax = ax, legend=False, style=['C1'], lw = 0.6, alpha = 0.6)
-        ax3.legend(['$Carr. long ~ [^{\circ}]$'], fontsize='large', frameon=False, bbox_to_anchor=(1.01, 0.6), loc = 2)
-    except:
-        pass
+    axs[6].plot(par_index, 215.043*final_Par.Dist_au.values, linewidth=0.8,ls='-', ms=0,color ='black')#,label='$|B|$')
+
+    if sc=='PSP':
+        try:
+            ax3 = axs[6].twinx()
+            ax3.plot(final_Par['carr_lon'],linewidth=0.8,ls='-', ms=0,color ='darkred')#,label='$|B|$')
+            #dfts[['Vth']].plot(ax = ax, legend=False, style=['C1'], lw = 0.6, alpha = 0.6)
+            ax3.legend(['$Carr. long ~ [^{\circ}]$'], fontsize=font_size, frameon=False, bbox_to_anchor=(1.01, 0.6), loc = 2)
+        except:
+            pass
 
 
     ## y Axis labels ##
     if RTN_Flag ==1:
-         axs[0].legend([r'$B_{r} ~ [nT]$',r'$B_{t} ~ [nT]$',r'$B_{n} ~ [nT]$',r'$|B| ~ [nT]$'], fontsize='large', frameon=False, bbox_to_anchor=(1.01, 1), loc = 2)
+         axs[0].legend([r'$B_{r} ~ [nT]$',r'$B_{t} ~ [nT]$',r'$B_{n} ~ [nT]$',r'$|B| ~ [nT]$'], fontsize=font_size, frameon=False, bbox_to_anchor=(1.01, 1), loc = 2)
     else:
-         axs[0].legend([r'$B_{x} ~ [nT]$',r'$B_{y} ~ [nT]$',r'$B_{z} ~ [nT]$',r'$|B| ~ [nT]$'], fontsize='large', frameon=False, bbox_to_anchor=(1.01, 1), loc = 2)
-    axs[1].legend(['$V_{sw} ~[km ~s^{-1}$]'], fontsize='large', frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
-    axs[2].legend(['$N_{p}~[(cm^{-3}$]'], fontsize='large', frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
-    axs[3].legend(['$\sigma_{c}$','$\sigma_{r}$'], fontsize='large', frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
-    #axs[4].legend([], fontsize='large', frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
-    axs[4].legend([r'$\beta$'], fontsize='large', frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
-    axs[5].legend([r'$\Theta_{VB} ~[^{\circ}]$'], fontsize='large', frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
-    axs[6].legend([r'$R ~[au]$'], fontsize='large', frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
+         axs[0].legend([r'$B_{x} ~ [nT]$',r'$B_{y} ~ [nT]$',r'$B_{z} ~ [nT]$',r'$|B| ~ [nT]$'], fontsize=font_size, frameon=False, bbox_to_anchor=(1.01, 1), loc = 2)
+    axs[1].legend(['$V_{sw} ~[km ~s^{-1}$]'], fontsize=font_size, frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
+    axs[2].legend(['$N_{p}~[(cm^{-3}$]'], fontsize=font_size, frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
+    axs[3].legend(['$\sigma_{c}$','$\sigma_{r}$'], fontsize=font_size, frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
+    
+    axs[4].legend([r'$\beta$'], fontsize=font_size, frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
+    axs[5].legend([r'$\Theta_{VB} ~[^{\circ}]$'], fontsize=font_size, frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
+    axs[6].legend([r'$R ~[R_{\odot}]$'], fontsize=font_size, frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
 
 
-    #axs[3].legend([r'$\sigma_c$'], fontsize='large', frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
+    #axs[3].legend([r'$\sigma_c$'], fontsize=font_size, frameon=False, bbox_to_anchor=(1.01,1), loc = 2)
     for i in range(numb_subplots ):
 
-        axs[i].xaxis.grid(True, "minor", linewidth=.1, ls='-');  
-        axs[i].yaxis.grid(True, "major", linewidth=.1, ls='-');
-        axs[i].yaxis.grid(True, "minor", linewidth=.1, ls='-');  
-        axs[i].xaxis.grid(True, "major", linewidth=.1, ls='-');    
+        axs[i].xaxis.grid(True, "minor", linewidth=.1, ls=':');  
+        axs[i].yaxis.grid(True, "major", linewidth=.1, ls=':');
+        axs[i].yaxis.grid(True, "minor", linewidth=.1, ls=':');  
+        axs[i].xaxis.grid(True, "major", linewidth=.1, ls=':');    
 
-        axs[i].xaxis.grid(True, "minor", linewidth=.1, ls='-');  
-        axs[i].yaxis.grid(True, "major", linewidth=.1, ls='-');
-        axs[i].yaxis.grid(True, "minor", linewidth=.1, ls='-');  
-        axs[i].xaxis.grid(True, "major", linewidth=.1, ls='-'); 
+        axs[i].xaxis.grid(True, "minor", linewidth=.1, ls=':');  
+        axs[i].yaxis.grid(True, "major", linewidth=.1, ls=':');
+        axs[i].yaxis.grid(True, "minor", linewidth=.1, ls=':');  
+        axs[i].xaxis.grid(True, "major", linewidth=.1, ls=':'); 
         axs[i].tick_params(**minor_tick_params)
         axs[i].tick_params(**major_tick_params)
 
-
-
-        if i==0:
-
-            axs[i].legend(loc=0, frameon=0, fontsize=20)
 
 
         # Set axis limits

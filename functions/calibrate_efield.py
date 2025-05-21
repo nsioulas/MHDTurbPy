@@ -1,3 +1,42 @@
+"""e_field_calibration.py
+========================
+Module providing a modern, vectorised pipeline to project probe voltages into spacecraft
+coordinates, fit a four‑parameter electric‑field calibration model on overlapping time
+windows, and return smoothly calibrated Ex/Ey time series together with window‑level
+fit diagnostics.
+
+Main entry point
+----------------
+calibrate_electric_field(...) – blends Hann‑tapered, quality‑weighted window fits in
+parallel, optional low‑pass pre‑filtering, and percentile‑based outlier rejection.
+
+Utility helpers
+---------------
+* project_dV               – rotate probe‐pair voltages into S/C coordinates.
+* apply_lowpass_filter     – zero‑phase Butterworth low‑pass.
+* percentile_filter_interpolate_ts – robust percentile clipping + gap interpolation.
+* find_longest_intervals   – pick the M longest |Bz|>threshold intervals.
+* estimate_Ez              – reconstruct Ez from E·B=0 plus optional Hampel filter.
+
+Notes
+-----
+* Synchronisation of data frames relies on ``general_functions.synchronize_dfs``
+  (imported as ``func``).  Replace with your own routine if needed.
+* All physical unit conversions are explicit and NumPy‑vectorised.
+* No external state is stored; everything is functional and testable.
+"""
+
+from __future__ import annotations
+
+from typing import Tuple, List
+import numpy as np
+import pandas as pd
+from scipy.signal import butter, filtfilt
+from scipy.optimize import least_squares
+from joblib import Parallel, delayed
+
+
+
 import numpy as np
 import pandas as pd
 import traceback
@@ -27,6 +66,20 @@ import statistics
 from statistics import mode
 import orderedstructs
 import sys
+from scipy.optimize import curve_fit
+import astropy.units as u
+
+
+import numpy as np
+import pandas as pd
+import traceback
+from astropy import units as u
+import traceback
+from scipy.signal import butter, filtfilt
+
+from scipy.signal import firwin, filtfilt
+from scipy.odr import ODR, Model, Data
+from astropy import units as u
 
 sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
 import calc_diagnostics as calc
@@ -54,143 +107,135 @@ def project_dV(dV12, dV34):
     dVY     = dV_SC[1, :]
     return dVX, dVY
 
-from scipy.optimize import curve_fit
-import astropy.units as u
 
 
-# def fit_coupled_linear_model(Vp, B, dVX, dVY):
-#     """
-#     Fit the projected differential voltages using the coupled four-parameter linear model.
-
-#     Parameters:
-#     - Vp: numpy array of proton velocities (km/s), shape (N, 3).
-#     - B: numpy array of magnetic field measurements (nT), shape (N, 3).
-#     - dVX, dVY: numpy arrays of differential voltages in SC coordinates (V), shape (N,).
-
-#     Returns:
-#     - a, b, c, d: fitted parameters of the model (a and b in meters, c and d in volts).
-#     """
-#     # Convert Vp from km/s to m/s and B from nT to T
-#     Vp_m_per_s = Vp * u.m / u.s  # Convert to Quantity with units
-#     B_tesla    = B * u.T  # Convert to Quantity with units
-
-#     # Compute -Vp x B (units: V/m)
-#     VxB = -np.cross(Vp_m_per_s, B_tesla)  # Units: (m/s) x (T) = V/m
-
-#     # Extract x and y components and convert to numeric values in V/m
-#     VpxBx = VxB[:, 0].to(u.V / u.m).value
-#     VpxBy = VxB[:, 1].to(u.V / u.m).value
-
-#     # Define the model for dVX and dVY
-#     def model(xdata, a, b, c, d):
-#         VpxBx, VpxBy = xdata
-#         dVX = a * VpxBx + b * VpxBy + c
-#         dVY = -b * VpxBx + a * VpxBy + d
-#         return np.concatenate([dVX, dVY])
-
-#     # Stack the independent variables into one array
-#     xdata = np.vstack((VpxBx, VpxBy))
-
-#     # Concatenate the dependent variables (observed dVX and dVY)
-#     ydata = np.concatenate([dVX, dVY])
-
-#     # Initial guess for parameters (a, b, c, d)
-#     initial_params = [1, 1, 0, 0]
-
-#     # Perform the curve fitting
-#     params_opt, _ = curve_fit(model, xdata, ydata, p0=initial_params)
-
-#     # Unpack the optimized parameters
-#     a_opt, b_opt, c_opt, d_opt = params_opt
-
-#     return a_opt, b_opt, c_opt, d_opt
 
 
-def fit_coupled_linear_model(Vp, B, dVX, dVY):
+def fit_coupled_linear_model(Vp, B, dVX, dVY, robust=False, rejection_threshold=3):
     """
-    Fit the projected differential voltages using the coupled four-parameter linear model
-    via Total Least Squares (TLS).
-
+    Fit the projected differential voltages using a coupled four-parameter linear model
+    via Orthogonal Distance Regression (ODR) to obtain both the best-fit parameters
+    and their uncertainties.
+    
+    The two equations are:
+      Equation 1: dVX = a * VpxBx + b * VpxBy + c
+      Equation 2: dVY = a * VpxBy - b * VpxBx + d
+    
+    We build an independent variable array for ODR of shape (2, 2N) where the first N columns 
+    correspond to Equation 1 and the next N to Equation 2.
+    
     Parameters:
-    - Vp: numpy array of proton velocities (km/s), shape (N, 3).
-    - B: numpy array of magnetic field measurements (nT), shape (N, 3).
-    - dVX, dVY: numpy arrays of differential voltages in SC coordinates (V), shape (N,).
-
+      - Vp: numpy array of proton velocities (in km/s; converted internally to m/s).
+      - B: numpy array of magnetic field measurements (in nT; converted internally to T).
+      - dVX, dVY: numpy arrays of differential voltages (V).
+      - robust (bool): If True, perform one iteration of robust reweighting based on residuals.
+      - rejection_threshold (float): Multiplier (in MAD units) for rejecting outliers.
+      
     Returns:
-    - a, b, c, d: fitted parameters of the model (a and b in meters, c and d in volts).
+      - a, b, c, d: fitted parameters (a and b in meters, c and d in volts).
+      - sigma_a, sigma_b, sigma_c, sigma_d: estimated standard errors for the fitted parameters.
     """
-    # Convert Vp from km/s to m/s and B from nT to T
-    Vp_m_per_s = Vp * u.m / u.s  # Convert to Quantity with units
-    B_tesla    = B * u.T  # Convert to Quantity with units
+    # Convert Vp (km/s) to m/s and B (nT) to T.
+    Vp_m_per_s = Vp * u.m / u.s
+    B_tesla = B * u.T
 
     # Compute -Vp x B (units: V/m)
-    VxB = -np.cross(Vp_m_per_s, B_tesla)  # Units: (m/s) x (T) = V/m
-
-    # Extract x and y components and convert to numeric values in V/m
+    VxB = -np.cross(Vp_m_per_s, B_tesla)
     VpxBx = VxB[:, 0].to(u.V / u.m).value
     VpxBy = VxB[:, 1].to(u.V / u.m).value
-    
-    
-    # Number of data points
+
     N = Vp.shape[0]
+    
+    # Build independent variable array for ODR:
+    # For Equation 1: dVX = a * VpxBx + b * VpxBy + c
+    # For Equation 2: dVY = a * VpxBy - b * VpxBx + d
+    # We form x_odr as a 2 x (2N) array.
+    x_odr = np.empty((2, 2 * N))
+    # First N columns: Equation 1
+    x_odr[0, :N] = VpxBx
+    x_odr[1, :N] = VpxBy
+    # Next N columns: Equation 2 (using the same independent variables)
+    x_odr[0, N:] = VpxBx
+    x_odr[1, N:] = VpxBy
+    
+    # Construct the dependent variable vector.
+    y_odr = np.empty(2 * N)
+    y_odr[:N] = dVX
+    y_odr[N:] = dVY
 
-    # Construct the design matrix A and observation vector y
-    # For TLS, we need to consider errors in both A and y
-    # Formulate the augmented matrix [A | y]
-    # Each data point contributes two rows to A and y
+    # Define the model function. It splits the 2N data points into two halves.
+    def coupled_model(p, x):
+        # p = [a, b, c, d]
+        n_pts = x.shape[1] // 2  # number of data points per equation
+        y_fit = np.empty(x.shape[1])
+        # Equation 1 for the first n_pts points:
+        y_fit[:n_pts] = p[0] * x[0, :n_pts] + p[1] * x[1, :n_pts] + p[2]
+        # Equation 2 for the next n_pts points:
+        y_fit[n_pts:] = p[0] * x[1, n_pts:] - p[1] * x[0, n_pts:] + p[3]
+        return y_fit
 
-    # Initialize A (2N x 4) and y (2N)
-    A = np.zeros((2 * N, 4))
-    y = np.zeros(2 * N)
+    model = Model(coupled_model)
 
-    # Populate A and y
-    for i in range(N):
-        # First equation: dVX = a * VpxBx + b * VpxBy + c
-        A[2 * i] = [VpxBx[i], VpxBy[i], 1, 0]
-        y[2 * i] = dVX[i]
-        
-        # Second equation: dVY = -b * VpxBx + a * VpxBy + d
-        A[2 * i + 1] = [VpxBy[i], -VpxBx[i], 0, 1]
-        y[2 * i + 1] = dVY[i]
-
-    # Form the augmented matrix [A | y]
-    augmented_matrix = np.hstack((A, y.reshape(-1, 1)))  # Shape: (2N x 5)
-
-    # Perform Singular Value Decomposition (SVD) on the augmented matrix
+    # Obtain an initial guess using TLS (SVD) on the original design matrix.
+    A = np.empty((2 * N, 4))
+    A[0::2, 0] = VpxBx
+    A[0::2, 1] = VpxBy
+    A[0::2, 2] = 1
+    A[0::2, 3] = 0
+    A[1::2, 0] = VpxBy
+    A[1::2, 1] = -VpxBx
+    A[1::2, 2] = 0
+    A[1::2, 3] = 1
+    y_vec = np.empty(2 * N)
+    y_vec[0::2] = dVX
+    y_vec[1::2] = dVY
+    augmented_matrix = np.hstack((A, y_vec.reshape(-1, 1)))
     U, S, Vt = np.linalg.svd(augmented_matrix, full_matrices=False)
-    V = Vt.T  # Transpose to get V
-
-    # The solution is the last column of V corresponding to the smallest singular value
-    v = V[:, -1]
-
-    # Check if the last element is non-zero to avoid division by zero
+    v = Vt.T[:, -1]
     if np.isclose(v[-1], 0):
         raise ValueError("The TLS solution is undefined (small singular value).")
+    p0 = -v[0:4] / v[4]
+    
+    # Set up and run ODR.
+    data = Data(x_odr, y_odr)
+    odr_obj = ODR(data, model, beta0=p0)
+    odr_output = odr_obj.run()
 
-    # Extract the parameters: p = [a, b, c, d] = -v[0:4] / v[4]
-    p = -v[0:4] / v[4]
+    # Optional robust reweighting.
+    if robust:
+        residuals = coupled_model(odr_output.beta, x_odr) - y_odr
+        abs_res = np.abs(residuals)
+        median_res = np.median(abs_res)
+        mad = np.median(np.abs(abs_res - median_res))
+        threshold = rejection_threshold * (mad if mad > 0 else 1e-6)
+        mask = abs_res < threshold
+        if np.sum(mask) >= 4:  # require a minimum number of points
+            x_in = x_odr[:, mask]
+            y_in = y_odr[mask]
+            data_in = Data(x_in, y_in)
+            odr_obj_in = ODR(data_in, model, beta0=odr_output.beta)
+            odr_output = odr_obj_in.run()
 
-    a_opt, b_opt, c_opt, d_opt = p
+    a, b, c, d = odr_output.beta
+    sigma_a, sigma_b, sigma_c, sigma_d = odr_output.sd_beta
 
-    return a_opt, b_opt, c_opt, d_opt
-
-
+    return a, b, c, d, sigma_a, sigma_b, sigma_c, sigma_d
 
 def invert_parameters_to_calibration_coefficients(a, b, c, d):
     """
     Invert the model parameters to obtain calibration coefficients.
 
     Parameters:
-    - a, b: effective dipole components (meters).
-    - c, d: offset voltages (volts).
+      - a, b: effective dipole components (meters).
+      - c, d: offset voltages (volts).
 
     Returns:
-    - Leff: effective dipole length (meters).
-    - theta: rotation angle (degrees).
-    - c, d: offset voltages (volts).
+      - Leff: effective dipole length (meters).
+      - theta: rotation angle (degrees), computed robustly with arctan2.
+      - c, d: offset voltages (volts).
     """
-    Leff   = np.sqrt(a**2 + b**2)        # meters
-    theta  = np.degrees(np.arctan(b/a))  # degrees
+    Leff = np.sqrt(a**2 + b**2)
+    theta = np.degrees(np.arctan2(b, a))
     return Leff, theta, c, d
 
 def compute_cross_correlation(Ex, Ey, VxB_x, VxB_y):
@@ -198,230 +243,313 @@ def compute_cross_correlation(Ex, Ey, VxB_x, VxB_y):
     Compute the cross-correlation between calibrated E-fields and -V x B.
 
     Parameters:
-    - Ex, Ey: calibrated electric field components (V/m).
-    - VxB_x, VxB_y: components of -V x B (V/m).
+      - Ex, Ey: calibrated electric field components (V/m).
+      - VxB_x, VxB_y: components of -V x B (V/m).
 
     Returns:
-    - Cxx, Cyy: cross-correlation coefficients.
+      - Cxx, Cyy: cross-correlation coefficients.
     """
     Ex_zero_mean = Ex - np.mean(Ex)
     Ey_zero_mean = Ey - np.mean(Ey)
     VxB_x_zero_mean = VxB_x - np.mean(VxB_x)
     VxB_y_zero_mean = VxB_y - np.mean(VxB_y)
-
     Cxx = np.corrcoef(Ex_zero_mean, VxB_x_zero_mean)[0, 1]
     Cyy = np.corrcoef(Ey_zero_mean, VxB_y_zero_mean)[0, 1]
-
     return Cxx, Cyy
 
-
 def synchronize_merge_dfs(bdf, vdf, edf):
-    
-    # Synchronize
-    edf, _                        = func.synchronize_dfs(edf, bdf, False)
-    edf, _                        = func.synchronize_dfs(edf, vdf, False)
-    bdf, vdf                      = func.synchronize_dfs(bdf, vdf, False)
-
-    # Merge
-    fin_data                      = edf
-    fin_data[['Vx', 'Vy', 'Vz']]  = vdf
-    fin_data[['Bx', 'By', 'Bz']]  = bdf
-
-    # Interpolate dropna
+    """
+    Synchronize and merge magnetic field, velocity, and electric field DataFrames.
+    Assumes that external functions (e.g., func.synchronize_dfs) are defined.
+    """
+    edf, _ = func.synchronize_dfs(edf, bdf, False)
+    edf, _ = func.synchronize_dfs(edf, vdf, False)
+    bdf, vdf = func.synchronize_dfs(bdf, vdf, False)
+    fin_data = edf.copy()
+    fin_data[['Vx', 'Vy', 'Vz']] = vdf
+    fin_data[['Bx', 'By', 'Bz']] = bdf
     return fin_data.interpolate().dropna()
 
-
-def process_data(bdf,
-                 vdf,
-                 edf,
-                 cadence_seconds      = 12,
+def process_data(bdf, vdf, edf,
+                 cadence_seconds      = None,
                  fit_interval_minutes = 4,
-                 stride_minutes       = 1,
+                 stride_minutes       = 4,   # non-overlapping intervals for piecewise calibration
                  min_correlation      = 0.5,
                  apply_hampel         = True,
                  window_size          = 501,
-                 n                    = 3):
+                 n                    = 3,
+                 robust_fit           = False,
+                 apply_lowpass        = True,
+                 cutoff_frequency     = None,    # in Hz
+                 fir_numtaps          = 101,     # number of filter coefficients (taps) for FIR design
+                 fir_window           = 'hamming',
+                 rel_uncertainty_thresh = 0.5):  # relative uncertainty threshold (e.g., 50%)
     """
-    Process the data to compute calibration coefficients over sliding intervals.
-
+    Process the data to compute calibration coefficients over short, non-overlapping intervals.
+    
+    Improvements include:
+      (1) Optionally applying a zero-phase FIR low-pass filter to the velocity data.
+      (2) Downsampling to a fixed cadence if cadence_seconds is provided.
+      (3) Optional robust TLS/ODR fitting (with iterative reweighting) and Hampel filtering on E-field data.
+      (4) A quality check based on the relative uncertainties of the fitted parameters.
+          If the maximum relative uncertainty (sigma/|parameter|) exceeds rel_uncertainty_thresh,
+          the calibration for that interval is discarded (set to NaN). The fraction of intervals discarded is returned.
+    
     Parameters:
-    - data: pandas DataFrame containing the data with a datetime index.
-    - cadence_seconds: block averaging cadence in seconds (e.g., 12).
-    - fit_interval_minutes: length of each fitting interval in minutes (e.g., 4).
-    - stride_minutes: stride length between intervals in minutes (e.g., 1).
-    - min_correlation: minimum acceptable cross-correlation value (e.g., 0.5).
-
+      bdf, vdf, edf       : DataFrames containing magnetic, velocity, and electric field data.
+      cadence_seconds     : Desired cadence (in seconds) for downsampling.
+      fit_interval_minutes: Interval length (in minutes) for computing calibration coefficients.
+      stride_minutes      : Time stride (in minutes) for non-overlapping calibration intervals.
+      min_correlation     : Minimum cross-correlation threshold required to validate calibration coefficients.
+      apply_hampel        : Flag to apply Hampel filtering on the E-field data.
+      window_size, n      : Parameters for the Hampel filter.
+      robust_fit          : Flag to run the TLS/ODR fitting function in robust mode.
+      apply_lowpass       : Flag to apply the FIR low-pass filter on velocity data.
+      cutoff_frequency    : Cutoff frequency (in Hz) for the FIR low-pass filter.
+      fir_numtaps         : Number of taps for the FIR filter.
+      fir_window          : Window type used for FIR design.
+      rel_uncertainty_thresh : Relative uncertainty threshold above which a fit is considered unreliable.
+      
     Returns:
-    - DataFrame containing calibration coefficients and correlation metrics.
+      A tuple:
+        - DataFrame containing calibration coefficients with interval boundaries and quality flags.
+          Additional columns include sigma_a, sigma_b, sigma_c, sigma_d (fit uncertainties) and a 'discarded' flag.
+        - The fraction of intervals that were discarded due to high relative uncertainty.
     """
     
-    # Synchronize dfs
-    
-    # Apply Hampel filter if required
-    if apply_hampel:
-        # Determine which velocity components to filter based on data presence
-        columns_for_hampel = edf.columns
+    # --- Helper: Zero-Phase FIR Low-Pass Filter ---
+    def fir_lowpass_filter(data, cutoff, fs, numtaps, window):
+        nyq = 0.5 * fs  # Nyquist Frequency
+        normalized_cutoff = cutoff / nyq
+        taps = firwin(numtaps, normalized_cutoff, window=window)
+        filtered_data = filtfilt(taps, [1.0], data)
+        return filtered_data
 
-        for column in columns_for_hampel:
-            print(column)
+    # --- Step 1: Merge and Synchronize Data ---
+    averaged_data = synchronize_merge_dfs(bdf, vdf, edf)
+    
+    # Determine cadence_seconds if not provided.
+    if cadence_seconds is None:
+        cadence_seconds = func.find_cadence(vdf)
+    
+    fs = 1.0 / cadence_seconds  # sampling frequency in Hz
+    
+    # --- Step 2: Apply FIR Low-Pass Filter (if requested) ---
+    if apply_lowpass and (cutoff_frequency is not None):
+        print("Applying FIR low-pass filter to velocity data with cutoff frequency {} Hz".format(cutoff_frequency))
+        for col in ['Vx', 'Vy', 'Vz']:
+            averaged_data[col] = fir_lowpass_filter(averaged_data[col].values,
+                                                    cutoff_frequency, fs,
+                                                    numtaps=fir_numtaps,
+                                                    window=fir_window)
+    
+    # --- Step 3: Downsample Data ---
+    if cadence_seconds is not None:
+        print("Downsampling data to calibrate E-field at {} seconds cadence".format(cadence_seconds))
+        averaged_data = averaged_data.resample(f"{int(cadence_seconds)}S").mean().dropna()
+    
+    # --- Step 4: Optionally Apply Hampel Filter to E-field Data ---
+    if apply_hampel:
+        for column in edf.columns:
             try:
                 filtered_arr, outliers_indices = func.hampel(edf[column], window_size, n)
-                print('Identified', len(outliers_indices),' outliers')
-                #Edf.loc[Edf.index[outliers_indices], column] = np.nan
                 edf[column] = filtered_arr
             except Exception as e:
                 pass
-
-    averaged_data   = synchronize_merge_dfs(bdf, vdf, edf)
-    cadence_seconds = func.find_cadence(vdf)
     
-    # # Find mov averages
-    # averaged_data = block_average(data, cadence_seconds)
+    # --- Step 5: Convert Units and Prepare Data Arrays ---
+    Vp = averaged_data[['Vx', 'Vy', 'Vz']].values * 1e3  # Convert km/s to m/s.
+    B  = averaged_data[['Bx', 'By', 'Bz']].values * 1e-9    # Convert nT to T.
+    dVX = averaged_data['dvx'].values  # Electric field component (V)
+    dVY = averaged_data['dvy'].values  # Electric field component (V)
+    times = averaged_data.index.values
+    N = len(averaged_data)
     
-    #print(averaged_data)
-
-    # Extract variables
-    B       = (averaged_data[['Bx', 'By', 'Bz']].values  * 1e-9 * u.T).value    # T
-    Vp      = (averaged_data[['Vx', 'Vy', 'Vz']].values  * 1e3 * u.m / u.s ).value # m/s
-
-    # Project to SC coordinates
-    dVX     = (averaged_data['dvx'].values.T * u.V).value # Volt
-    dVY     = (averaged_data['dvy'].values.T * u.V).value # Volt
-
-    times                = averaged_data.index.values
-    N                    = len(averaged_data)
-    points_per_interval  = int((fit_interval_minutes * 60) / cadence_seconds)
-    points_per_stride    = int((stride_minutes * 60) / cadence_seconds)
+    points_per_interval = max(int((fit_interval_minutes * 60) / cadence_seconds), 1)
+    points_per_stride   = max(int((stride_minutes * 60) / cadence_seconds), 1)
     
-    if points_per_interval < 1:
-        points_per_interval = 1
-    if points_per_stride < 1:
-        points_per_stride = 1
     results = []
     num_intervals = int((N - points_per_interval) / points_per_stride) + 1
+    discard_flags = []  # to track which intervals are discarded
 
     for i in range(num_intervals):
         start_idx = i * points_per_stride
-        end_idx   = start_idx + points_per_interval
+        end_idx = start_idx + points_per_interval
         if end_idx > N:
             break
-        dVX_interval  = dVX[start_idx:end_idx]
-        dVY_interval  = dVY[start_idx:end_idx]
-        Vp_interval   = Vp[start_idx:end_idx]
-        B_interval    = B[start_idx:end_idx]
-        time_interval = times[start_idx:end_idx]
-        try:
-            a, b, c, d = fit_coupled_linear_model(Vp_interval, B_interval, dVX_interval, dVY_interval)
 
-            # Invert parameters to calibration coefficients
+        dVX_interval = dVX[start_idx:end_idx]
+        dVY_interval = dVY[start_idx:end_idx]
+        Vp_interval  = Vp[start_idx:end_idx]
+        B_interval   = B[start_idx:end_idx]
+        time_interval = times[start_idx:end_idx]
+        
+        try:
+            # Fit using the revised coupled linear model with ODR.
+            a, b, c, d, sigma_a, sigma_b, sigma_c, sigma_d = fit_coupled_linear_model(
+                Vp_interval, B_interval, dVX_interval, dVY_interval, robust=robust_fit)
+            
             Leff, theta, _, _ = invert_parameters_to_calibration_coefficients(a, b, c, d)
 
+            # Compute the calibrated E-field components (V/m).
+            Ex = ((-a * c + a * dVX_interval + b * d - b * dVY_interval) /
+                  (a**2 + b**2))
+            Ey = ((-a * d + a * dVY_interval - b * c + b * dVX_interval) /
+                  (a**2 + b**2))
 
-            # Convert to astropy quantities
-            Ex = ((-a*c + a*dVX_interval + b*d - b*dVY_interval)/(a**2 + b**2)) * u.V / u.m
-            Ey = ((-a*d + a*dVY_interval - b*c + b*dVX_interval)/(a**2 + b**2)) * u.V / u.m
+            # Compute -V x B for cross-correlation.
+            VxB = -np.cross(Vp_interval, B_interval)
+            VxB_x = VxB[:, 0]
+            VxB_y = VxB[:, 1]
+            Cxx, Cyy = compute_cross_correlation(Ex, Ey, VxB_x, VxB_y)
 
-            # Compute -V x B in V/m
-            Vp_interval_m_per_s = Vp_interval *  u.m / u.s  # km/s to m/s
-            B_interval_tesla    = B_interval * u.T           # nT to T
-            VxB_interval        = -np.cross(Vp_interval_m_per_s, B_interval_tesla)  # V/m
+            # Initialize quality flag.
+            discarded = False
 
-            VxB_x = VxB_interval[:, 0].to(u.V / u.m).value  # V/m
-            VxB_y = VxB_interval[:, 1].to(u.V / u.m).value  # V/m
+            # Quality check: compute relative uncertainties.
+            eps = 1e-10
+            r_a = sigma_a / (abs(a) + eps)
+            r_b = sigma_b / (abs(b) + eps)
+            r_c = sigma_c / (abs(c) + eps)
+            r_d = sigma_d / (abs(d) + eps)
+            max_rel_unc = max(r_a, r_b, r_c, r_d)
 
-            # Compute cross-correlation
-            Ex_value = Ex.value
-            Ey_value = Ey.value
-            Cxx, Cyy = compute_cross_correlation(Ex_value, Ey_value, VxB_x, VxB_y)
+            if max_rel_unc > rel_uncertainty_thresh:
+                # Mark the interval as unreliable.
+                a_fit = b_fit = c_fit = d_fit = np.nan
+                sigma_a_fit = sigma_b_fit = sigma_c_fit = sigma_d_fit = np.nan
+                Leff = theta = np.nan
+                Cxx = Cyy = np.nan
+                discarded = True
+            else:
+                a_fit, b_fit, c_fit, d_fit = a, b, c, d
+                sigma_a_fit, sigma_b_fit, sigma_c_fit, sigma_d_fit = sigma_a, sigma_b, sigma_c, sigma_d
 
-            # Check correlation threshold
-            if abs(Cxx) < min_correlation or abs(Cyy) < min_correlation:
-                Leff = np.nan
-                theta = np.nan
-                c_offset = np.nan
-                d_offset = np.nan
-                Cxx = np.nan
-                Cyy = np.nan
+            discard_flags.append(discarded)
 
-            # Time tag at the center of the interval
-            time_tag = time_interval[len(time_interval)//2]
             results.append({
-                'datetime' : pd.to_datetime(time_tag),
-                'Leff'     : Leff,           # meters
-                'theta'    : theta,          # degrees
-                'a'        : a,    
-                'b'        : b,   
-                'c'        : c,   # volts
-                'd'        : d,   # volts
-                'Cxx'      : Cxx,
-                'Cyy'      : Cyy
+                'interval_start': pd.to_datetime(time_interval[0]),
+                'interval_end': pd.to_datetime(time_interval[-1]),
+                'center_time': pd.to_datetime(time_interval[len(time_interval)//2]),
+                'Leff': Leff,
+                'theta': theta,
+                'a': a_fit,
+                'b': b_fit,
+                'c': c_fit,
+                'd': d_fit,
+                'sigma_a': sigma_a_fit,
+                'sigma_b': sigma_b_fit,
+                'sigma_c': sigma_c_fit,
+                'sigma_d': sigma_d_fit,
+                'Cxx': Cxx,
+                'Cyy': Cyy,
+                'discarded': discarded
             })
-            #print('worked')
-        except:
-            #Print traceback for debugging
+        except Exception as ex:
             traceback.print_exc()
-            # Handle errors
-            time_tag = time_interval[len(time_interval)//2]
+            discard_flags.append(True)
             results.append({
-                'datetime': pd.to_datetime(time_tag),
+                'interval_start': pd.to_datetime(time_interval[0]),
+                'interval_end': pd.to_datetime(time_interval[-1]),
+                'center_time': pd.to_datetime(time_interval[len(time_interval)//2]),
                 'Leff': np.nan,
                 'theta': np.nan,
-                'offset_c': np.nan,
-                'offset_d': np.nan,
+                'a': np.nan,
+                'b': np.nan,
+                'c': np.nan,
+                'd': np.nan,
+                'sigma_a': np.nan,
+                'sigma_b': np.nan,
+                'sigma_c': np.nan,
+                'sigma_d': np.nan,
                 'Cxx': np.nan,
-                'Cyy': np.nan
+                'Cyy': np.nan,
+                'discarded': True
             })
+    
     results_df = pd.DataFrame(results)
-    results_df.set_index('datetime', inplace=True)
-    return results_df
+    results_df.set_index('center_time', inplace=True)
+    # Calculate the fraction of intervals discarded.
+    discard_fraction = np.mean(results_df['discarded'])
+    
+    # Interpolate over NaN values in the final DataFrame (excluding the 'discarded' flag)
+    interp_cols = ['Leff', 'theta', 'a', 'b', 'c', 'd', 'sigma_a', 'sigma_b', 'sigma_c', 'sigma_d', 'Cxx', 'Cyy']
+    results_df[interp_cols] = results_df[interp_cols].interpolate()
 
+    return results_df, discard_fraction
 
-
-def calibrate_data(edf,
-                   coeffs):
-                                                 
+def calibrate_data(edf, coeffs):
+    """
+    Calibrate high-cadence electric field data (edf) using piecewise calibration coefficients in a vectorized manner.
     
-    # Upsample the low freq estimates of the coefficients
-    #edf, coeffs_hf = func.synchronize_dfs(edf, coeffs.interpolate().dropna(), True)
-    coeffs_hf = func.newindex( coeffs, edf.index)
+    For each high-frequency timestamp in edf, determine the corresponding calibration interval (using
+    'interval_start' and 'interval_end' from coeffs) and apply the calibration formula:
     
+        Ex = ((-a*c + a*dvx + b*d - b*dvy) / (a^2 + b^2)) * 1e3   [mV/m]
+        Ey = ((-a*d + a*dvy - b*c + b*dvx) / (a^2 + b^2)) * 1e3   [mV/m]
     
+    Parameters:
+      edf: DataFrame with columns 'dvx' and 'dvy' and a datetime index.
+      coeffs: DataFrame or tuple (DataFrame, discard_fraction) with calibration coefficients and interval boundaries.
+              Must include columns: 'interval_start', 'interval_end', 'a', 'b', 'c', and 'd'.
+              Assumes non-overlapping intervals.
+              
+    Returns:
+      DataFrame with calibrated electric field components 'Ex' and 'Ey' (in mV/m) on the same index as edf.
+      Timestamps outside valid calibration intervals are assigned NaN.
+    """
+    edf = edf.copy()
+    edf.index = pd.to_datetime(edf.index)
     
-    # Convert to astropy quantities
-    dVx = edf['dvx'].values # u.V
-    dVy = edf['dvy'].values # u.V
-    a   = coeffs_hf['a'].values      # u.m
-    b   = coeffs_hf['b'].values      # u.m
-    c   = coeffs_hf['c'].values      # u.V
-    d   = coeffs_hf['d'].values      # u.V
-
-    # Calibrate and overt to mV/v
-    Ex = ((-a*c + a*dVx + b*d - b*dVy)/(a**2 + b**2)) *1e3
-    Ey = ((-a*d + a*dVy - b*c + b*dVx)/(a**2 + b**2)) *1e3
+    # If coeffs is a tuple, extract the DataFrame
+    if isinstance(coeffs, tuple):
+        coeffs = coeffs[0]
     
-    Edf = pd.DataFrame({'datetime': edf.index.values, 'Ex': Ex, 'Ey':Ey}).set_index('datetime')
+    coeffs = coeffs.sort_values('interval_start').reset_index(drop=True)
     
-    # Interpolate missing values and drop any remaining NaNs
-    return Edf.interpolate().dropna()
-
-
-
-# def estimate_Ez(
-#                 B_df,
-#                 E_df, min_bz = 0.1):
+    for col in ['a', 'b', 'c', 'd']:
+        coeffs[col] = coeffs[col].apply(lambda x: x.value if hasattr(x, 'value') else x)
     
-#     #B_df_fin.values.T[2][np.abs(B_df_fin.values.T[2])<0.1]=np.nan
-#     B          = B_df.values
-#     E          = E_df[E_df.columns[0:2]].values
+    interval_start = coeffs['interval_start'].values.astype('datetime64[ns]')
+    interval_end = coeffs['interval_end'].values.astype('datetime64[ns]')
+    t_edf = edf.index.values.astype('datetime64[ns]')
     
+    idx = np.searchsorted(interval_start, t_edf, side='right') - 1
+    valid = (idx >= 0) & (t_edf <= interval_end[idx])
     
-#     Ez         = (-B.T[0] * E.T[0] - B.T[1] * E.T[1])/B.T[2]
+    n_points = len(t_edf)
+    a_arr = np.full(n_points, np.nan, dtype=float)
+    b_arr = np.full(n_points, np.nan, dtype=float)
+    c_arr = np.full(n_points, np.nan, dtype=float)
+    d_arr = np.full(n_points, np.nan, dtype=float)
     
+    valid_idx = np.where(valid)[0]
+    selected_idx = idx[valid_idx]
+    a_arr[valid_idx] = coeffs['a'].values[selected_idx]
+    b_arr[valid_idx] = coeffs['b'].values[selected_idx]
+    c_arr[valid_idx] = coeffs['c'].values[selected_idx]
+    d_arr[valid_idx] = coeffs['d'].values[selected_idx]
     
-#     E_df[E_df.columns[0:2][0][0]+'z'] = Ez
-#     return E_df
-
-
+    dvx = edf['dvx'].values
+    dvy = edf['dvy'].values
+    denom = a_arr**2 + b_arr**2
+    invalid_denom = (denom == 0)
+    
+    Ex = np.full(n_points, np.nan, dtype=float)
+    Ey = np.full(n_points, np.nan, dtype=float)
+    
+    valid_calc = ~np.isnan(a_arr) & ~invalid_denom
+    Ex[valid_calc] = ((-a_arr[valid_calc]*c_arr[valid_calc] +
+                       a_arr[valid_calc]*dvx[valid_calc] +
+                       b_arr[valid_calc]*d_arr[valid_calc] -
+                       b_arr[valid_calc]*dvy[valid_calc]) / denom[valid_calc]) * 1e3
+    Ey[valid_calc] = ((-a_arr[valid_calc]*d_arr[valid_calc] +
+                       a_arr[valid_calc]*dvy[valid_calc] -
+                       b_arr[valid_calc]*c_arr[valid_calc] +
+                       b_arr[valid_calc]*dvx[valid_calc]) / denom[valid_calc]) * 1e3
+    
+    Edf = pd.DataFrame({'Ex': Ex, 'Ey': Ey}, index=edf.index)
+    return Edf.dropna().interpolate()
 
 
 
@@ -470,346 +598,387 @@ def find_longest_intervals(df, thresh, M, buffer_seconds= 120):
     return intervals_sorted.head(M)
 
 
+import numpy as np
+import pandas as pd
+import traceback
 
-
-def estimate_Ez(B_df, E_df, min_bz=1, window_size = 51, n=2,  apply_hampel = True):
-    # Modify Bz in place where abs(Bz) < min_bz
+def estimate_Ez(B_df, E_df, min_bz=1, window_size=51, n=2, apply_hampel=True):
+    """
+    Estimate the missing Ez component of the electric field using the condition E · B = 0.
+    
+    Assumptions on units:
+      - B_df: DataFrame with magnetic field components (Bx, By, Bz) in nanotesla (nT).
+      - E_df: DataFrame with electric field components (Ex, Ey) in millivolts per meter (mV/m).
+    The computed Ez will be in mV/m.
+    
+    The relation used is:
+        Ez = (-Bx * Ex - By * Ey) / Bz
+    This ensures that the total electric field is perpendicular to the magnetic field.
+    
+    Procedure:
+      1. For numerical stability, any Bz values with absolute magnitude less than min_bz are set to NaN.
+      2. Ez is computed with the above formula.
+      3. The computed Ez is assigned to E_df (in a new column 'Ez'), after which missing values are interpolated and dropped.
+      4. Optionally, a Hampel filter is applied to each column of E_df to remove outliers.
+    
+    Parameters:
+      B_df (DataFrame): Magnetic field DataFrame with columns representing Bx, By, Bz in nT.
+      E_df (DataFrame): Electric field DataFrame with columns representing Ex, Ey in mV/m.
+      min_bz (float): Minimum absolute value of Bz considered valid (default 1 nT).
+      window_size (int): Window size for the Hampel filter (default 51).
+      n (int): Number of standard deviations for outlier detection in the Hampel filter (default 2).
+      apply_hampel (bool): If True, apply the Hampel filter to each column of E_df.
+    
+    Returns:
+      DataFrame: The updated E_df with an additional column 'Ez', with all field components in mV/m.
+    """
+    # --- Step 1: In-place modification of Bz ---
+    # Identify the column corresponding to Bz (assumed to be the third column)
     Bz_col = B_df.columns[2]
     Bz = B_df[Bz_col]
+    # Set values where |Bz| is less than min_bz to NaN (to avoid unstable divisions)
     mask = np.abs(Bz) < min_bz
     B_df.loc[mask, Bz_col] = np.nan
 
-    # Extract Bx, By, Bz, Ex, Ey without making copies
+    # --- Step 2: Extract field components without making unnecessary copies ---
     Bx = B_df.iloc[:, 0]
     By = B_df.iloc[:, 1]
     Bz = B_df.iloc[:, 2]
     Ex = E_df.iloc[:, 0]
     Ey = E_df.iloc[:, 1]
 
-    # Compute Ez directly; NaNs in Bz will propagate
+    # --- Step 3: Compute Ez ---
+    # Use the relation: E_z = (-B_x * E_x - B_y * E_y) / B_z.
+    # With B in nT and E in mV/m, the resulting Ez is in mV/m.
     Ez = (-Bx * Ex - By * Ey) / Bz
 
-    # Assign Ez to E_df in place
+    # Assign the computed Ez to E_df (in-place) and interpolate missing values.
     E_df['Ez'] = Ez
     E_df = E_df.interpolate().dropna()
     
-    # Apply Hampel filter if required
+    # --- Step 4: Optionally apply Hampel filter to each column for outlier removal ---
     if apply_hampel:
-        # Determine which velocity components to filter based on data presence
-        columns_for_hampel = E_df.columns
-
-        for column in columns_for_hampel:
-            print(column)
+        for column in E_df.columns:
             try:
+                print(f"Processing column: {column}")
                 filtered_arr, outliers_indices = func.hampel(E_df[column], window_size, n)
-                print('Identified', len(outliers_indices),' outliers')
-                #Edf.loc[Edf.index[outliers_indices], column] = np.nan
+                print(f"Identified {len(outliers_indices)} outliers in column: {column}")
                 E_df[column] = filtered_arr
-            except:
+            except Exception:
                 traceback.print_exc()
                 
-
     return E_df
 
 
 
-# from astropy import units as u
 
-# def block_average(data, cadence_seconds):
+
+
+# # -----------------------------------------------------------------------------
+# # Coordinate helpers
+# # -----------------------------------------------------------------------------
+
+# def project_dV(dV12: np.ndarray, dV34: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+#     """Rotate differential voltages from *whip* coordinates into spacecraft (SC).
+
+#     Parameters
+#     ----------
+#     dV12, dV34 : ndarray, shape (N,)
+#         Differential voltages from probe pairs (V).
+
+#     Returns
+#     -------
+#     dVx, dVy : ndarray, shape (N,)
+#         Voltages in SC X and Y directions (V).
 #     """
-#     Block-average data to common times at specified cadence.
-
-#     Parameters:
-#     - data: pandas DataFrame containing the data with a datetime index.
-#     - cadence_seconds: block averaging cadence in seconds (e.g., 12).
-
-#     Returns:
-#     - DataFrame with averaged data at the new cadence.
-#     """
-#     data = data.copy()
-#     data.index = pd.to_datetime(data.index)
-#     # Resample data at the specified cadence
-#     averaged_data = data#.resample(f'{cadence_seconds}S').mean()
-#     return averaged_data
-
-# def project_dV(dV12, dV34):
-#     """
-#     Project dV12 and dV34 from whip coordinates to spacecraft (SC) coordinates.
-
-#     Parameters:
-#     - dV12: numpy array of differential voltages from probes 1 and 2 (V).
-#     - dV34: numpy array of differential voltages from probes 3 and 4 (V).
-
-#     Returns:
-#     - dVX, dVY: numpy arrays of differential voltages in SC coordinates.
-#     """
-#     R_V_to_SC = np.array([[0.64524, -0.82228],
+#     R_V_TO_SC = np.array([[0.64524, -0.82228],
 #                           [0.76897,  0.57577]])
-#     dV_whip = np.vstack((dV12, dV34))
-#     dV_SC = np.dot(R_V_to_SC, dV_whip)
-#     dVX = dV_SC[0, :]
-#     dVY = dV_SC[1, :]
-#     return dVX, dVY
+#     dV_sc = R_V_TO_SC @ np.vstack((dV12, dV34))
+#     return dV_sc[0], dV_sc[1]
 
-# from scipy.optimize import curve_fit
-# import astropy.units as u
+# # -----------------------------------------------------------------------------
+# # Filtering helpers
+# # -----------------------------------------------------------------------------
 
-# def fit_coupled_linear_model(Vp, B, dVX, dVY):
+# def _butter_lowpass(cutoff: float, fs: float, order: int = 5):
+#     nyq = 0.5 * fs
+#     return butter(order, cutoff / nyq, btype="low", analog=False)
+
+
+# def apply_lowpass_filter(arr: np.ndarray, cutoff: float, fs: float,
+#                           order: int = 5) -> np.ndarray:
+#     """Zero‑phase Butterworth low‑pass using *filtfilt*."""
+#     b, a = _butter_lowpass(cutoff, fs, order)
+#     return filtfilt(b, a, arr)
+
+# # -----------------------------------------------------------------------------
+# # Robust percentile clip + interpolate
+# # -----------------------------------------------------------------------------
+
+# def percentile_filter_interpolate_ts(df: pd.DataFrame | pd.Series,
+#                                      low_pct: float = 0,
+#                                      hi_pct: float = 99.9) -> pd.DataFrame:
+#     """Column‑wise percentile clipping followed by linear interpolation.
+
+#     Any value outside the [`low_pct`, `hi_pct`] range is set to *NaN* then filled.
 #     """
-#     Fit the projected differential voltages using the coupled four-parameter linear model.
+#     out = df.copy()
+#     if isinstance(out, pd.Series):
+#         out = out.to_frame()
+#     for col in out.columns:
+#         s = out[col]
+#         valid = s.dropna()
+#         if valid.empty:
+#             continue
+#         lo, hi = np.percentile(valid, [low_pct, hi_pct])
+#         s[(s < lo) | (s > hi)] = np.nan
+#         out[col] = s.interpolate(limit_direction="both")
+#     return out if isinstance(df, pd.DataFrame) else out.iloc[:, 0]
 
-#     Parameters:
-#     - Vp: numpy array of proton velocities (km/s), shape (N, 3).
-#     - B: numpy array of magnetic field measurements (nT), shape (N, 3).
-#     - dVX, dVY: numpy arrays of differential voltages in SC coordinates (V), shape (N,).
+# # -----------------------------------------------------------------------------
+# # Window‑level fit (private)
+# # -----------------------------------------------------------------------------
 
-#     Returns:
-#     - a, b, c, d: fitted parameters of the model (a and b in meters, c and d in volts).
+# def _fit_window(start_ns: int, end_ns: int,
+#                 t: np.ndarray,
+#                 VxB_x: np.ndarray, VxB_y: np.ndarray,
+#                 dVx: np.ndarray, dVy: np.ndarray,
+#                 robust: bool = True):
+#     """Internal routine: least‑squares fit of the 4‑parameter model on one window."""
+#     mask = (t >= start_ns) & (t <= end_ns)
+#     if mask.sum() < 10:
+#         return None  # not enough points
+#     X1, X2 = VxB_x[mask], VxB_y[mask]
+#     Y1, Y2 = dVx[mask], dVy[mask]
+
+#     def residual(p):
+#         a, b, c, d = p
+#         r1 = Y1 - (a * X1 + b * X2 + c)
+#         r2 = Y2 - (a * X2 - b * X1 + d)
+#         return np.hstack([r1, r2])
+
+#     # OLS initial guess on first equation
+#     A = np.vstack([X1, X2, np.ones_like(X1)]).T
+#     beta, *_ = np.linalg.lstsq(A, Y1, rcond=None)
+#     p0 = [beta[0], beta[1], beta[2], 0.0]
+
+#     res = least_squares(residual, p0,
+#                         loss="huber" if robust else "linear")
+#     a, b, c, d = res.x
+#     q = 1.0 / (1.0 + np.sqrt(res.cost / res.fun.size))  # quality 0–1
+#     return start_ns, end_ns, a, b, c, d, q
+
+# # -----------------------------------------------------------------------------
+# # Main calibration pipeline
+# # -----------------------------------------------------------------------------
+
+
+
+
+# def calibrate_electric_field(edf: pd.DataFrame,
+#                              vdf: pd.DataFrame,
+#                              bdf: pd.DataFrame,
+#                              window: str                   = "30s",
+#                              overlap: float                = 0.9,
+#                              lowpass_hz: float | None      = None,
+#                              lowpass_order: int            = 5,
+#                              pct_clip: Tuple[float, float] = (0, 99.9),
+#                              robust_ls: bool               = True,
+#                              n_jobs: int                   = -1,
+#                              func_module                   = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
+#     """Calibrate *dvx,dvy* to *Ex,Ey* using overlapping Hann‑weighted windows.
+
+#     Parameters
+#     ----------
+#     edf : DataFrame
+#         High‑rate differential voltages with columns ``dvx`` and ``dvy`` (V).
+#     vdf : DataFrame
+#         Spacecraft velocity ``Vx,Vy,Vz`` (km/s).
+#     bdf : DataFrame
+#         Magnetic field ``Bx,By,Bz`` (nT).
+#     window : str, default "30s"
+#         Window length – any pandas offset alias.
+#     overlap : float, default 0.9
+#         Fractional overlap between successive windows (0 ≤ overlap < 1).
+#     lowpass_hz : float or None
+#         Apply zero‑phase Butterworth low‑pass to both *V* and *B* before the fit.
+#     lowpass_order : int, default 5
+#         Filter order for ``lowpass_hz``.
+#     pct_clip : (low, high)
+#         Percentile bounds for final Ex/Ey clipping.
+#     robust_ls : bool, default True
+#         Use Huber loss in ``scipy.optimize.least_squares``.
+#     n_jobs : int, default ‑1
+#         Parallel workers (joblib).  *‑1* → all cores.
+#     func_module : module or None
+#         Module providing ``synchronize_dfs``.  If ``None`` we try to import
+#         ``general_functions as func``.
+
+#     Returns
+#     -------
+#     E_cal : DataFrame
+#         Calibrated ``Ex,Ey`` (mV/m) on the edf index.
+#     coeffs : DataFrame
+#         Window‑level coefficients ``a,b,c,d`` plus quality weights.
 #     """
-#     # Convert Vp from km/s to m/s and B from nT to T
-#     Vp_m_per_s = Vp * u.m / u.s  # Convert to Quantity with units
-#     B_tesla    = B * u.T  # Convert to Quantity with units
 
-#     # Compute -Vp x B (units: V/m)
-#     VxB = -np.cross(Vp_m_per_s, B_tesla)  # Units: (m/s) x (T) = V/m
-
-#     # Extract x and y components and convert to numeric values in V/m
-#     VpxBx = VxB[:, 0].to(u.V / u.m).value
-#     VpxBy = VxB[:, 1].to(u.V / u.m).value
-
-#     # Define the model for dVX and dVY
-#     def model(xdata, a, b, c, d):
-#         VpxBx, VpxBy = xdata
-#         dVX = a * VpxBx + b * VpxBy + c
-#         dVY = -b * VpxBx + a * VpxBy + d
-#         return np.concatenate([dVX, dVY])
-
-#     # Stack the independent variables into one array
-#     xdata = np.vstack((VpxBx, VpxBy))
-
-#     # Concatenate the dependent variables (observed dVX and dVY)
-#     ydata = np.concatenate([dVX, dVY])
-
-#     # Initial guess for parameters (a, b, c, d)
-#     initial_params = [1, 1, 0, 0]
-
-#     # Perform the curve fitting
-#     params_opt, _ = curve_fit(model, xdata, ydata, p0=initial_params)
-
-#     # Unpack the optimized parameters
-#     a_opt, b_opt, c_opt, d_opt = params_opt
-
-#     return a_opt, b_opt, c_opt, d_opt
-
-
-# def invert_parameters_to_calibration_coefficients(a, b, c, d):
-#     """
-#     Invert the model parameters to obtain calibration coefficients.
-
-#     Parameters:
-#     - a, b: effective dipole components (meters).
-#     - c, d: offset voltages (volts).
-
-#     Returns:
-#     - Leff: effective dipole length (meters).
-#     - theta: rotation angle (degrees).
-#     - c, d: offset voltages (volts).
-#     """
-#     Leff   = np.sqrt(a**2 + b**2)        # meters
-#     theta  = np.degrees(np.arctan(b/a))  # degrees
-#     return Leff, theta, c, d
-
-# def compute_cross_correlation(Ex, Ey, VxB_x, VxB_y):
-#     """
-#     Compute the cross-correlation between calibrated E-fields and -V x B.
-
-#     Parameters:
-#     - Ex, Ey: calibrated electric field components (V/m).
-#     - VxB_x, VxB_y: components of -V x B (V/m).
-
-#     Returns:
-#     - Cxx, Cyy: cross-correlation coefficients.
-#     """
-#     Ex_zero_mean = Ex - np.mean(Ex)
-#     Ey_zero_mean = Ey - np.mean(Ey)
-#     VxB_x_zero_mean = VxB_x - np.mean(VxB_x)
-#     VxB_y_zero_mean = VxB_y - np.mean(VxB_y)
-
-#     Cxx = np.corrcoef(Ex_zero_mean, VxB_x_zero_mean)[0, 1]
-#     Cyy = np.corrcoef(Ey_zero_mean, VxB_y_zero_mean)[0, 1]
-
-#     return Cxx, Cyy
-
-
-# def synchronize_merge_dfs(bdf, vdf, edf):
+#     try:
+#         # --- 0. housekeeping -----------------------------------------------------
+#         if func_module is None:
+#             import general_functions as func_module  # type: ignore
     
-#     # Synchronize
-#     edf, vdf                      = func.synchronize_dfs(edf, vdf, False)
-#     bdf, vdf                      = func.synchronize_dfs(bdf, vdf, False)
+#         edf, _ = func_module.synchronize_dfs(edf, vdf, False)
+#         edf, _ = func_module.synchronize_dfs(edf, bdf, False)
+#         vdf, bdf = func_module.synchronize_dfs(vdf, bdf, False)
+    
+#         df = edf.copy()
+#         df[["Vx", "Vy", "Vz"]] = vdf
+#         df[["Bx", "By", "Bz"]] = bdf
+#         df = df.dropna()
+    
+#         # --- 1. optional low‑pass -------------------------------------------------
+#         if lowpass_hz is not None:
+#             dt = np.median(np.diff(df.index.view("int64"))) * 1e-9  # seconds
+#             fs = 1.0 / dt
+#             for col in ("Vx", "Vy", "Vz", "Bx", "By", "Bz"):
+#                 df[col] = apply_lowpass_filter(df[col].values, lowpass_hz, fs,
+#                                                order=lowpass_order)
+    
+#         # --- 2. pre‑compute arrays ----------------------------------------------
+#         V = df[["Vx", "Vy", "Vz"]].values * 1e3  # km/s → m/s
+#         B = df[["Bx", "By", "Bz"]].values * 1e-9  # nT  → T
+#         VxB = -np.cross(V, B)
+#         VxB_x, VxB_y = VxB[:, 0], VxB[:, 1]
+#         dVx = df["dvx"].values
+#         dVy = df["dvy"].values
+#         t_ns = df.index.view("int64")
+    
+#         # --- 3. window list ------------------------------------------------------
+#         win_ns = pd.to_timedelta(window).value
+#         step_ns = int(win_ns * (1 - overlap))
+#         starts = np.arange(t_ns[0], t_ns[-1] - win_ns + 1, step_ns)
+#         ends = starts + win_ns
+    
+#         # --- 4. fit all windows in parallel -------------------------------------
+#         coeff_cols = ["start", "end", "a", "b", "c", "d", "q"]
+#         results: List[Tuple] = Parallel(n_jobs=n_jobs)(
+#             delayed(_fit_window)(s, e, t_ns, VxB_x, VxB_y, dVx, dVy, robust_ls)
+#             for s, e in zip(starts, ends)
+#         )
+#         coeffs = pd.DataFrame([r for r in results if r is not None],
+#                               columns=coeff_cols)
+#         if coeffs.empty:
+#             raise RuntimeError("No successful window fits – check input data.")
+    
+#         # --- 5. overlap‑add synthesis -------------------------------------------
+#         n_pts = len(df)
+#         Ex_sum = np.zeros(n_pts)
+#         Ey_sum = np.zeros(n_pts)
+#         W_sum = np.zeros(n_pts)
+    
+#         for row in coeffs.itertuples(index=False):  # type: ignore
+#             s, e, a, b, c, d, q = row
+#             mask = (t_ns >= s) & (t_ns <= e)
+#             if not mask.any():
+#                 continue
+#             idx = np.where(mask)[0]
+#             tau = (t_ns[idx].astype("float64") - s) / win_ns  # 0–1
+#             w = 0.5 * (1 - np.cos(2 * np.pi * tau)) * q        # Hann × quality
+#             denom = a * a + b * b
+#             Ex_win = ((-a * c + a * dVx[idx] + b * d - b * dVy[idx]) / denom) * 1e3
+#             Ey_win = ((-a * d + a * dVy[idx] - b * c + b * dVx[idx]) / denom) * 1e3
+#             Ex_sum[idx] += w * Ex_win
+#             Ey_sum[idx] += w * Ey_win
+#             W_sum[idx] += w
+    
+#         valid = W_sum > 0
+#         Ex = np.full(n_pts, np.nan)
+#         Ey = np.full(n_pts, np.nan)
+#         Ex[valid] = Ex_sum[valid] / W_sum[valid]
+#         Ey[valid] = Ey_sum[valid] / W_sum[valid]
+    
+#         E_cal = pd.DataFrame({"Ex": Ex, "Ey": Ey}, index=df.index)
+    
+#         # --- 6. final percentile clip + fill ------------------------------------
+#         E_cal = percentile_filter_interpolate_ts(E_cal, *pct_clip)
+#         E_cal = E_cal.ffill().bfill()
+#     except:
+#         traceback.print_exc()
 
-#     # Merge
-#     fin_data                      = edf
-#     fin_data[['Vx', 'Vy', 'Vz']]  = vdf
-#     fin_data[['Bx', 'By', 'Bz']]  = bdf
+#     return E_cal, coeffs
 
-#     # Interpolate dropna
-#     return fin_data.interpolate().dropna()
+# # -----------------------------------------------------------------------------
+# # Interval utilities
+# # -----------------------------------------------------------------------------
 
+# def find_longest_intervals(df: pd.DataFrame, thresh: float, M: int,
+#                            buffer_s: int = 120) -> pd.DataFrame:
+#     """Return the *M* longest contiguous intervals with |Bz| > *thresh* nT.
 
-# def process_data(bdf, vdf, edf, cadence_seconds=12, fit_interval_minutes=4, stride_minutes=1, min_correlation=0.5):
+#     A ±buffer is trimmed off each end, and intervals are clipped to the data span.
 #     """
-#     Process the data to compute calibration coefficients over sliding intervals.
+#     mask = df["Bz"].abs() > thresh
+#     df = df.copy()
+#     df["interval_start"] = mask & ~mask.shift(1, fill_value=False)
+#     df["group"] = (df["interval_start"].cumsum() * mask)
+#     grouped = df[df["group"] != 0].groupby("group")
 
-#     Parameters:
-#     - data: pandas DataFrame containing the data with a datetime index.
-#     - cadence_seconds: block averaging cadence in seconds (e.g., 12).
-#     - fit_interval_minutes: length of each fitting interval in minutes (e.g., 4).
-#     - stride_minutes: stride length between intervals in minutes (e.g., 1).
-#     - min_correlation: minimum acceptable cross-correlation value (e.g., 0.5).
+#     intervals = pd.DataFrame({
+#         "start": grouped.apply(lambda x: x.index.min()),
+#         "end": grouped.apply(lambda x: x.index.max())
+#     })
+#     intervals["start"] += pd.Timedelta(seconds=buffer_s)
+#     intervals["end"] -= pd.Timedelta(seconds=buffer_s)
+#     intervals = intervals[intervals["start"] <= intervals["end"]]
 
-#     Returns:
-#     - DataFrame containing calibration coefficients and correlation metrics.
+#     # indices + duration
+#     intervals["duration_s"] = (intervals["end"] - intervals["start"]).dt.total_seconds()
+#     return intervals.sort_values("duration_s", ascending=False).head(M)
+
+# # -----------------------------------------------------------------------------
+# # Ez reconstruction
+# # -----------------------------------------------------------------------------
+
+# def estimate_Ez(B_df: pd.DataFrame, E_df: pd.DataFrame,
+#                 min_bz: float = 1.0,
+#                 hampel_window: int = 51,
+#                 hampel_n: int = 2,
+#                 func_module=None) -> pd.DataFrame:
+#     """Compute missing Ez under the assumption *E·B = 0* and optional Hampel filter.
+
+#     All inputs/outputs are assumed in units:
+#     * B – nT;  E – mV/m;  Ez returned in mV/m.
 #     """
-    
-#     # Synchronize dfs
-#     data           = synchronize_merge_dfs(bdf, vdf, edf)
-#     cadence_seconds= func.find_cadence(vdf)
-    
-#     # Find mov averages
-#     averaged_data = block_average(data, cadence_seconds)
+#     if func_module is None:
+#         import general_functions as func_module  # type: ignore
 
-#     # Extract variables
-#     #print(averaged_data)
+#     B_df = B_df.copy()
+#     E_df = E_df.copy()
+#     Bz = B_df.iloc[:, 2]
+#     B_df.loc[Bz.abs() < min_bz, B_df.columns[2]] = np.nan
 
-#     B       = (averaged_data[['Bx', 'By', 'Bz']].values  * 1e-9 * u.T).value    # T
-#     Vp      = (averaged_data[['Vx', 'Vy', 'Vz']].values  * 1e3 * u.m / u.s ).value # m/s
+#     Bx, By, Bz = (B_df.iloc[:, i] for i in range(3))
+#     Ex, Ey = (E_df.iloc[:, i] for i in range(2))
+#     Ez = (-Bx * Ex - By * Ey) / Bz
+#     E_df["Ez"] = Ez
+#     E_df = E_df.interpolate().dropna()
 
-#     # Project to SC coordinates
-#     dVX     = (averaged_data['dvx'].values.T * u.V).value # Volt
-#     dVY     = (averaged_data['dvy'].values.T * u.V).value # Volt
-
-#     times = averaged_data.index.values
-#     N     = len(averaged_data)
-#     points_per_interval  = int((fit_interval_minutes * 60) / cadence_seconds)
-#     points_per_stride    = int((stride_minutes * 60) / cadence_seconds)
-    
-#     if points_per_interval < 1:
-#         points_per_interval = 1
-#     if points_per_stride < 1:
-#         points_per_stride = 1
-#     results = []
-#     num_intervals = int((N - points_per_interval) / points_per_stride) + 1
-
-#     for i in range(num_intervals):
-#         start_idx = i * points_per_stride
-#         end_idx   = start_idx + points_per_interval
-#         if end_idx > N:
-#             break
-#         dVX_interval  = dVX[start_idx:end_idx]
-#         dVY_interval  = dVY[start_idx:end_idx]
-#         Vp_interval   = Vp[start_idx:end_idx]
-#         B_interval    = B[start_idx:end_idx]
-#         time_interval = times[start_idx:end_idx]
+#     # optional Hampel outlier removal
+#     for col in E_df.columns:
 #         try:
-#             a, b, c, d = fit_coupled_linear_model(Vp_interval, B_interval, dVX_interval, dVY_interval)
+#             clean, _ = func_module.hampel(E_df[col], hampel_window, hampel_n)
+#             E_df[col] = clean
+#         except Exception:
+#             pass
 
-#             # Invert parameters to calibration coefficients
-#             Leff, theta, _, _ = invert_parameters_to_calibration_coefficients(a, b, c, d)
+#     return E_df
 
-
-#             # Convert to astropy quantities
-#             Ex = ((-a*c + a*dVX_interval + b*d - b*dVY_interval)/(a**2 + b**2)) * u.V / u.m
-#             Ey = ((-a*d + a*dVY_interval - b*c + b*dVX_interval)/(a**2 + b**2)) * u.V / u.m
-
-#             # Compute -V x B in V/m
-#             Vp_interval_m_per_s = Vp_interval *  u.m / u.s  # km/s to m/s
-#             B_interval_tesla    = B_interval * u.T           # nT to T
-#             VxB_interval        = -np.cross(Vp_interval_m_per_s, B_interval_tesla)  # V/m
-
-#             VxB_x = VxB_interval[:, 0].to(u.V / u.m).value  # V/m
-#             VxB_y = VxB_interval[:, 1].to(u.V / u.m).value  # V/m
-
-#             # Compute cross-correlation
-#             Ex_value = Ex.value
-#             Ey_value = Ey.value
-#             Cxx, Cyy = compute_cross_correlation(Ex_value, Ey_value, VxB_x, VxB_y)
-
-#             # Check correlation threshold
-#             if abs(Cxx) < min_correlation or abs(Cyy) < min_correlation:
-#                 Leff = np.nan
-#                 theta = np.nan
-#                 c_offset = np.nan
-#                 d_offset = np.nan
-#                 Cxx = np.nan
-#                 Cyy = np.nan
-
-#             # Time tag at the center of the interval
-#             time_tag = time_interval[len(time_interval)//2]
-#             results.append({
-#                 'datetime' : pd.to_datetime(time_tag),
-#                 'Leff'     : Leff,           # meters
-#                 'theta'    : theta,         # degrees
-#                 'a'        : a,    
-#                 'b'        : b,   
-#                 'c'        : c,   # volts
-#                 'd'        : d,   # volts
-#                 'Cxx'      : Cxx,
-#                 'Cyy'      : Cyy
-#             })
-#             #print('worked')
-#         except Exception as e:
-#             #Print traceback for debugging
-#             traceback.print_exc()
-#             # Handle errors
-#             time_tag = time_interval[len(time_interval)//2]
-#             results.append({
-#                 'datetime': pd.to_datetime(time_tag),
-#                 'Leff': np.nan,
-#                 'theta': np.nan,
-#                 'offset_c': np.nan,
-#                 'offset_d': np.nan,
-#                 'Cxx': np.nan,
-#                 'Cyy': np.nan
-#             })
-#     results_df = pd.DataFrame(results)
-#     results_df.set_index('datetime', inplace=True)
-#     return results_df
-
-
-
-# def calibrate_data(edf, coeffs, apply_hampel= True, window_size=200, n=3):
-                                                 
-    
-#     # Upsample the low freq estimates of the coefficients
-#     #edf, coeffs_hf = func.synchronize_dfs(edf, coeffs.interpolate().dropna(), True)
-#     coeffs_hf = func.newindex( coeffs, edf.index)
-    
-    
-    
-#     # Convert to astropy quantities
-#     dVx = edf['dvx'].values # u.V
-#     dVy = edf['dvy'].values # u.V
-#     a   = coeffs_hf['a'].values      # u.m
-#     b   = coeffs_hf['b'].values      # u.m
-#     c   = coeffs_hf['c'].values      # u.V
-#     d   = coeffs_hf['d'].values      # u.V
-
-#     # Calibrate and overt to mV/v
-#     Ex = ((-a*c + a*dVx + b*d - b*dVy)/(a**2 + b**2)) *1e3
-#     Ey = ((-a*d + a*dVy - b*c + b*dVx)/(a**2 + b**2)) *1e3
-    
-    
-#     Edf = pd.DataFrame({'datetime': edf.index.values, 'Ex': Ex, 'Ey':Ey}).set_index('datetime')
-    
-
-
-
-# #     # Replace 'Ex' and 'Ey' with NaN where the condition is True
-# #     Edf.loc[(np.abs(Edf['Ex']) > 4e1) | (np.abs(Edf['Ey']) > 4e1), ['Ex', 'Ey']] = np.nan
-    
-
-
-
-#     # Interpolate missing values and drop any remaining NaNs
-#     return Edf.interpolate().dropna()
+# __all__: List[str] = [
+#     "project_dV",
+#     "apply_lowpass_filter",
+#     "percentile_filter_interpolate_ts",
+#     "calibrate_electric_field",
+#     "find_longest_intervals",
+#     "estimate_Ez",
+# ]  # for * import cleanliness
 

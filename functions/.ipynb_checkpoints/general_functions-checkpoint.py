@@ -1,7 +1,6 @@
 import os
 import numpy as np
 import pandas as pd
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -17,7 +16,7 @@ import joblib
 from joblib import Parallel, delayed
 import statistics
 from statistics import mode
-import orderedstructs
+#import orderedstructs
 import sys
 import pytplot
 
@@ -31,6 +30,241 @@ sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
 
 from plasma_params import*
 import signal_processing 
+
+
+import numpy as np
+from joblib import Parallel, delayed
+
+import numpy as np
+from joblib import Parallel, delayed
+
+import numpy as np
+from joblib import Parallel, delayed
+
+def compute_quantile_edges_function(
+    x, y,
+    Nx_bins, Ny_bins,
+    *,
+    log_x=True,
+    poly_order=None,
+    n_jobs=-1,
+    return_counts=False, return_avg_y=False,
+    low_pct=0.05, high_pct=99.8,
+):
+    """
+    Identical behaviour to the previous version but:
+      • y-values outside the [low_pct, high_pct] range are discarded;
+      • polynomial fits are weighted by the # of points in each x-bin.
+    """
+    # ---------- input checks & percentile clipping -------------------
+    x = np.asarray(x, float).ravel()
+    y = np.asarray(y, float).ravel()
+    if x.shape != y.shape:
+        raise ValueError("x and y must have the same length")
+    if not (0 <= low_pct < high_pct <= 100):
+        raise ValueError("0 ≤ low_pct < high_pct ≤ 100")
+
+    lo, hi = np.percentile(y, [low_pct, high_pct])
+    keep   = (y >= lo) & (y <= hi)
+    x, y   = x[keep], y[keep]
+
+    # ---------- x-bin edges ------------------------------------------
+    x_edges = (np.logspace(np.log10(x.min()), np.log10(x.max()), Nx_bins + 1)
+               if log_x else
+               np.linspace(x.min(), x.max(), Nx_bins + 1))
+
+    order                = np.argsort(x)
+    x_sorted, y_sorted   = x[order], y[order]
+    bin_idx              = np.searchsorted(x_sorted, x_edges)
+    q_levels             = np.linspace(0.0, 1.0, Ny_bins + 1)
+
+    # ---------- quantiles per x-bin ----------------------------------
+    def _bin_q(i):
+        s, e = bin_idx[i], bin_idx[i + 1]
+        return (np.quantile(y_sorted[s:e], q_levels)
+                if e - s >= 2 else np.full_like(q_levels, np.nan))
+
+    y_edges_per_bin = np.vstack(
+        Parallel(n_jobs=n_jobs)(delayed(_bin_q)(i) for i in range(Nx_bins))
+    )
+    x_centres = 0.5 * (x_edges[:-1] + x_edges[1:])
+    bin_sizes = np.diff(bin_idx)                            # <-- counts for weighting
+
+    # ---------- counts / averages if requested -----------------------
+    counts = av_y = None
+    if return_counts or return_avg_y:
+        def _stats(i):
+            s, e = bin_idx[i], bin_idx[i + 1]
+            if e - s < 1:
+                return np.zeros(Ny_bins, int), np.full(Ny_bins, np.nan)
+            yy = y_sorted[s:e]
+            c, _ = np.histogram(yy, bins=y_edges_per_bin[i])
+            av  = np.array([
+                yy[(yy >= y_edges_per_bin[i,j]) & (yy < y_edges_per_bin[i,j+1])].mean()
+                if c[j] else np.nan for j in range(Ny_bins)
+            ])
+            return c, av
+        tmp = Parallel(n_jobs=n_jobs)(delayed(_stats)(i) for i in range(Nx_bins))
+        if return_counts: counts = np.vstack([t[0] for t in tmp])
+        if return_avg_y : av_y   = np.vstack([t[1] for t in tmp])
+
+    # ---------- weighted polynomial fits -----------------------------
+    edge_functions      = None
+    quantile_classifier = None
+    if isinstance(poly_order, int) and poly_order >= 0:
+        edge_functions = []
+        for j in range(Ny_bins + 1):
+            ok  = (~np.isnan(y_edges_per_bin[:, j])) & (bin_sizes > 0)
+            coeffs = np.polyfit(
+                x_centres[ok],
+                y_edges_per_bin[ok, j],
+                poly_order,
+                w = np.sqrt(bin_sizes[ok])                 # weight = # points in x-bin
+            )
+            edge_functions.append(np.poly1d(coeffs))
+        def _classifier(x0, y0):
+            edges = np.array([f(x0) for f in edge_functions])
+            return np.searchsorted(edges, y0, side="right") - 1
+        quantile_classifier = _classifier
+
+    # ---------- return ------------------------------------------------
+    out = dict(
+        x_edges=x_edges,
+        x_centres=x_centres,
+        y_edges_per_bin=y_edges_per_bin,
+    )
+    if edge_functions is not None:
+        out["edge_functions"]      = edge_functions
+        out["quantile_classifier"] = quantile_classifier
+    if counts is not None:  out["counts"]      = counts
+    if av_y   is not None:  out["av_y_values"] = av_y
+    return out
+
+
+
+
+
+def compute_optimal_y_bins(x,
+                           y,
+                           Nx_bins,
+                           Ny_bins,
+                           log_x         = True,
+                           n_jobs        = -1,
+                           return_counts = False,
+                           return_avg_y  = False):
+    """
+    Given arrays x and y, this function:
+      1. Creates Nx_bins x bins (using linear or logarithmic spacing).
+      2. Within each x bin, splits the corresponding y values into Ny_bins bins (via quantiles).
+      3. Computes the optimal y bin edges as the median of the y bin edges computed across x bins.
+      4. Optionally returns:
+         - counts: a (Nx_bins, Ny_bins) counts matrix (number of points per x bin for each global y bin).
+         - avg_y: overall average y per x bin.
+         - av_y_values: a (Nx_bins, Ny_bins) matrix of the cell‐averaged y values.
+    
+    Returns a dictionary with keys:
+        'x_edges': x bin edges,
+        'y_edges': optimal y bin edges,
+        'x': x bin centers,
+        and optionally 'counts', 'avg_y', 'av_y_values'.
+    """
+    def _compute_quantile_for_bin(start, end, y_sorted, q):
+        if start == end:
+            return None
+        return np.quantile(y_sorted[start:end], q)
+    
+    def _compute_counts_for_xbin(i, bin_idx, y_sorted, optimal_y_edges, Ny_bins):
+        start, end = bin_idx[i], bin_idx[i+1]
+        if start == end:
+            return np.zeros(Ny_bins, dtype=int)
+        return np.histogram(y_sorted[start:end], bins=optimal_y_edges)[0]
+    
+    def _compute_cell_avg_for_xbin(i, bin_idx, y_sorted, optimal_y_edges, Ny_bins):
+        start, end = bin_idx[i], bin_idx[i+1]
+        if start == end:
+            return np.full(Ny_bins, np.nan)
+        y_cell = y_sorted[start:end]
+        avg_values = np.empty(Ny_bins, dtype=float)
+        for j in range(Ny_bins):
+            lower = optimal_y_edges[j]
+            upper = optimal_y_edges[j+1]
+            # Use a half-open interval except for the last bin
+            if j < Ny_bins - 1:
+                mask = (y_cell >= lower) & (y_cell < upper)
+            else:
+                mask = (y_cell >= lower) & (y_cell <= upper)
+            avg_values[j] = np.mean(y_cell[mask]) if np.any(mask) else np.nan
+        return avg_values
+    
+    def _compute_avg_for_xbin(i, bin_idx, y_sorted):
+        start, end = bin_idx[i], bin_idx[i+1]
+        return np.mean(y_sorted[start:end]) if start != end else np.nan
+    
+
+
+    
+    results = {}
+
+    # Ensure arrays
+    x = np.asarray(x)
+    y = np.asarray(y)
+    
+    # Compute x bin edges (linear or logarithmic)
+    if log_x:
+        x_edges = np.logspace(np.log10(x.min()), np.log10(x.max()), Nx_bins+1)
+    else:
+        x_edges = np.linspace(x.min(), x.max(), Nx_bins+1)
+    results['x_edges'] = x_edges
+
+    # Sort x and y for fast slicing
+    order = np.argsort(x)
+    x_sorted = x[order]
+    y_sorted = y[order]
+    
+    # Find indices corresponding to x bin boundaries
+    bin_idx = np.searchsorted(x_sorted, x_edges)
+    
+    # Precompute quantile levels for Ny_bins bins
+    q = np.linspace(0, 1, Ny_bins+1)
+    
+    # Parallel computation: compute quantile edges for each x bin
+    quantiles = Parallel(n_jobs=n_jobs)(
+        delayed(_compute_quantile_for_bin)(bin_idx[i], bin_idx[i+1], y_sorted, q)
+        for i in range(Nx_bins)
+    )
+    
+    # Compute x bin centers
+    xb = x_edges[:-1] + 0.5 * (x_edges[1:] - x_edges[:-1])
+    results['x'] = xb
+
+    # Filter out empty x bins
+    valid_quantiles = [q_arr for q_arr in quantiles if q_arr is not None]
+    if not valid_quantiles:
+        raise ValueError("No valid x bins with data found.")
+    
+    # Stack per-bin quantile arrays and compute median across x bins to get global y edges
+    y_quantiles = np.vstack(valid_quantiles)
+    optimal_y_edges = np.median(y_quantiles, axis=0)
+    results['y_edges'] = optimal_y_edges
+    
+    if return_counts:
+        counts_list = Parallel(n_jobs=n_jobs)(
+            delayed(_compute_counts_for_xbin)(i, bin_idx, y_sorted, optimal_y_edges, Ny_bins)
+            for i in range(Nx_bins)
+        )
+        counts = np.vstack(counts_list)
+        results['counts'] = counts
+    
+
+    if return_avg_y:
+        cell_avg_list = Parallel(n_jobs=n_jobs)(
+            delayed(_compute_cell_avg_for_xbin)(i, bin_idx, y_sorted, optimal_y_edges, Ny_bins)
+            for i in range(Nx_bins)
+        )
+        cell_avg_y = np.vstack(cell_avg_list)
+        results['av_y_values'] = cell_avg_y
+    
+    return results
 
 
 
@@ -52,8 +286,6 @@ def ensure_iterable(obj):
     else:
         return [obj]
 
-
-import orderedstructs
 
 def savepickle_dill(df_2_save, save_path, filename):
     file_path = Path(save_path).joinpath(filename)
@@ -140,11 +372,11 @@ def compute_curvature(x, y):
     
     return curvature
 
-
+import pytplot
 def tplot_to_dataframe(file_path, 
-                       var_name=None, 
-                       convert_time_to_datetime=True,
-                       time_unit='s'):
+                       var_name                 = None, 
+                       convert_time_to_datetime = True,
+                       time_unit                = 's'):
     """
     Restore a TPlot file (IDL .tplot or .sav with TPlot variables) using pytplot
     and convert a specified TPlot variable into a pandas DataFrame with a DateTimeIndex.
@@ -246,7 +478,7 @@ def tplot_to_dataframe(file_path,
         # Name each column var_name_0, var_name_1, etc.
         col_count = data_vals.shape[1]
         col_names = [f"{var_name}_{i}" for i in range(col_count)]
-        df = pd.DataFrame(data_vals, index=time_index, columns=col_names)
+        df        = pd.DataFrame(data_vals, index=time_index, columns=col_names)
 
     return df
 
@@ -460,6 +692,44 @@ def custom_nansum_product(xvec, yvec, axis):
                 if not np.isnan(xvec[j, i]) and not np.isnan(yvec[j, i]):
                     result[j] += xvec[j, i] * yvec[j, i]
     return result
+
+
+
+
+import sqlite3
+import os
+
+def print_last_100_commands():
+    # Locate the default IPython history file.
+    # If you use a different profile, adjust the path accordingly.
+    history_path = os.path.expanduser("~/.ipython/profile_default/history.sqlite")
+    
+    if not os.path.exists(history_path):
+        print("IPython history file not found. Check your IPython profile settings.")
+        return
+
+    # Connect to the SQLite database
+    conn = sqlite3.connect(history_path)
+    cursor = conn.cursor()
+    
+    # The history is stored in a table named 'history' where each row represents a command.
+    # This query orders by the session and line number in descending order, then limits to 30 entries.
+    query = """
+        SELECT source
+        FROM history
+        ORDER BY session DESC, line DESC
+        LIMIT 100
+    """
+    cursor.execute(query)
+    commands = cursor.fetchall()
+
+    conn.close()
+
+    # Print each command cell
+    for idx, (command,) in enumerate(commands, start=1):
+        print(f"--- Command {idx} ---")
+        print(command)
+        print()
 
 
 
@@ -860,117 +1130,82 @@ def smooth_filter(xv, arr, window):
     return smooth_grad
 
 
+import numpy as np
+import pandas as pd
+from numba import njit
+import matplotlib.pyplot as plt
+
 @njit
-def custom_median(array):
-    sorted_array = np.sort(array)
-    n = len(sorted_array)
-    middle = n // 2
+def custom_median(arr):
+    """Compute the median of a 1D array."""
+    sarr = np.sort(arr)
+    n = sarr.shape[0]
+    mid = n // 2
     if n % 2 == 0:
-        return 0.5 * (sorted_array[middle - 1] + sorted_array[middle])
+        return 0.5 * (sarr[mid - 1] + sarr[mid])
     else:
-        return sorted_array[middle]
+        return sarr[mid]
 
 @njit
-def calc_medians(window_size, arr, medians):
-    half_window = window_size // 2
-    n = len(arr)
-    for i in range(half_window, n - half_window):
-        window = arr[i - half_window:i + half_window + 1]
-        medians[i] = custom_median(window)
-    return medians
-
-@njit
-def calc_medians_std(window_size, arr, medians_diff, medians):
-    half_window = window_size // 2
-    k = 1.4826  # Scale factor for Gaussian distribution
-    n = len(arr)
-    for i in range(half_window, n - half_window):
-        window = arr[i - half_window:i + half_window + 1]
-        median = medians[i]
-        abs_deviation = np.abs(window - median)
-        mad = custom_median(abs_deviation)
-        medians_diff[i] = k * mad
-    return medians_diff
-
-@njit(parallel=True)
-def calc_medians_parallel(window_size, arr, medians):
-    half_window = window_size // 2
-    n = len(arr)
-    for i in prange(half_window, n - half_window):
-        window     = arr[i - half_window:i + half_window + 1]
-        medians[i] = custom_median(window)
-    return medians
-
-@njit(parallel=True)
-def calc_medians_std_parallel(window_size, arr, medians_diff, medians):
-    half_window = window_size // 2
-    k = 1.4826
-    n = len(arr)
-    for i in prange(half_window, n - half_window):
-        window = arr[i - half_window:i + half_window + 1]
-        median = medians[i]
-        abs_deviation = np.abs(window - median)
-        mad = custom_median(abs_deviation)
-        medians_diff[i] = k * mad
-    return medians_diff
-
-def hampel(arr, window_size=5, n=3, parallel=True):
+def hampel_filter_core(arr, window_size, n_sigmas):
     """
-    Apply Hampel filter to despike a time series by removing spurious data points.
+    Core Hampel filter that processes every element.
+    At the boundaries the window is reduced to the available points.
+    """
+    half_window = window_size // 2
+    n = arr.shape[0]
+    filtered = arr.copy()
+    for i in range(n):
+        # Determine window boundaries (using available points at edges)
+        start = i - half_window if i - half_window >= 0 else 0
+        end = i + half_window + 1 if i + half_window + 1 <= n else n
+        window = arr[start:end]
+        med = custom_median(window)
+        mad = custom_median(np.abs(window - med))
+        threshold = n_sigmas * 1.4826 * mad
+        if np.abs(arr[i] - med) > threshold:
+            filtered[i] = med
+    return filtered
 
-    Parameters:
+def hampel(arr, window_size=5, n=3):
+    """
+    Apply the Hampel filter to a 1D time series to replace outliers.
+
+    Parameters
     ----------
     arr : numpy.ndarray, pandas.Series, or pandas.DataFrame
-        The input time series as a 1-dimensional array.
+        1D input time series.
     window_size : int, optional
-        The size of the sliding window used to compute the median and MAD of neighboring values.
-        It should be an odd integer to have a symmetric window around each point. The default value is 5.
+        Size of the sliding window (must be odd). If even, it will be adjusted.
     n : int or float, optional
-        The number of MADs away from the median used to define outliers. Data points that deviate
-        from the median by more than `n` times the MAD are considered outliers. The default value is 3.
-    parallel : bool, optional
-        Whether to use parallel computation for performance. The default is True.
+        The number of MADs (after scaling) used to define outliers.
 
-    Returns:
+    Returns
     -------
     filtered_arr : numpy.ndarray
-        A new filtered time series with outliers replaced by the median of neighboring values.
+        The filtered time series with outliers replaced by the window median.
     outlier_indices : numpy.ndarray
-        An array of indices corresponding to the positions of the identified outliers in the original `arr`.
+        Indices where outliers were detected and replaced.
     """
-    # Convert input to numpy array if it's a pandas Series or DataFrame
+    # Convert input to a 1D numpy array
     if isinstance(arr, (pd.Series, pd.DataFrame)):
         arr = arr.values.flatten()
-    elif not isinstance(arr, np.ndarray):
-        raise ValueError("arr must be a numpy array or pandas Series or DataFrame!")
-    
+    else:
+        arr = np.asarray(arr)
     if arr.ndim != 1:
         raise ValueError("Input array must be one-dimensional!")
-
+        
     # Ensure window_size is odd
     if window_size % 2 == 0:
-        window_size += 1  # Make it odd
-        print(f"window_size adjusted to {window_size} to make it odd.")
-
-    medians      = np.full_like(arr, np.nan, dtype=np.float64)
-    medians_diff = np.full_like(arr, np.nan, dtype=np.float64)
-
-    if parallel:
-        medians = calc_medians_parallel(window_size, arr, medians)
-        medians_diff = calc_medians_std_parallel(window_size, arr, medians_diff, medians)
-    else:
-        medians = calc_medians(window_size, arr, medians)
-        medians_diff = calc_medians_std(window_size, arr, medians_diff, medians)
-
-    # Identify outliers
-    threshold = n * medians_diff
-    difference = np.abs(arr - medians)
-    outlier_indices = np.where(difference > threshold)[0]
-
-    # Create a copy of the original array to avoid modifying it
-    filtered_arr = arr.copy()
-    filtered_arr[outlier_indices] = medians[outlier_indices]
-
+        window_size += 1
+        print(f"window_size adjusted to {window_size} for symmetry.")
+    
+    # Apply the core Hampel filter
+    filtered_arr = hampel_filter_core(arr, window_size, n)
+    
+    # Determine outlier indices (where the value was replaced)
+    outlier_indices = np.where(filtered_arr != arr)[0]
+    
     return filtered_arr, outlier_indices
 
 # solve for a and b
@@ -1585,66 +1820,100 @@ def interp(df, new_index):
 
 
 
-def simple_python_rolling_median(vector: np.ndarray,
-                                 window_length: int) -> np.ndarray:
-    """Computes a rolling median of a numpy vector returning a new numpy
-    vector of the same length.
-    NaNs in the input are not handled but a ValueError will be raised."""
-    if vector.ndim != 1:
-        raise ValueError(
-            f'vector must be one dimensional not shape {vector.shape}'
-        )
-    skip_list = orderedstructs.SkipList(float)
-    ret = np.empty_like(vector)
-    for i in range(len(vector)):
-        value = vector[i]
-        skip_list.insert(value)
-        if i >= window_length - 1:
-            # // 4 for lower quartile
-            # * 3 // 4 for upper quartile etc.
-            median = skip_list.at(window_length // 2)
-            skip_list.remove(vector[i - window_length + 1])
-        else:
-            median = np.nan
-        ret[i] = median
-    return ret
+# def simple_python_rolling_median(vector: np.ndarray,
+#                                  window_length: int) -> np.ndarray:
+#     """Computes a rolling median of a numpy vector returning a new numpy
+#     vector of the same length.
+#     NaNs in the input are not handled but a ValueError will be raised."""
+#     if vector.ndim != 1:
+#         raise ValueError(
+#             f'vector must be one dimensional not shape {vector.shape}'
+#         )
+#     skip_list = orderedstructs.SkipList(float)
+#     ret = np.empty_like(vector)
+#     for i in range(len(vector)):
+#         value = vector[i]
+#         skip_list.insert(value)
+#         if i >= window_length - 1:
+#             # // 4 for lower quartile
+#             # * 3 // 4 for upper quartile etc.
+#             median = skip_list.at(window_length // 2)
+#             skip_list.remove(vector[i - window_length + 1])
+#         else:
+#             median = np.nan
+#         ret[i] = median
+#     return ret
 
 
 
 
-def  use_dates_return_elements_of_df_inbetween(t0, t1, df):
+# def  use_dates_return_elements_of_df_inbetween(t0, t1, df):
+#     """
+#     Return the rows of df between the nearest indices to t0 and t1 using iloc.
+
+#     Parameters:
+#     -----------
+#     t0 : datetime-like or str
+#         Start date (if str, converted to datetime).
+#     t1 : datetime-like or str
+#         End date (if str, converted to datetime).
+#     df : pd.DataFrame
+#         DataFrame with a sorted datetime-like index.
+
+#     Returns:
+#     --------
+#     pd.DataFrame
+#         A DataFrame slice from the nearest index to t0 up to the nearest index to t1.
+#     """
+#     df = df.sort_index()
+
+#     # Convert to datetime if necessary
+#     if isinstance(t0, str):
+#         t0 = pd.to_datetime(t0)
+#     if isinstance(t1, str):
+#         t1 = pd.to_datetime(t1)
+
+#     # Find nearest indices
+#     unique_idx = df.index.unique()
+#     start_idx = unique_idx.get_indexer([t0], method="nearest")[0]
+#     end_idx = unique_idx.get_indexer([t1], method="nearest")[0]
+
+#     # Slice using iloc
+#     return df.iloc[start_idx:end_idx]
+
+
+
+def use_dates_return_elements_of_df_inbetween(start_date, end_date, df):
     """
-    Return the rows of df between the nearest indices to t0 and t1 using iloc.
+    Returns a subset of the DataFrame `df` between `start_date` and `end_date` (inclusive).
 
     Parameters:
     -----------
-    t0 : datetime-like or str
-        Start date (if str, converted to datetime).
-    t1 : datetime-like or str
-        End date (if str, converted to datetime).
-    df : pd.DataFrame
-        DataFrame with a sorted datetime-like index.
+    start_date : pd.Timestamp
+        Lower bound for filtering.
+    end_date   : pd.Timestamp
+        Upper bound for filtering.
+    df         : pd.DataFrame
+        The DataFrame to filter. Its index must be datetime-like.
 
     Returns:
     --------
     pd.DataFrame
-        A DataFrame slice from the nearest index to t0 up to the nearest index to t1.
+        The filtered DataFrame containing rows where the index is between
+        `start_date` and `end_date`.
     """
+
     df = df.sort_index()
 
     # Convert to datetime if necessary
-    if isinstance(t0, str):
-        t0 = pd.to_datetime(t0)
-    if isinstance(t1, str):
-        t1 = pd.to_datetime(t1)
+    if isinstance(start_date, str):
+        start_date = pd.to_datetime(start_date)
+    if isinstance(end_date, str):
+        end_date = pd.to_datetime(end_date)
+        
+    return df.loc[(df.index >= start_date) & (df.index <= end_date)]
 
-    # Find nearest indices
-    unique_idx = df.index.unique()
-    start_idx = unique_idx.get_indexer([t0], method="nearest")[0]
-    end_idx = unique_idx.get_indexer([t1], method="nearest")[0]
 
-    # Slice using iloc
-    return df.iloc[start_idx:end_idx]
 
 
 # def find_big_gaps(df, gap_time_threshold):
@@ -1669,16 +1938,16 @@ def  use_dates_return_elements_of_df_inbetween(t0, t1, df):
 
 def find_big_gaps(
     df, 
-    gap_time_threshold  = 10.0, 
-    expected_start      = None, 
-    expected_end        = None
+    gap_time_threshold = 10.0, 
+    expected_start     = None, 
+    expected_end       = None
 ):
     """
     Identifies "big gaps" where:
-      1) The gap between consecutive filtered data points exceeds `gap_time_threshold`.
-      2) The gap from an `expected_start` (if given) to the first filtered data point 
+      1) The gap between consecutive *filtered* data points exceeds `gap_time_threshold`.
+      2) The gap from an `expected_start` (if given) to the first valid row 
          exceeds `gap_time_threshold`.
-      3) The gap from the last filtered data point to an `expected_end` (if given) 
+      3) The gap from the last valid row to an `expected_end` (if given) 
          exceeds `gap_time_threshold`.
 
     Parameters
@@ -1687,135 +1956,74 @@ def find_big_gaps(
         DataFrame with a DateTimeIndex and at least one column.
         Rows whose first column <= -1e10 will be excluded from gap checks.
     gap_time_threshold : float, optional
-        The gap size threshold in seconds. Default=10.0 seconds.
+        The gap size threshold in seconds. Default=60.0 seconds.
     expected_start : None or str or pd.Timestamp, optional
-        If provided (e.g. "2025-01-01 09:00:00"), we also check if there's a large
-        gap between this time and the first valid row. If that difference in seconds 
-        is > gap_time_threshold, it's listed as a gap.
+        If provided (e.g. "2025-01-01 00:00:00"), we check if there's a large
+        gap between this time and the first valid row.
     expected_end : None or str or pd.Timestamp, optional
-        If provided, we also check if there's a large gap between the last valid row 
-        and this time. If that difference is > gap_time_threshold, it's listed as a gap.
+        If provided, we check if there's a large gap between the last valid row 
+        and this time.
 
     Returns
     -------
     gaps_df : pandas.DataFrame
-        A DataFrame with columns ["Start", "End"] listing the start and end of each
-        detected gap. Gaps are returned if they exceed `gap_time_threshold` in seconds.
-
-    Notes
-    -----
-    - We filter out rows in which the **first column** is <= -1e10 (same as your
-      original logic).
-    - The function sorts the DataFrame by its DateTimeIndex if not already sorted.
-    - If there is no valid data, or if only 1 valid row remains, only the "start"
-      or "end" gap (if any) can be reported (no consecutive row gaps).
+        A DataFrame with columns ["Start", "End"] listing each detected gap.
     """
-
-    def _check_full_empty_gap_only(expected_start, expected_end, gap_time_threshold):
-        """
-        Helper for the case where we have no valid data in the DF after filtering.
-        If both expected_start and expected_end are given and the time difference
-        is > threshold, we'll return one big gap from start->end. Otherwise, empty.
-    
-        Returns a DataFrame with columns ["Start", "End"].
-        """
-        if (expected_start is not None) and (expected_end is not None):
-            # measure difference from expected_start to expected_end
-            diff_sec = (expected_end - expected_start).total_seconds()
-            if diff_sec > gap_time_threshold:
-                return pd.DataFrame([{"Start": expected_start, "End": expected_end}],
-                                    columns=["Start", "End"])
-        # No gap or incomplete info, return empty
-        return pd.DataFrame(columns=["Start", "End"])
-
-    # ------------------------------------------------------------------------
-    # 1) Ensure the DF is sorted by DateTimeIndex
-    # ------------------------------------------------------------------------
-    if not df.index.is_monotonic_increasing:
-        df = df.sort_index()
-
-    # ------------------------------------------------------------------------
-    # 2) Filter out rows where the first column <= -1e10
-    # ------------------------------------------------------------------------
-    filtered_df = df[df.iloc[:, 0] > -1e10].dropna()
-    if filtered_df.empty:
-        # No valid data at all => any "start" or "end" gap is measured purely
-        # from expected_start to expected_end (if both are given).
-        # Typically, we interpret: if expected_start & expected_end are present
-        # and the gap is bigger than threshold => one big gap.
-        # Otherwise, we just return empty. 
-        return None
-
-    # ------------------------------------------------------------------------
-    # 3) Convert expected_start / expected_end to Timestamps if not None
-    # ------------------------------------------------------------------------
+    # Convert expected_start / expected_end to Timestamps if needed
     if expected_start is not None and not isinstance(expected_start, pd.Timestamp):
         expected_start = pd.Timestamp(expected_start)
     if expected_end is not None and not isinstance(expected_end, pd.Timestamp):
         expected_end = pd.Timestamp(expected_end)
 
-      # Prepare a list to accumulate gap rows
+    # Ensure the DataFrame is sorted by its DateTimeIndex
+    if not df.index.is_monotonic_increasing:
+        df = df.sort_index()
+
+    # Filter out rows where the first column <= -1e10 (and drop NaNs)
+    filtered_df = df[df.iloc[:, 0] > -1e10].dropna(subset=[df.columns[0]])
     gap_rows = []
 
-    # ------------------------------------------------------------------------
-    # 4) Check gap from expected_start to first valid row
-    # ------------------------------------------------------------------------
+    # CASE 1: No valid data after filtering
+    if filtered_df.empty:
+        if (expected_start is not None) and (expected_end is not None):
+            diff_sec = (expected_end - expected_start).total_seconds()
+            if diff_sec > gap_time_threshold:
+                gap_rows.append({"Start": expected_start, "End": expected_end})
+        return pd.DataFrame(gap_rows, columns=["Start", "End"])
+
+    # CASE 2: Check gap from expected_start to first valid row
+    first_time = filtered_df.index[0]
     if expected_start is not None:
-        first_time = filtered_df.index[0]
         start_diff_sec = (first_time - expected_start).total_seconds()
         if start_diff_sec > gap_time_threshold:
             gap_rows.append({"Start": expected_start, "End": first_time})
 
-    # ------------------------------------------------------------------------
-    # If only 1 valid row, we won't find any consecutive row gaps, 
-    # but we might still check from that row to expected_end.
-    # ------------------------------------------------------------------------
+    # If only one valid row, we only check the gap to expected_end
     if len(filtered_df) == 1:
-        # Only one valid row => skip consecutive checks, but check end gap
         if expected_end is not None:
-            last_time = filtered_df.index[0]
-            end_diff_sec = (expected_end - last_time).total_seconds()
+            end_diff_sec = (expected_end - first_time).total_seconds()
             if end_diff_sec > gap_time_threshold:
-                gap_rows.append({"Start": last_time, "End": expected_end})
+                gap_rows.append({"Start": first_time, "End": expected_end})
         return pd.DataFrame(gap_rows, columns=["Start", "End"])
 
-    # ------------------------------------------------------------------------
-    # 5) Compute consecutive time differences (in seconds) in filtered data
-    #    time_diffs[i] is gap from row (i-1) to row i.
-    # ------------------------------------------------------------------------
+    # CASE 3: Check consecutive row gaps in the filtered data
     time_diffs = filtered_df.index.to_series().diff().dt.total_seconds()
-    # Boolean mask: True at index i => gap between i-1 and i > threshold
     gap_mask = time_diffs > gap_time_threshold
-    gap_mask_values = gap_mask.values  # convert to numpy boolean array
+    gap_indices = np.where(gap_mask.values)[0]
+    f_idx = filtered_df.index
 
-    # ------------------------------------------------------------------------
-    # 6) Vectorized detection: we want all i where gap_mask[i] is True
-    #    The "start" is index[i-1], "end" is index[i]
-    # ------------------------------------------------------------------------
-    gap_indices = np.where(gap_mask_values)[0]  # array of int positions
-    f_idx = filtered_df.index  # DatetimeIndex
-
-    # For each i in gap_indices, gap is (f_idx[i-1], f_idx[i])
     for i in gap_indices:
-        # i-1 must be >= 0, which it should be for i>0
-        start_time = f_idx[i - 1]
-        end_time = f_idx[i]
-        gap_rows.append({"Start": start_time, "End": end_time})
+        gap_rows.append({"Start": f_idx[i - 1], "End": f_idx[i]})
 
-    # ------------------------------------------------------------------------
-    # 7) Check gap from last valid row to expected_end
-    # ------------------------------------------------------------------------
+    # CASE 4: Check gap from last valid row to expected_end
+    last_time = filtered_df.index[-1]
     if expected_end is not None:
-        last_time = filtered_df.index[-1]
         end_diff_sec = (expected_end - last_time).total_seconds()
         if end_diff_sec > gap_time_threshold:
             gap_rows.append({"Start": last_time, "End": expected_end})
 
-    # ------------------------------------------------------------------------
-    # 8) Build a DataFrame of all gaps found
-    # ------------------------------------------------------------------------
-    gaps_df = pd.DataFrame(gap_rows, columns=["Start", "End"])
-    return gaps_df
+    return pd.DataFrame(gap_rows, columns=["Start", "End"])
+
 
 # def find_big_gaps(df, gap_time_threshold=10):
 #     """
@@ -2212,323 +2420,137 @@ def binned_quantity(x, y, what='mean', std_or_error_of_mean=True, bins=100, logl
     return result
 
 
-# # --- Numba Helper Functions ---
-# @njit(inline='always')
-# def find_bin(x, bin_edges):
-#     n = len(bin_edges)
-#     if x < bin_edges[0]:
-#         return 0
-#     if x >= bin_edges[n - 1]:
-#         return n - 2  # Last valid index for n-1 bins.
-#     lo = 0
-#     hi = n - 1
-#     while hi - lo > 1:
-#         mid = (lo + hi) // 2
-#         if x < bin_edges[mid]:
-#             hi = mid
-#         else:
-#             lo = mid
-#     return lo
 
-# @njit(parallel=True)
-# def compute_bins_numba_no_atomic(valid_x, valid_y, bin_edges, nbins, counts, sums, sumsqs, nchunks):
-#     n = valid_x.shape[0]
-#     chunk_size = (n + nchunks - 1) // nchunks  # Ceiling division.
-#     # Temporary arrays for each chunk.
-#     temp_counts = np.zeros((nchunks, nbins), dtype=np.int64)
-#     temp_sums   = np.zeros((nchunks, nbins), dtype=np.float64)
-#     temp_sumsqs = np.zeros((nchunks, nbins), dtype=np.float64)
-    
-#     for i in prange(nchunks):
-#         start = i * chunk_size
-#         end = start + chunk_size
-#         if end > n:
-#             end = n
-#         for j in range(start, end):
-#             bin_index = find_bin(valid_x[j], bin_edges)
-#             temp_counts[i, bin_index] += 1
-#             temp_sums[i, bin_index]   += valid_y[j]
-#             temp_sumsqs[i, bin_index] += valid_y[j] * valid_y[j]
-    
-#     # Reduce temporary arrays into final arrays.
-#     for i in range(nchunks):
-#         for b in range(nbins):
-#             counts[b] += temp_counts[i, b]
-#             sums[b]   += temp_sums[i, b]
-#             sumsqs[b] += temp_sumsqs[i, b]
 
-# # --- Numba Version ---
-# def binned_quantity_numba(x, y, what='mean', std_or_error_of_mean=True,
-#                           bins=100, loglog=True, return_counts=False,
-#                           return_percentiles=False, lower_percentile=25,
-#                           higher_percentile=75, nchunks=16):
+# from concurrent.futures import ThreadPoolExecutor  # Ensure this import is present
+# import numpy as np
+# from scipy import stats
+
+# def binned_quantity(x, y, what='mean', std_or_error_of_mean=True, bins=100, 
+#                     loglog=True, return_counts=False, return_percentiles=False, 
+#                     lower_percentile=25, higher_percentile=75):
 #     """
-#     Numba-accelerated binned statistic computation.
-    
-#     Parameters
-#     ----------
-#     x, y : array_like
-#         Input arrays.
-#     what : {'mean', 'sum', 'std', 'median'}, optional
-#         The binned statistic to compute. For 'mean', 'sum', and 'std' the aggregation is done
-#         using a Numba-accelerated summation routine. For 'median', the binning is computed in pure NumPy.
-#     std_or_error_of_mean : bool, optional
-#         For what=='mean', if True the third output is the standard deviation,
-#         otherwise it is the error-of-mean. (Ignored for other statistics.)
-#     bins : int or array_like, optional
-#         Number of bins (if int) or the bin edges.
-#     loglog : bool, optional
-#         If True, logarithmic bins are used (requires x > 0).
-#     return_counts : bool, optional
-#         If True, also return the counts per bin.
-#     return_percentiles : bool, optional
-#         If True, also return the (lower, upper) percentiles per bin.
-#     nchunks : int, optional
-#         Number of chunks to use for parallelization.
-    
-#     Returns
-#     -------
-#     bin_centers : ndarray
-#         The centers of the bins.
-#     stat : ndarray
-#         The binned statistic (mean, sum, std, or median).
-#     z : ndarray
-#         For what=='mean': the standard deviation (or error-of-mean if std_or_error_of_mean is False);
-#         for what=='sum' or 'std': the standard deviation of the bin values;
-#         for what=='median': the standard deviation of the values in each bin.
-#     [counts] : ndarray, optional
-#         The counts per bin (if return_counts is True).
-#     [percentiles] : tuple of ndarrays, optional
-#         The (lower, upper) percentiles per bin (if return_percentiles is True).
+#     Optimized version that computes bin centers using vectorized operations.
 #     """
-#     # Convert inputs to float arrays.
 #     x = np.asarray(x, dtype=float)
 #     y = np.asarray(y, dtype=float)
-    
-#     # Filter data.
 #     if loglog:
-#         mask = (y > -1e10) & (x > 0)
+#         mask = (x > 0) & (y > -1e10)
 #     else:
-#         mask = (y > -1e10) & (x > -1e10)
+#         mask = (x > -1e10) & (y > -1e10)
 #     x = x[mask]
 #     y = y[mask]
     
-#     # Determine bin edges.
-#     if loglog:
-#         if np.isscalar(bins):
-#             bin_edges = np.logspace(np.log10(np.nanmin(x)),
-#                                     np.log10(np.nanmax(x)),
-#                                     int(bins))
+#     if np.isscalar(bins):
+#         nbins = int(bins)
+#         if loglog:
+#             bin_edges = np.logspace(np.log10(x.min()), np.log10(x.max()), nbins + 1)
 #         else:
-#             bin_edges = np.asarray(bins, dtype=np.float64)
+#             bin_edges = np.linspace(x.min(), x.max(), nbins + 1)
 #     else:
-#         if np.isscalar(bins):
-#             bin_edges = np.linspace(np.nanmin(x),
-#                                     np.nanmax(x),
-#                                     int(bins) + 1)
-#         else:
-#             bin_edges = np.asarray(bins, dtype=np.float64)
-    
-#     nbins = len(bin_edges) - 1
+#         bin_edges = np.asarray(bins, dtype=float)
+#         nbins = len(bin_edges) - 1
+        
+#     # Compute bin centers
 #     bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
     
-#     # --- Compute the requested statistic ---
-#     if what == 'median':
-#         # For median, compute bin indices and then loop over bins.
-#         bin_indices = np.searchsorted(bin_edges, x, side='right') - 1
-#         bin_indices = np.clip(bin_indices, 0, nbins - 1)
-#         stat = np.empty(nbins, dtype=np.float64)
-#         z = np.empty(nbins, dtype=np.float64)
-#         if return_counts:
-#             counts = np.empty(nbins, dtype=np.int64)
-#         for i in range(nbins):
-#             y_in_bin = y[bin_indices == i]
-#             if y_in_bin.size > 0:
-#                 stat[i] = np.median(y_in_bin)
-#                 z[i] = np.std(y_in_bin)
-#                 if return_counts:
-#                     counts[i] = y_in_bin.size
-#             else:
-#                 stat[i] = np.nan
-#                 z[i] = np.nan
-#                 if return_counts:
-#                     counts[i] = 0
-#     elif what in ('mean', 'sum', 'std'):
-#         counts = np.zeros(nbins, dtype=np.int64)
-#         sums   = np.zeros(nbins, dtype=np.float64)
-#         sumsqs = np.zeros(nbins, dtype=np.float64)
-#         compute_bins_numba_no_atomic(x, y, bin_edges, nbins, counts, sums, sumsqs, nchunks)
-        
+#     # Determine bin indices (vectorized)
+#     bin_indices = np.digitize(x, bin_edges) - 1
+#     valid = (bin_indices >= 0) & (bin_indices < nbins)
+#     x = x[valid]
+#     y = y[valid]
+#     bin_indices = bin_indices[valid]
+    
+#     counts = np.bincount(bin_indices, minlength=nbins)
+    
+#     # Initialize arrays with float type explicitly
+#     stat_vals = np.full(nbins, np.nan, dtype=float)
+#     err_vals  = np.full(nbins, np.nan, dtype=float)
+    
+#     if isinstance(what, str) and what in ['mean', 'sum']:
 #         if what == 'mean':
-#             stat = sums / np.where(counts == 0, 1, counts)
+#             sum_y = np.bincount(bin_indices, weights=y, minlength=nbins)
+#             stat_vals = np.divide(
+#                 sum_y, 
+#                 counts, 
+#                 out=np.full(sum_y.shape, np.nan, dtype=float), 
+#                 where=counts > 0
+#             )
 #         elif what == 'sum':
-#             stat = sums
-#         elif what == 'std':
-#             means = sums / np.where(counts == 0, 1, counts)
-#             variance = sumsqs / np.where(counts == 0, 1, counts) - means**2
-#             stat = np.sqrt(np.maximum(variance, 0))
-        
-#         # Also compute z as the standard deviation (or error) per bin.
-#         means_for_std = sums / np.where(counts == 0, 1, counts)
-#         variance = sumsqs / np.where(counts == 0, 1, counts) - means_for_std**2
-#         z = np.sqrt(np.maximum(variance, 0))
-#         if what == 'mean' and not std_or_error_of_mean:
-#             z = z / np.where(counts == 0, 1, np.sqrt(counts))
+#             stat_vals = np.bincount(bin_indices, weights=y, minlength=nbins)
+#         sum_y2 = np.bincount(bin_indices, weights=y*y, minlength=nbins)
+#         with np.errstate(divide='ignore', invalid='ignore'):
+#             mean_y = stat_vals
+#             std = np.sqrt(np.divide(
+#                 sum_y2, 
+#                 counts, 
+#                 out=np.full(sum_y2.shape, np.nan, dtype=float), 
+#                 where=counts > 0
+#             ) - mean_y**2)
+#         err_vals = std.copy()
 #     else:
-#         raise NotImplementedError("Unsupported statistic. Use 'mean', 'sum', 'std', or 'median'.")
-    
-#     extra = ()
-#     if return_percentiles:
-#         bin_indices = np.searchsorted(bin_edges, x, side='right') - 1
-#         bin_indices = np.clip(bin_indices, 0, nbins - 1)
-#         perc_lower = np.empty(nbins, dtype=np.float64)
-#         perc_upper = np.empty(nbins, dtype=np.float64)
-#         for i in range(nbins):
-#             y_in_bin = y[bin_indices == i]
-#             if y_in_bin.size > 0:
-#                 perc_lower[i] = np.percentile(y_in_bin, lower_percentile)
-#                 perc_upper[i] = np.percentile(y_in_bin, higher_percentile)
+#         order = np.argsort(bin_indices)
+#         sorted_bins = bin_indices[order]
+#         sorted_y = y[order]
+#         bin_start = np.searchsorted(sorted_bins, np.arange(nbins))
+#         bin_end   = np.searchsorted(sorted_bins, np.arange(nbins + 1))
+        
+#         def compute_stat(i):
+#             if bin_end[i] > bin_start[i]:
+#                 y_slice = sorted_y[bin_start[i]:bin_end[i]]
+#                 if what == 'median':
+#                     return np.median(y_slice)
+#                 else:
+#                     return what(y_slice)
 #             else:
-#                 perc_lower[i] = np.nan
-#                 perc_upper[i] = np.nan
-#         extra += ((perc_lower, perc_upper),)
+#                 return np.nan
+        
+#         with ThreadPoolExecutor() as executor:
+#             stat_list = list(executor.map(compute_stat, range(nbins)))
+#         stat_vals = np.array(stat_list, dtype=float)
+        
+#         def compute_std(i):
+#             if bin_end[i] > bin_start[i]:
+#                 y_slice = sorted_y[bin_start[i]:bin_end[i]]
+#                 return np.std(y_slice, ddof=1) if len(y_slice) > 1 else 0.0
+#             else:
+#                 return np.nan
+        
+#         with ThreadPoolExecutor() as executor:
+#             std_list = list(executor.map(compute_std, range(nbins)))
+#         err_vals = np.array(std_list, dtype=float)
     
-#     if return_counts and what != 'median':
-#         extra = (counts,) + extra
-#     elif return_counts and what == 'median':
-#         extra = (counts,) + extra
+#     if std_or_error_of_mean == False:
+#         with np.errstate(divide='ignore', invalid='ignore'):
+#             err_vals = np.divide(
+#                 err_vals, 
+#                 np.sqrt(counts), 
+#                 out=np.full(err_vals.shape, np.nan, dtype=float), 
+#                 where=counts > 0
+#             )
     
-#     return (bin_centers, stat, z) + extra
-
-# # --- Numba Wrapper for Warmup ---
-# def binned_quantity(x, y, *args, **kwargs):
-#     """
-#     Wrapper that first calls binned_quantity_numba on a tiny subset (using only the first element)
-#     to trigger the JIT compilation and then calls binned_quantity_numba on the full data.
-#     Returns only the full-data results.
-#     """
-#     x = np.asarray(x)
-#     if x.size > 0:
-#         _ = binned_quantity_numba(x[:1], y[:1], *args, **kwargs)
-#     return binned_quantity_numba(x, y, *args, **kwargs)
-
-
-
-
-@jit(nopython=True, parallel=True)
-def mean_manual(xpar,
-                ypar,
-                what='mean',
-                std_or_std_mean=True,
-                nbins=100,
-                loglog=True,
-                upper_percentile=95,
-                remove_upper_percentile=False):
-    """
-    Calculate manually binned statistics of one variable (ypar) with respect to another variable (xpar).
-
-    Parameters
-    ----------
-    xpar : array_like
-        Input array. This represents the independent variable.
-    ypar : array_like
-        Input array. This represents the dependent variable.
-    what : str, optional
-        The type of binned statistic to compute. It can be 'mean' or 'median'. The default is 'mean'.
-    std_or_std_mean : bool, optional
-        Indicates whether to return the standard deviation (True) or the standard error of the mean (False) of the binned statistic.
-        The default is True.
-    nbins : int, optional
-        The number of bins to use for the histogram. The default is 100.
-    loglog : bool, optional
-        If True, logarithmic bins are used instead of linear bins. The default is True.
-    upper_percentile : int, optional
-        The upper percentile value for removing outliers. The default is 95.
-    remove_upper_percentile : bool, optional
-        If True, remove upper percentiles to eliminate outliers. The default is False.
-
-    Returns
-    -------
-    ndarray
-        The centers of the bins for the independent variable.
-    ndarray
-        The value of the binned statistic (mean or median) for the dependent variable.
-    ndarray
-        The standard deviation or standard error of the mean of the binned statistic.
-
-    Notes
-    -----
-    This function manually calculates binned statistics by dividing the data into specified bins and computing the mean or median
-    for the dependent variable (ypar) in each bin. It also calculates the standard deviation or standard error of the mean
-    depending on the `std_or_std_mean` parameter.
-
-    Example
-    --------
-    >>> import numpy as np
-    >>> from numba import jit, prange
-
-    >>> @jit(nopython=True, parallel=True)
-    ... def mean_manual(xpar, ypar, what='mean', std_or_std_mean=True, nbins=100, loglog=True, upper_percentile=95, remove_upper_percentile=False):
-    ...     # (Your function implementation here)
-
-    >>> x_values = np.random.rand(1000)
-    >>> y_values = np.random.randn(1000)
-
-    >>> x_mean, y_mean, y_std = mean_manual(x_values, y_values)
-    >>> print(x_mean)
-    >>> print(y_mean)
-    >>> print(y_std)
-    """
+#     percentiles = None
+#     if return_percentiles:
+#         percentile_25, _, _ = stats.binned_statistic(
+#             x, y, 
+#             statistic=lambda arr: np.percentile(arr, lower_percentile), 
+#             bins=bin_edges
+#         )
+#         percentile_75, _, _ = stats.binned_statistic(
+#             x, y, 
+#             statistic=lambda arr: np.percentile(arr, higher_percentile), 
+#             bins=bin_edges
+#         )
+#         percentiles = (percentile_25, percentile_75)
     
-    xpar = np.array(xpar)
-    ypar = np.array(ypar)
-    ind = (ypar > -1e10) & (xpar > -1e10) & (~np.isinf(xpar)) & (~np.isinf(ypar))
+#     result = (bin_centers, stat_vals, err_vals)
+#     if return_counts:
+#         result += (counts,)
+#     if return_percentiles:
+#         result += (percentiles,)
+    
+#     return result
 
-    xpar = xpar[ind]
-    ypar = ypar[ind]
-
-    if loglog:
-        bins = np.logspace(np.log10(np.nanmin(xpar)), np.log10(np.nanmax(xpar)), nbins)
-    else:
-        bins = np.linspace(np.nanmin(xpar), np.nanmax(xpar), nbins)
-
-    res1 = np.digitize(xpar, bins)
-
-    bin_counts = np.bincount(res1)
-
-    ypar_mean  = np.zeros(nbins)
-    ypar_std   = np.zeros(nbins)
-    xpar_mean  = np.zeros(nbins)
-    ypar_count = np.zeros(nbins)
-
-    for i in prange(len(bin_counts)):
-        if bin_counts[i] == 0:
-            continue
-
-        xvalues1 = xpar[res1 == i]
-        yvalues1 = ypar[res1 == i]
-
-        if remove_upper_percentile:
-            percentile = np.percentile(yvalues1, upper_percentile)
-            xvalues1 = xvalues1[yvalues1 < percentile]
-            yvalues1 = yvalues1[yvalues1 < percentile]
-
-        if what == 'mean':
-            ypar_mean[i] = np.nanmean(yvalues1)
-            xpar_mean[i] = np.nanmean(xvalues1)
-        else:
-            ypar_mean[i] = np.nanmedian(yvalues1)
-            xpar_mean[i] = np.nanmedian(xvalues1)
-
-        ypar_std[i] = np.nanstd(yvalues1)
-        ypar_count[i] = bin_counts[i]
-
-    if std_or_std_mean == 0:
-        z_b = ypar_std / np.sqrt(ypar_count)
-    else:
-        z_b = ypar_std
-
-    return xpar_mean, ypar_mean, z_b
 
 
 
@@ -3085,7 +3107,7 @@ def mov_fit_func_joblib(xx,
         x0 = xx[i]
         xf = x0 * w_size
 
-        if xf < 0.98 * xmax:
+        if xf < 0.95 * xmax:
             fit, s, e, x1, y1 = find_fit(xx, yy, x0, xf)
             if len(np.shape(x1)) > 0:
                 err = np.sqrt(fit[1][1][1])

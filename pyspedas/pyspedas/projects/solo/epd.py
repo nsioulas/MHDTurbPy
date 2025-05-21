@@ -76,4 +76,3 @@ def epd(trange=['2020-06-14', '2020-06-15'],
     """
     return load(instrument='epd', trange=trange, level=level, datatype=datatype, mode=mode, prefix=prefix, suffix=suffix, get_support_data=get_support_data, varformat=varformat, varnames=varnames, downloadonly=downloadonly, notplot=notplot, time_clip=time_clip, no_update=no_update)
 
-

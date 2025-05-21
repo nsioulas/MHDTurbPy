@@ -90,4 +90,3 @@ def swa(trange=['2020-07-22', '2020-07-23'],
 
     return loaded_vars
 
-

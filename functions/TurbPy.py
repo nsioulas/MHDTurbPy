@@ -7,7 +7,7 @@
 #                                                                         #
 #    This file is part of MHDTurbPy toolbox.                              #
 #                                                                         #
-#    MHDTurbPy toolbox is free software: you can redistribute it          #
+#    MHDTurbPy toolbox is free software: you can redistribute it          #H
 #    and/or modify it under the terms of the GNU General Public           #
 #    License as published by the Free Software Foundation, either         #
 #    version 3 of the License, or (at your option) any later version.     #
@@ -18,7 +18,7 @@
 ###########################################################################
 
 
-# Basic libraries
+# Basic librariesCH
 import pandas as pd
 import numpy as np
 import sys
@@ -62,6 +62,9 @@ from three_D_funcs import *
 sys.path.insert(1, os.path.join(os.getcwd(), 'functions/modwt/wmtsa'))
 import  modwt
 
+import astropy.units as u
+from scipy.stats import binned_statistic
+from scipy.interpolate import interp1d
 
 
 
@@ -81,7 +84,7 @@ def shifted_df_calcs(B, lag_coefs, coefs, return_df=False):
     Returns:
         pandas.DataFrame or numpy.ndarray: The result of the calculation, either as a DataFrame or a 2D numpy array.
     """
-    B_np = B.to_numpy()
+    B_np               = B.to_numpy()
     num_rows, num_cols = B_np.shape
     result = np.zeros_like(B_np)
 
@@ -203,123 +206,262 @@ def structure_functions_parallel(B,
                                  return_Bmod       = False, 
                                  return_compress   = False,
                                  return_flucts     = False,
-                                 n_jobs            =-1):
+                                 n_jobs            = -1):
     """
-    Estimate the structure functions of a field in parallel.
+    Estimate the structure functions of a vector field B in parallel.
 
     Args:
-        B (pd.Series or np.ndarray): Input field.
-        scales (list or np.ndarray): Scales at which to calculate the structure functions.
-        max_qorder (int): Maximum order of the structure functions to be calculated.
-        five_points_sfunc (bool, optional): Estimate 5-point structure functions if True. Defaults to False.
-        keep_sdk (bool, optional): Keep the SDK if True. Defaults to False.
-        n_jobs (int, optional): Number of parallel jobs. Defaults to -1 (use all available cores).
+        B (pd.Series or np.ndarray):       Input field (shape (N,) if 1D or (N,3) if 3D).
+        scales (list or np.ndarray):       Scales (lags) at which to calculate the structure functions.
+        max_qorder (int):                 Maximum order of the structure functions to be calculated.
+        five_points_sfunc (bool):         Whether to estimate 5-point increments instead of 2-point.
+        keep_sdk (bool):                  (Currently unused) Option to store or skip certain diagnostics.
+        return_components (bool):         If True, also return separate components of the SF.
+        return_Bmod (bool):               If True, also compute magnitude increments dBmod and return the 
+                                          corresponding structure functions in parallel to the “trace.”
+        return_compress (bool):           If True, also compute a “compressibility” measure from the fluctuations.
+        return_flucts (bool):             If True, return the raw increments dB and dBmod for each scale, 
+                                          rather than the structure functions.
+        n_jobs (int):                     Number of parallel jobs. Defaults to -1 (all cores).
 
     Returns:
-        sfn (np.ndarray): Estimated structure functions.
-        sdk (np.ndarray): Structure functions' SDK.
+        If return_flucts is True:
+            dB_all_scales   (np.ndarray): shape (len(scales), ...) of dB increments
+            dBmod_all_scales(np.ndarray): shape (len(scales), ...) of |dB| increments (if return_Bmod=True)
+
+        Else if return_components is True:
+            sfn     (np.ndarray): shape (len(scales), max_qorder) of the trace SF
+            sdk     (np.ndarray): shape (len(scales),)  normalizing factor from 4th order (if max_qorder>=4)
+            sfn_cmp (np.ndarray): shape (len(scales), max_qorder, n_components) of each component's SF
+            SF_dBmod(np.ndarray): shape (len(scales), max_qorder) of the modulus SF (if return_Bmod=True)
+            compress(np.ndarray): shape (len(scales),) compressibility measure (if return_compress=True)
+            counts  (np.ndarray): shape (len(scales),) number of non‐NaN points in dBmod
+
+        Else:
+            sfn (np.ndarray): shape (len(scales), max_qorder)
+            sdk (np.ndarray): shape (len(scales),)
     """
-    #
+
+    # Define the qorders
     qorders = np.arange(1, max_qorder + 1)
 
-    def calc_sfn( dB,
-                  dBmod,
-                  qorder,
-                  return_components = False,
-                  return_Bmod       = False):
-        
-        # Estimate SF for each component
-        comps    = np.nanmean(dB ** qorder, axis=0)
-        if return_Bmod:
+    # -------------------------------------------------------------------------
+    # A small helper that calculates the SF at a given qorder for dB and dBmod
+    def calc_sfn(dB, dBmod, qorder, return_components=False, return_Bmod=False):
+        """
+        Computes the structure function of order qorder:
+            SF(dB)   = mean( |dB|^qorder ) across the chosen dimension,
+            SF(dBmod)= mean( |dBmod|^qorder ) if return_Bmod is True.
+
+        Args:
+            dB (np.ndarray): shape (N, 3) if 3D, or (N,) if 1D.
+            dBmod (np.ndarray or float): shape (N,) if returning magnitude, else np.nan.
+            qorder (int)
+            return_components (bool): if True, also return the separate comp SF.
+            return_Bmod (bool): if True, also compute and return SF(dBmod).
+
+        Returns:
+            If return_components == False:
+                (sfn_sum, sfn_mod)
+            Else:
+                (sfn_sum, comps_array, sfn_mod)
+            where
+                sfn_sum   = sum of component-wise means of |dB|^qorder
+                comps_arr = mean of each component in |dB|^qorder if returning comps
+                sfn_mod   = mean of |dBmod|^qorder, or np.nan if not return_Bmod
+        """
+        # Mean of each component^qorder
+        comps = np.nanmean(dB ** qorder, axis=0)  # shape (#components,)
+        # If returning the magnitude's SF
+        if return_Bmod and isinstance(dBmod, np.ndarray):
             SF_dBmod = np.nanmean(dBmod ** qorder)
         else:
             SF_dBmod = np.nan
-        
+
         if return_components:
+            # return (trace, [comp1, comp2, comp3, ...], magnitude)
             return np.sum(comps), comps, SF_dBmod
         else:
+            # return (trace, magnitude)
             return np.sum(comps), SF_dBmod
 
+
+    # -------------------------------------------------------------------------
+    # The actual worker for each scale
     def process_scale(tau,
-                      return_components = False,
-                      return_Bmod       = False,
-                      return_compress   = False,
-                      return_flucts     = False):
-        
-        
-        dB  = np.abs(flucts(tau,
-                            B, 
-                            five_points_sfunc = five_points_sfunc))
-        
+                      return_components=False,
+                      return_Bmod=False,
+                      return_compress=False,
+                      return_flucts=False):
+        """
+        Computes increments dB, dBmod (if needed), and from there either:
+         - returns them directly if return_flucts=True,
+         - or computes the SF across qorders.
+        """
+        # -- First, get the fluctuations
+        dB = np.abs(flucts(tau, B, five_points_sfunc=five_points_sfunc))
+        # shape of dB is typically (N,3) for a vector B
+
+        compress = np.nan
+        # If we need the magnitude increments:
         if return_Bmod:
-            dBmod  = np.abs(flucts(tau,
-                                   B,
-                                   five_points_sfunc   = five_points_sfunc,
-                                   estimate_mod_flucts = return_Bmod ))
-        
-            # make sure to prevent!
-            if  return_flucts:
+            dBmod = np.abs(
+                flucts(tau, B,
+                       five_points_sfunc=five_points_sfunc,
+                       estimate_mod_flucts=return_Bmod)
+            )
+            # If return_flucts is True, we *only* return the raw increments
+            if return_flucts:
+                # Force no compress if returning raw increments
                 return_compress = False
-                
             if return_compress:
-                compress = np.nanmean(np.abs(dBmod.T[0])**2/((dB.T[0])**2 + (dB.T[1])**2 + (dB.T[2])**2))
+                # Example compressibility measure
+                #   compress = mean(|delta B_parallel|^2 / (|delta B|^2))
+                #   but code below does something like dBmod.T[0] ...
+                #   If we truly want parallel component, define it carefully.
+                #   For demonstration let's just do a ratio:
+                #       compress = mean( (dBmod[:,0])^2 / sum of squares of dB )
+                #   *But watch shape carefully. If dBmod is a single column
+                #   (the magnitude), we can't do dBmod[:,0].
+                #   Possibly the user meant the projection of dB along something.
+                #   We'll keep the line but ensure shapes are correct:
+                #
+                #   compress = mean( dBmod[:,0]^2 / (dB[:,0]^2 + dB[:,1]^2 + dB[:,2]^2 ) )
+                #   or if "dBmod" is just a single column, you might do dBmod**2 / sum(dB**2).
+                #
+                if dBmod.ndim == 2 and dBmod.shape[1] == 3:
+                    # Then we can do .T[0] etc. if that's the parallel part
+                    compress = np.nanmean(
+                        np.abs(dBmod[:, 0])**2 /
+                        (dB[:, 0]**2 + dB[:, 1]**2 + dB[:, 2]**2)
+                    )
+                else:
+                    # If "dBmod" is purely the magnitude:
+                    #   compress doesn't have a straightforward meaning here
+                    compress = np.nan
         else:
-            dBmod    = np.nan
-            compress = np.nan
-            
-            
-        if  return_flucts:
-            return dB,  dBmod
-        else:
-        
-            if return_components:
-                # Unpack results directly in a list comprehension
-                result1, result2, SF_dBmod = zip(*[calc_sfn(  dB,
-                                                              dBmod.T[0],
-                                                              qorder,
-                                                              return_components = return_components,
-                                                              return_Bmod       = return_Bmod) for qorder in qorders])
+            dBmod = np.nan
 
-                # Convert the tuples to numpy arrays
-                sfn       = np.array(result1)
-                SF_dBmod  = np.array(SF_dBmod)
-                sfn_comps = np.array(result2)
-                sdk       = sfn.T[3] / np.sum(np.nanmean(dB ** 2, axis=0) ** 2)
-                counts    =  np.count_nonzero(~np.isnan(dBmod))
-                compress  = np.nan
+        # If the user only wants the raw increments:
+        if return_flucts:
+            return dB, dBmod
 
-                return sfn, sdk, sfn_comps, SF_dBmod, compress, counts
+        # Otherwise, compute structure functions over qorders
+        if return_components:
+            # We want: sfn, sfn_comps, SF_dBmod, plus sdk and possibly compress
+            # We'll gather (trace, comps, mod) for each qorder
+            tmp = [calc_sfn(dB, dBmod, q, 
+                            return_components=True, 
+                            return_Bmod=return_Bmod)
+                   for q in qorders]
+            # tmp is list of length max_qorder, each element is ( trace_val, comps_vec, mod_val )
+            trace_vals, comps_list, mod_vals = zip(*tmp)  # each is length max_qorder
+            sfn       = np.array(trace_vals)             # shape (max_qorder,)
+            sfn_comps = np.array(comps_list)             # shape (max_qorder, n_components?)
+            SF_dBmod  = np.array(mod_vals)               # shape (max_qorder,)
+
+            # Compute sdk if we have at least q=4
+            if max_qorder >= 4:
+                # The code uses the 4th order / sum of squares of the 2nd moment, etc.
+                # We'll match the original usage:
+                #  sdk = sfn[3] / np.sum(np.nanmean(dB ** 2, axis=0) ** 2)
+                sdk = sfn[3] / np.sum(np.nanmean(dB**2, axis=0)**2)
             else:
-                sfn = np.array([calc_sfn(dB,
-                                         dBmod,
-                                         qorder) for qorder in qorders])
+                sdk = np.nan
 
-                sdk = sfn.T[3] / np.sum(np.nanmean(dB ** 2, axis=0) ** 2)
+            counts = np.count_nonzero(~np.isnan(dBmod)) if isinstance(dBmod, np.ndarray) else 0
 
-                return sfn, sdk
+            return sfn, sdk, sfn_comps, SF_dBmod, compress, counts
 
+        else:
+            # return_components=False -> simpler: just return trace + sdk
+            tmp = [calc_sfn(dB, dBmod, q, 
+                            return_components=False, 
+                            return_Bmod=return_Bmod)
+                   for q in qorders]
+            # tmp is list of length max_qorder, each (trace, mod)
+            trace_vals, mod_vals = zip(*tmp)   # each is length max_qorder
+            sfn      = np.array(trace_vals)    # shape (max_qorder,)
+            SF_dBmod = np.array(mod_vals)      # shape (max_qorder,) but not used here
 
+            if max_qorder >= 4:
+                sdk = sfn[3] / np.sum(np.nanmean(dB**2, axis=0)**2)
+            else:
+                sdk = np.nan
+
+            return sfn, sdk
+
+    # -------------------------------------------------------------------------
+    # Now run the above worker in parallel over each scale
     results = Parallel(n_jobs=n_jobs)(
-        delayed(process_scale)(tau, 
-                               return_components = return_components,
-                               return_compress   = return_compress,
-                               return_Bmod       = return_Bmod,
-                               return_flucts     = return_flucts) for tau in scales)
-    
-    # Now for the final return
+        delayed(process_scale)(tau,
+                               return_components=return_components,
+                               return_Bmod=return_Bmod,
+                               return_compress=return_compress,
+                               return_flucts=return_flucts)
+        for tau in scales
+    )
+
+    # Finally, assemble outputs
     if return_flucts:
-        dbs, dbs_mod = zip(*results)
-      
-        return np.array(dbs), np.array(dbs_mod)
+        # results is a list of (dB, dBmod) for each scale
+        dB_all, dBmod_all = zip(*results)
+        return np.array(dB_all), np.array(dBmod_all)
+
     else:
         if return_components:
-            sfns, sdk, sfn_comps, SF_dBmod, compress,  counts = zip(*results)
-
-            return np.array(sfns), np.array(sdk), np.array(sfn_comps), np.array(SF_dBmod), np.array(compress), np.array(counts)  #The last one is the components!!      
+            # results is a list of 6-tuples: (sfn, sdk, sfn_comps, SF_dBmod, compress, counts)
+            sfn, sdk, sfn_comps, SF_dBmod, compress, counts = zip(*results)
+            return (np.array(sfn),
+                    np.array(sdk),
+                    np.array(sfn_comps),
+                    np.array(SF_dBmod),
+                    np.array(compress),
+                    np.array(counts))
         else:
+            # results is a list of 2-tuples: (sfn, sdk)
             sfn, sdk = zip(*results)
-
             return np.array(sfn), np.array(sdk)
+
+
+
+def est_5_pt_sfuncs(B_df,
+                    dt,
+                    func_params = None):
+
+    max_hours   = round(len(B_df)*dt/60)+1
+    dt_step     = func_params['dt_step']
+    max_lag     = int((max_hours*3600)/dt)
+    tau_values  = 2**np.arange(0, 1000, dt_step)
+    max_ind     = (tau_values<max_lag) & (tau_values>0)
+    lags        = np.unique(tau_values[max_ind].astype(int))
+
+    # estimate sfuncs
+    res = turb.structure_functions_parallel(B_df, 
+                                            lags,
+                                            func_params['max_qorder'], 
+                                            five_points_sfunc  = func_params['five_points_sfunc'],
+                                            return_Bmod        = func_params['return_Bmod'],
+                                            return_compress    = 0,
+                                            return_flucts      = False,
+                                            return_components  = 1,
+                                            n_jobs             =-1)
+    
+    # Assign results
+    sfn, sdk, sfn_comps, SF_dBmod, compress, counts = res
+            
+    return {'dt'       : dt,
+            'lags'     : lags, 
+            'counts'   : counts,
+            
+            'SF_trace' : sfn.T,
+            'SF_mod'   : SF_dBmod.T,
+            
+            'SDK_vec'  : sfn.T[3]/sfn.T[1]**2,
+            'SDK_mod'  : SF_dBmod.T[3]/SF_dBmod.T[1]**2}
+
+
+
 
         
 def MODWT_wave_coeffs(x, wname ='la20'):
@@ -1025,7 +1167,23 @@ def TracePSD(x, y, z, dt,
 
     return freqs, p_Trace
 
+def Trace_psd_Hann(B,  dt, nperseg=2**14, noverlap=2**13):
+    from scipy.signal import welch
 
+    keys = list(B.keys())
+    
+    x    = B[keys[0]].values
+    y    = B[keys[1]].values
+    z    = B[keys[2]].values
+    
+    N  = len(x)
+    fs = 1/dt
+    
+    f, Px = welch(x, fs, window='hann', nperseg=nperseg, noverlap=noverlap)
+    f, Py = welch(y, fs, window='hann', nperseg=nperseg, noverlap=noverlap)
+    f, Pz = welch(z, fs, window='hann', nperseg=nperseg, noverlap=noverlap)
+    
+    return f, (Px + Py +Pz)/(N*fs)
 
 
 def estimated_windowed_PSD(mag, magvars,  w_size, chuncktime, windowStr='boxcar', chunk_plot=-1):
@@ -1254,6 +1412,1186 @@ def structure_functions_wavelets(db_x, db_y, db_z,   scales, dt, max_moment):
 
 
 
+import numpy as np
+import pandas as pd
+from scipy.stats import binned_statistic
+from astropy import units as u
+from astropy import constants as const
+
+
+import numpy as np
+from joblib import Parallel, delayed
+
+def _process_bin(i, xvals, yvals, bin_edges, lower_pct, upper_pct):
+    """
+    Process a single bin defined by bin_edges[i] to bin_edges[i+1]:
+      - Select the y-values with x-values falling in the bin.
+      - Compute the lower and upper percentiles.
+      - Filter to only include values within those percentiles and compute their mean.
+      - Compute the bin center as the geometric mean of the bin edges.
+    
+    Returns:
+      tuple: (bin_center, filtered_mean, lower_percentile, upper_percentile)
+    """
+    left = bin_edges[i]
+    right = bin_edges[i+1]
+    # Include the right edge for the last bin
+    if i == len(bin_edges) - 2:
+        mask = (xvals >= left) & (xvals <= right)
+    else:
+        mask = (xvals >= left) & (xvals < right)
+    
+    y_bin = yvals[mask]
+    
+    if y_bin.size == 0:
+        return np.nan, np.nan, np.nan, np.nan
+    
+    lower_val = np.percentile(y_bin, lower_pct)
+    upper_val = np.percentile(y_bin, upper_pct)
+    # Filter y_bin within the computed percentiles (inclusive)
+    filtered = y_bin[(y_bin >= lower_val) & (y_bin <= upper_val)]
+    mean_val = np.mean(filtered) if filtered.size > 0 else np.nan
+    bin_center = np.sqrt(left * right)
+    return bin_center, mean_val, lower_val, upper_val
+
+def bin_means(xvals, yvals, bin_edges, lower_pct=1, upper_pct=99, n_jobs=-1):
+    """
+    Bin the data (xvals, yvals) by the provided bin_edges and compute, for each bin:
+      - The lower percentile (default 25th)
+      - The upper percentile (default 75th)
+      - The mean of y-values restricted to those between these percentiles.
+      - The bin center (geometric mean of bin edges)
+
+    Uses parallel processing across bins.
+
+    Parameters:
+      xvals (array-like): The x-values for binning.
+      yvals (array-like): The corresponding y-values.
+      bin_edges (array-like): The bin edge definitions.
+      lower_pct (float): Lower percentile (default 25).
+      upper_pct (float): Upper percentile (default 75).
+      n_jobs (int): Number of parallel jobs to use (default -1 uses all processors).
+
+    Returns:
+      tuple: (bin_centers, means, lower_vals, upper_vals) as numpy arrays, filtered to bins with finite mean.
+    """
+    # Process each bin in parallel using joblib's Parallel
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(_process_bin)(i, xvals, yvals, bin_edges, lower_pct, upper_pct)
+        for i in range(len(bin_edges) - 1)
+    )
+    results = np.array(results)
+    
+    # Unpack results into individual arrays.
+    bin_centers = results[:, 0]
+    means       = results[:, 1]
+    lower_vals  = results[:, 2]
+    upper_vals  = results[:, 3]
+    
+    # Keep only bins where the computed mean is finite.
+    mask = np.isfinite(means)
+    return bin_centers[mask], means[mask]
+
+# import numpy as np
+# import pandas as pd
+# from scipy.stats import binned_statistic
+# from astropy import units as u, constants as const
+# from typing import Dict, Tuple, Optional
+
+# # ---------------------------------------------------------------------
+# def _log_bin(x: np.ndarray, y: np.ndarray,
+#              n_bins: int, statistic: str) -> Tuple[np.ndarray, np.ndarray]:
+#     """Return bin centres and statistic on log‑spaced grid."""
+#     edges = np.logspace(np.log10(x.min()), np.log10(x.max()), n_bins + 1)
+#     vals, _, _ = binned_statistic(x, y, statistic=statistic, bins=edges)
+#     bc = np.sqrt(edges[:-1] * edges[1:])          # geometric centre
+#     mask = np.isfinite(vals)
+#     return bc[mask].astype('float32'), vals[mask].astype('float32')
+
+
+# def _poly_design(x: np.ndarray, deg: int) -> np.ndarray:
+#     """Vandermonde matrix for ln y = a0 + a1 x + ... + ad x^d."""
+#     return np.vstack([x ** d for d in range(deg + 1)]).T
+
+
+# def _bic_select(x: np.ndarray, y: np.ndarray,
+#                 deg_max: int = 4,
+#                 ridge_alpha: float = 0.0) -> Tuple[np.ndarray, int]:
+#     """
+#     Return coefficients and chosen degree via BIC.
+#     If two degrees have ΔBIC<2, choose simpler one unless ridge_alpha>0.
+#     """
+#     best_deg, best_bic, best_coef = None, np.inf, None
+#     N = len(x)
+#     for d in range(deg_max + 1):
+#         A = _poly_design(x, d)
+#         if ridge_alpha > 0:
+#             # ridge: (AᵀA + αI)⁻¹ Aᵀy
+#             eye = np.eye(d + 1, dtype='float32')
+#             coef = np.linalg.solve(A.T @ A + ridge_alpha * eye, A.T @ y)
+#         else:
+#             coef, *_ = np.linalg.lstsq(A, y, rcond=None)
+#         rss = np.sum((y - A @ coef) ** 2)
+#         bic = N * np.log(rss / N) + (d + 1) * np.log(N)
+#         if bic < best_bic - 2:                # strictly better
+#             best_deg, best_bic, best_coef = d, bic, coef
+#         elif abs(bic - best_bic) < 2:         # tie → favour lower d
+#             best_deg, best_bic, best_coef = min(best_deg, d), bic, best_coef
+#     return best_coef.astype('float32'), best_deg
+
+
+# def _poly_eval(coef: np.ndarray, x: np.ndarray) -> np.ndarray:
+#     return np.polyval(coef[::-1], x)  # coef was low→high
+
+
+# def _poly_deriv(coef: np.ndarray, x: np.ndarray) -> np.ndarray:
+#     dcoef = np.array([(i + 1) * c for i, c in enumerate(coef[1:])],
+#                      dtype='float32')
+#     return np.polyval(dcoef[::-1], x)
+
+
+# # ---------------------------------------------------------------------
+# def Cr_09_cascade_rate(
+#         df_in: pd.DataFrame,
+#         u_sw: u.Quantity = 500 * u.km / u.s,
+#         n_bins: int = 120,
+#         check_phi_degrees: bool = True,
+#         statistic: str = "mean",
+#         deg_max: int = 4,
+#         ridge_alpha: float = 0.0):
+#     """
+#     Polynomial‑in‑log‑space heating with degree chosen by BIC.
+
+#     • No GP → zero danger of short‑ℓ over‑fit.
+#     • deg_max controls model capacity (default 4).
+#     • ridge_alpha>0 adds Tikhonov regularisation (rarely needed).
+
+#     Returns
+#     -------
+#     df_out, fits_dict   (with LaTeX polynomial string)
+#     """
+
+#     df = df_in.copy()
+#     need = ['d','Phi','Np','Ne','Tp','Te','qpar']
+#     df.dropna(subset=need, inplace=True)
+#     if len(df) < 6:
+#         df[['Qp','Qe','Qe_qpar']] = np.nan
+#         return df, {}
+
+#     # ------------- raw arrays ----------------------------------------
+#     to32 = lambda c: df[c].astype('float32').to_numpy()
+#     r_AU, Phi = to32('d'), np.abs(to32('Phi'))
+#     if check_phi_degrees and np.nanmax(Phi) > 2*np.pi:
+#         Phi = np.deg2rad(Phi, dtype='float32')
+#     eV2K = 1.16045221e4
+#     Tp, Te = to32('Tp')*eV2K, to32('Te')*eV2K
+#     np_m3, ne_m3 = to32('Np')*1e6, to32('Ne')*1e6
+#     q_lin = np.abs(to32('qpar'))
+#     ln_r  = np.log(r_AU, dtype='float32')
+
+#     # -------- 1. bin & fit each variable -----------------------------
+#     data = dict(Tp=Tp, Te=Te, np=np_m3, ne=ne_m3, q=q_lin, Ph=Phi)
+#     fits, derivs = {}, {}
+#     for nm, arr in data.items():
+#         bc, mu = _log_bin(r_AU, arr, n_bins, statistic)
+#         ln_x, ln_y = np.log(bc), (np.log(mu+1e-30) if nm!='Ph' else mu)
+#         coef, deg = _bic_select(ln_x, ln_y, deg_max, ridge_alpha)
+#         fits[nm] = dict(coef=coef, deg=deg,
+#                         bin_x=bc, bin_y=mu)
+#         # evaluate on every point
+#         ln_val = _poly_eval(coef, ln_r)
+#         dln    = _poly_deriv(coef, ln_r)
+#         if nm != 'Ph':
+#             fits[nm]['val'] = np.exp(ln_val)
+#             derivs[nm]      = np.exp(ln_val) * dln   # chain rule
+#         else:
+#             fits[nm]['val'] = ln_val
+#             derivs[nm]      = dln
+
+#     # -------- 2. physical derivatives wrt r (m) ----------------------
+#     AU_m = (1.*u.au).to(u.m).value
+#     fac  = 1.0 / (r_AU * AU_m)
+#     dTp  = derivs['Tp'] * fac
+#     dTe  = derivs['Te'] * fac
+#     dnp  = derivs['np'] * fac
+#     dne  = derivs['ne'] * fac
+#     dq   = derivs['q']  * fac
+#     dPh  = derivs['Ph'] * fac
+
+#     # -------- 3. heating terms --------------------------------------
+#     kB = const.k_B.value
+#     u0 = u_sw.to(u.m/u.s).value
+#     nu = 8.4e-9
+#     Tp_v, Te_v = fits['Tp']['val'], fits['Te']['val']
+#     np_v, ne_v = fits['np']['val'], fits['ne']['val']
+#     q_v, Ph_v  = fits['q']['val'],  fits['Ph']['val']
+
+#     Qp  = 1.5*np_v*u0*kB*dTp - u0*kB*Tp_v*dnp + 1.5*np_v*kB*nu*(Tp_v-Te_v)
+#     Qe0 = 1.5*ne_v*u0*kB*dTe - u0*kB*Te_v*dne - 1.5*ne_v*kB*nu*(Tp_v-Te_v)
+
+#     r_m = r_AU * AU_m
+#     A2  = r_m*r_m
+#     C2  = np.cos(Ph_v)**2
+#     dF  = 2*r_m*q_v*C2 + A2*dq*C2 - A2*q_v*np.sin(2*Ph_v)*dPh
+#     Qe  = Qe0 + dF/A2
+
+#     df['Qp']      = Qp.astype('float32')
+#     df['Qe']      = Qe0.astype('float32')
+#     df['Qe_qpar'] = Qe.astype('float32')
+
+#     # -------- 4. LaTeX and fit curves --------------------------------
+#     fit_x = np.logspace(np.log10(r_AU.min()),
+#                         np.log10(r_AU.max()), 100).astype('float32')
+#     ln_fx = np.log(fit_x)
+#     fits_dict = {}
+#     def _poly_tex(coef, name):
+#         terms = []
+#         for p,c in enumerate(coef):
+#             if abs(c) < 1e-8: continue
+#             sign = "+" if c>=0 else "-"
+#             mag  = abs(c)
+#             if p==0:
+#                 terms.append(f"{mag:.3g}")
+#             elif p==1:
+#                 terms.append(f"{sign}{mag:.3g}x")
+#             else:
+#                 terms.append(f"{sign}{mag:.3g}x^{p}")
+#         poly = "".join(terms)
+#         return rf"$\ln {name}(r) = {poly},\;x=\ln r$"
+#     for nm,label in [('Tp',r'T_p'),('Te',r'T_e'),('np',r'n_p'),
+#                      ('ne',r'n_e'),('q',r'q_{\parallel,e}'),('Ph',r'\Phi')]:
+#         coef = fits[nm]['coef']
+#         fits_dict[nm] = dict(
+#             latex=_poly_tex(coef, label),
+#             fit_x=fit_x,
+#             fit_y=np.exp(_poly_eval(coef, ln_fx)) if nm!='Ph'
+#                   else _poly_eval(coef, ln_fx),
+#             avg_x=fits[nm]['bin_x'],
+#             avg_y=fits[nm]['bin_y'])
+
+#     return df, fits_dict
+
+
+# import numpy as np
+# import pandas as pd
+# from scipy.stats import binned_statistic
+# from astropy import units as u, constants as const
+
+# # -----------------------------------------------------------
+# # helpers
+# # -----------------------------------------------------------
+# def bin_means(x, y, edges, statistic="mean"):
+#     stat, edges_used, _ = binned_statistic(x, y, statistic=statistic, bins=edges)
+#     bc   = np.sqrt(edges_used[:-1] * edges_used[1:])
+#     good = np.isfinite(stat)
+#     return bc[good], stat[good]
+
+# def poly_deriv(coeffs, x):
+#     """Evaluate d/dx P(x) for a polynomial P given by coeffs (highest‑order first)."""
+#     deg  = len(coeffs) - 1
+#     dco  = [(deg-i)*c for i, c in enumerate(coeffs[:-1])]
+#     return np.polyval(dco, x)
+
+# # -----------------------------------------------------------
+# def Cr_09_cascade_rate(
+#         df_in: pd.DataFrame,
+#         u_sw: u.Quantity = 500.*u.km/u.s,
+#         n_bins: int = 100,
+#         deg_T: int = 2,  #Second order works better than 1
+#         deg_n: int = 1,
+#         deg_q: int = 3,
+#         deg_phi: int = 3,
+#         check_phi_degrees: bool = True,
+#         statistic: str = "mean",
+#         analytic_derivatives: bool = True,
+#         R_min: float = 0.05,        # <‑‑‑ NEW default fit range (AU)
+#         R_max: float = 0.3        # <‑‑‑ NEW
+# ):
+#     """
+#     Fit only within R_min ≤ r(AU) ≤ R_max, but evaluate the resulting
+#     polynomials and their derivatives across the *entire* radius range.
+
+#     Parameters
+#     ----------
+#     R_min, R_max : float
+#         Radial limits (in AU) of *trusted* data used for the polynomial fits.
+#     All other parameters are unchanged from the legacy version.
+#     """
+
+#     # ------------ 0. basic checks & cleaning -------------------------
+#     df = df_in.copy()
+#     need = ['d','Phi','Np','Ne','Tp','Te','qpar']
+#     df.dropna(subset=need, inplace=True)
+#     if len(df) < 3:
+#         for col in ["Qp","Qe","Qe_qpar"]: df[col] = np.nan
+#         return df, {"Fail":"insufficient data"}
+
+#     df.sort_values('d', inplace=True)
+
+#     # ------------ 1. arrays & unit conversion -----------------------
+#     r_AU = df['d'].values
+#     phi  = np.abs(df['Phi'].values)
+#     if check_phi_degrees and np.nanmax(phi) > 2*np.pi:
+#         phi = np.deg2rad(phi)
+
+#     AU_m = (1.*u.au).to(u.m).value
+#     r_m  = r_AU * AU_m
+
+#     eV2K = 1.16045221e4
+#     Tp_K = df['Tp'].values * eV2K
+#     Te_K = df['Te'].values * eV2K
+#     np_m3 = df['Np'].values * 1e6
+#     ne_m3 = df['Ne'].values * 1e6
+#     q_lin = np.abs(df['qpar'].values)
+
+#     # ------------ 2. radial binning (full range) --------------------
+#     r_full_min, r_full_max = np.nanmin(r_AU[r_AU>0]), np.nanmax(r_AU)
+#     edges = np.logspace(np.log10(r_full_min), np.log10(r_full_max), n_bins+1)
+
+#     bc_Tp, bm_Tp = bin_means(r_AU, Tp_K, edges, statistic)
+#     bc_Te, bm_Te = bin_means(r_AU, Te_K, edges, statistic)
+#     bc_np, bm_np = bin_means(r_AU, np_m3, edges, statistic)
+#     bc_ne, bm_ne = bin_means(r_AU, ne_m3, edges, statistic)
+#     bc_q , bm_q  = bin_means(r_AU, q_lin, edges, statistic)
+#     bc_ph,bm_ph  = bin_means(r_AU, phi  , edges, statistic)
+
+#     # mask bins for fitting
+#     fit_mask = lambda bc: (bc >= R_min) & (bc <= R_max)
+
+#     # ------------ 3. polynomial fits (on ln r space) ----------------
+#     def log_polyfit(r, y, deg, transform=np.log):
+#         m = fit_mask(r) & (r>0) & (y>0) & np.isfinite(y)
+#         if np.sum(m) < deg+1:
+#             return None
+#         return np.polyfit(np.log(r[m]), transform(y[m]), deg)
+
+#     cTp = log_polyfit(bc_Tp, bm_Tp, deg_T, lambda y: np.log(y/1e5))
+#     cTe = log_polyfit(bc_Te, bm_Te, deg_T, lambda y: np.log(y/1e5))
+#     cNp = log_polyfit(bc_np, bm_np, deg_n)
+#     cNe = log_polyfit(bc_ne, bm_ne, deg_n)
+#     cQ  = log_polyfit(bc_q , bm_q , deg_q)
+#     cPh = log_polyfit(bc_ph,bm_ph, deg_phi, lambda y: y)   # Φ unlogged
+
+#     if any(c is None for c in (cTp,cTe,cNp,cNe,cQ)):
+#         for col in ["Qp","Qe","Qe_qpar"]: df[col]=np.nan
+#         return df, {"Fail":"fit failed in restricted range"}
+
+#     # ------------ 4. evaluate fits over *all* radii -----------------
+#     ln_r = np.log(r_AU)
+#     Tp_fit = 1e5*np.exp(np.polyval(cTp, ln_r))
+#     Te_fit = 1e5*np.exp(np.polyval(cTe, ln_r))
+#     np_fit = np.exp(np.polyval(cNp, ln_r))
+#     ne_fit = np.exp(np.polyval(cNe, ln_r))
+#     q_fit  = np.exp(np.polyval(cQ , ln_r))
+#     phi_fit= np.polyval(cPh, ln_r) if cPh is not None else phi
+
+#     # ------------ 5. derivatives ------------------------------------
+#     if analytic_derivatives:
+#         dTpdr = Tp_fit * poly_deriv(cTp, ln_r) / (r_AU*AU_m)
+#         dTedr = Te_fit * poly_deriv(cTe, ln_r) / (r_AU*AU_m)
+#         dnpdr = np_fit * poly_deriv(cNp, ln_r) / (r_AU*AU_m)
+#         dnedr = ne_fit * poly_deriv(cNe, ln_r) / (r_AU*AU_m)
+#         dqdr  = q_fit  * poly_deriv(cQ , ln_r) / (r_AU*AU_m)
+#         if cPh is not None:
+#             dphidr = poly_deriv(cPh, ln_r) / (r_AU*AU_m)
+#         else:
+#             dphidr = np.zeros_like(r_AU)
+#     else:                              # finite differences
+#         dTpdr = np.gradient(Tp_fit, r_m)
+#         dTedr = np.gradient(Te_fit, r_m)
+#         dnpdr = np.gradient(np_fit, r_m)
+#         dnedr = np.gradient(ne_fit, r_m)
+#         dqdr  = np.gradient(q_fit , r_m)
+#         dphidr= np.gradient(phi_fit, r_m)
+
+#     # ------------ 6. heating rates ----------------------------------
+#     kB  = const.k_B.value
+#     u0  = u_sw.to(u.m/u.s).value
+#     nu  = 8.4e-9
+
+#     Qp = (1.5*np_fit*u0*kB*dTpdr
+#           - u0*kB*Tp_fit*dnpdr
+#           + 1.5*np_fit*kB*nu*(Tp_fit-Te_fit))
+
+#     Qe_no = (1.5*ne_fit*u0*kB*dTedr
+#              - u0*kB*Te_fit*dnedr
+#              - 1.5*ne_fit*kB*nu*(Tp_fit-Te_fit))
+
+#     A   = r_m**2
+#     dA  = 2*r_m
+#     B   = q_fit
+#     dB  = dqdr
+#     C   = np.cos(phi_fit)**2
+#     dC  = -np.sin(2*phi_fit)*dphidr
+#     conduction = (dA*B*C + A*dB*C + A*B*dC) / A
+
+#     Qe = Qe_no + conduction
+
+#     df['Qp']      = Qp
+#     df['Qe']      = Qe_no
+#     df['Qe_qpar'] = Qe
+
+#     # ------------ 7. fits‑dictionary (unchanged) --------------------
+#     fit_x = np.logspace(np.log10(r_full_min), np.log10(r_full_max), 100)
+#     ln_fx = np.log(fit_x)
+
+#     def poly2latex(coeffs, var, base_expr):
+#         d = len(coeffs)-1
+#         s=[]
+#         for i,c in enumerate(coeffs):
+#             p = d-i
+#             sign = "+" if c>=0 else "-"
+#             t = f"{abs(c):.3g}" if p==0 else f"{abs(c):.3g}{var}^{p}" if p>1 \
+#                 else f"{abs(c):.3g}{var}"
+#             s.append((sign if i else "")+t if not(i==0 and c>=0) else t)
+#         return rf"$\ln\!\bigl({base_expr}\bigr)={' '.join(s)}$"
+
+#     fits_dict = {
+#         "Tp": dict(latex=poly2latex(cTp,"x",r"T_p/10^{5}{\rm K}"),
+#                    fit_x=fit_x,
+#                    fit_y=1e5*np.exp(np.polyval(cTp, ln_fx)),
+#                    avg_x=bc_Tp, avg_y=bm_Tp),
+#         "Te": dict(latex=poly2latex(cTe,"x",r"T_e/10^{5}{\rm K}"),
+#                    fit_x=fit_x,
+#                    fit_y=1e5*np.exp(np.polyval(cTe, ln_fx)),
+#                    avg_x=bc_Te, avg_y=bm_Te),
+#         "np": dict(latex=poly2latex(cNp,"x",r"n_p({\rm m^{-3}})"),
+#                    fit_x=fit_x,
+#                    fit_y=np.exp(np.polyval(cNp, ln_fx)),
+#                    avg_x=bc_np, avg_y=bm_np),
+#         "ne": dict(latex=poly2latex(cNe,"x",r"n_e({\rm m^{-3}})"),
+#                    fit_x=fit_x,
+#                    fit_y=np.exp(np.polyval(cNe, ln_fx)),
+#                    avg_x=bc_ne, avg_y=bm_ne),
+#         "q":  dict(latex=poly2latex(cQ,"x",r"q_{\parallel,e}({\rm W\,m^{-2}})"),
+#                    fit_x=fit_x,
+#                    fit_y=np.exp(np.polyval(cQ, ln_fx)),
+#                    avg_x=bc_q, avg_y=bm_q)
+#     }
+#     # Φ
+#     if cPh is not None:
+#         fits_dict["phi"] = dict(
+#             latex=poly2latex(cPh,"x",r"\Phi"),
+#             fit_x=fit_x,
+#             fit_y=np.polyval(cPh, ln_fx),
+#             avg_x=bc_ph, avg_y=bm_ph)
+#     else:
+#         fits_dict["phi"] = dict(latex=r"no fit", fit_x=fit_x,
+#                                 fit_y=np.full_like(fit_x,np.nan),
+#                                 avg_x=bc_ph, avg_y=bm_ph)
+
+#     return df, fits_dict
+
+
+
+import numpy as np
+import pandas as pd
+from scipy.stats import binned_statistic
+from astropy import units as u, constants as const
+from numpy.linalg import lstsq, inv
+
+#-----------------------------------------------------------
+# helpers
+#-----------------------------------------------------------
+def bin_means(x, y, edges, statistic="mean"):
+    stat, edges_used, _ = binned_statistic(x, y, statistic=statistic, bins=edges)
+    bc   = np.sqrt(edges_used[:-1]*edges_used[1:])
+    good = np.isfinite(stat)
+    return bc[good], stat[good]
+
+def poly_deriv(coeffs, x):
+    """Evaluate d/dx P(x) for polynomial P defined by `coeffs` (high-order first)."""
+    deg  = len(coeffs) - 1
+    dco  = [(deg-i)*c for i, c in enumerate(coeffs[:-1])]
+    return np.polyval(dco, x)
+
+import numpy as np
+
+def parker_spiral_angle(
+    r_au,
+    u_km_s,
+    theta_deg=90.0,
+    r0_au=0.05
+):
+    """
+    Parker spiral angle Φ beyond the Alfvén radius.
+
+    Parameters
+    ----------
+    r_au : float
+        Heliocentric distance [AU].
+    u_km_s : float
+        Solar wind speed [km/s].
+    theta_deg : float, optional
+        Colatitude [deg] (e.g. 90° for ecliptic), default=90.
+    r0_au : float, optional
+        Alfvén radius [AU], default ~0.05 AU (~11 R_sun).
+
+    Returns
+    -------
+    float
+        Spiral angle Φ in radians.
+    """
+    Ω = 2.7e-6                         # rad/s
+    θ = np.deg2rad(theta_deg)
+    AU_m = 1.496e11                   # m
+    r_m = (r_au - r0_au) * AU_m
+    u_m_s = u_km_s * 1e3
+
+    return np.arctan(Ω * r_m * np.sin(θ) / u_m_s)
+
+
+#-----------------------------------------------------------
+def Cr_09_cascade_rate(
+    df_in: pd.DataFrame,
+    u_sw: u.Quantity           = 500.*u.km/u.s,
+    n_bins: int                = 100,
+    deg_Tp: int                = 2,
+    deg_Te: int                = 1,
+    deg_n: int                 = 1,
+    deg_q: int                 = 2,
+    deg_phi: int               = 3,
+    check_phi_degrees: bool    = True,
+    statistic: str             = "mean",
+    analytic_derivatives: bool = True,
+    R_min: float               = 0.05,
+    R_max: float               = 0.3,
+    return_std: bool           = False,        # <-- NEW
+    n_mc: int                  = 300,         # <-- NEW
+    random_state: int | None   = None         # <-- NEW
+):
+    """
+    Estimate electron & proton heating rates (Cr09) and, optionally, their
+    1-σ uncertainties obtained from full covariance propagation.
+
+    All *positional* arguments keep the original meaning; the three new
+    keyword arguments activate the error machinery without breaking
+    backwards compatibility.
+
+    Returns
+    -------
+    df_out : pd.DataFrame
+        Input data frame with added columns:
+        'Qp', 'Qe', 'Qe_qpar' [+ 'dQp', 'dQe', 'dQe_qpar' if return_std].
+    fits   : dict
+        Fit metadata identical to the legacy version, now including the
+        covariance matrix for every fitted quantity.
+    """
+
+    # ---------------- 0. basic checks & cleaning --------------------
+    df  = df_in.copy()
+    req = ['d', 'Phi', 'Np', 'Ne', 'Tp', 'Te', 'qpar']
+    df.dropna(subset=req, inplace=True)
+    if len(df) < 3:
+        for col in ['Qp', 'Qe', 'Qe_qpar']:
+            df[col] = np.nan
+        if return_std:
+            for col in ['dQp','dQe','dQe_qpar']:
+                df[col] = np.nan
+        return df, {"Fail": "insufficient data"}
+
+    df.sort_values('d', inplace=True)
+
+    # ---------------- 1. arrays & units -----------------------------
+    r_AU = df['d'].values
+    # phi  = np.abs(df['Phi'].values)
+    # if check_phi_degrees and np.nanmax(phi) > 2*np.pi:
+    #     phi = np.deg2rad(phi)
+
+    phi = parker_spiral_angle(
+    r_AU,
+    #df['V0'].values,
+        u_sw.value,
+    theta_deg=90.0,
+    r0_au=0.05
+)
+
+    AU_m = (1.*u.au).to(u.m).value
+    r_m  = r_AU*AU_m
+
+    eV2K = 1.16045221e4
+    Tp_K  = df['Tp'].values*eV2K
+    Te_K  = df['Te'].values*eV2K
+    np_m3 = df['Np'].values*1e6
+    ne_m3 = df['Ne'].values*1e6
+    q_lin = np.abs(df['qpar'].values)
+
+    # ---------------- 2. radial binning -----------------------------
+    r_min_full = np.nanmin(r_AU[r_AU > 0])
+    r_max_full = np.nanmax(r_AU)
+    edges      = np.logspace(np.log10(r_min_full), np.log10(r_max_full), n_bins + 1)
+
+    bc_Tp, bm_Tp = bin_means(r_AU, Tp_K, edges, statistic)
+    bc_Te, bm_Te = bin_means(r_AU, Te_K, edges, statistic)
+    bc_np, bm_np = bin_means(r_AU, np_m3, edges, statistic)
+    bc_ne, bm_ne = bin_means(r_AU, ne_m3, edges, statistic)
+    bc_q , bm_q  = bin_means(r_AU, q_lin, edges, statistic)
+    bc_ph,bm_ph  = bin_means(r_AU, phi  , edges, statistic)
+
+    fit_mask = lambda bc: (bc >= R_min) & (bc <= R_max)
+
+    # ---------------- 3. polynomial fits (+covariance) --------------
+    rng = np.random.default_rng(random_state)
+
+    def _polyfit_lnX(x, y, deg, logy=True):
+        m = fit_mask(x) & (x > 0) & (y > 0) & np.isfinite(y)
+        if np.sum(m) <= deg:
+            return None, None
+        X = np.vander(np.log(x[m]), deg + 1)        # high-order → low-order
+        Y = np.log(y[m]) if logy else y[m]
+        # least-squares & covariance ---------------------------------
+        coef, *_ , _ = lstsq(X, Y, rcond=None)
+        resid = Y - X @ coef
+        dof   = max(1, len(Y) - deg - 1)
+        sigma2 = np.sum(resid**2) / dof
+        cov = sigma2 * inv(X.T @ X)
+        return coef, cov
+
+    cTp, sTp = _polyfit_lnX(bc_Tp, bm_Tp, deg_Tp,  logy=True)
+    cTe, sTe = _polyfit_lnX(bc_Te, bm_Te, deg_Te,  logy=True)
+    cNp, sNp = _polyfit_lnX(bc_np, bm_np, deg_n,  logy=True)
+    cNe, sNe = _polyfit_lnX(bc_ne, bm_ne, deg_n,  logy=True)
+    cQ , sQ  = _polyfit_lnX(bc_q , bm_q , deg_q,  logy=True)
+    cPh,sPh  = _polyfit_lnX(bc_ph,bm_ph,deg_phi, logy=False)
+
+    if any(c is None for c in (cTp,cTe,cNp,cNe,cQ)):
+        for col in ['Qp', 'Qe', 'Qe_qpar']:
+            df[col] = np.nan
+        if return_std:
+            for col in ['dQp','dQe','dQe_qpar']:
+                df[col] = np.nan
+        return df, {"Fail": "fit failed in restricted range"}
+
+    # convenience ----------------------------------------------------
+    ln_r = np.log(r_AU)
+    def eval_lnpoly(coef, lnr):     # high-order first
+        return np.polyval(coef, lnr)
+
+    # ---------------- 4. central prediction -------------------------
+    Tp_fit = np.exp(eval_lnpoly(cTp, ln_r))*1.0          # already ln(T); 1 K factor
+    Te_fit = np.exp(eval_lnpoly(cTe, ln_r))
+    np_fit = np.exp(eval_lnpoly(cNp, ln_r))
+    ne_fit = np.exp(eval_lnpoly(cNe, ln_r))
+    q_fit  = np.exp(eval_lnpoly(cQ , ln_r))
+    phi_fit = eval_lnpoly(cPh, ln_r) if cPh is not None else phi
+
+    # ---------------- 5. derivatives --------------------------------
+    if analytic_derivatives:
+        dTpdr = Tp_fit * poly_deriv(cTp, ln_r) / (r_AU*AU_m)
+        dTedr = Te_fit * poly_deriv(cTe, ln_r) / (r_AU*AU_m)
+        dnpdr = np_fit * poly_deriv(cNp, ln_r) / (r_AU*AU_m)
+        dnedr = ne_fit * poly_deriv(cNe, ln_r) / (r_AU*AU_m)
+        dqdr  = q_fit  * poly_deriv(cQ , ln_r) / (r_AU*AU_m)
+        dphidr = (poly_deriv(cPh, ln_r) / (r_AU*AU_m)
+                  if cPh is not None else np.zeros_like(r_AU))
+    else:   # finite differences (unchanged)
+        dTpdr  = np.gradient(Tp_fit,  r_m)
+        dTedr  = np.gradient(Te_fit,  r_m)
+        dnpdr  = np.gradient(np_fit,  r_m)
+        dnedr  = np.gradient(ne_fit,  r_m)
+        dqdr   = np.gradient(q_fit ,  r_m)
+        dphidr = np.gradient(phi_fit, r_m)
+
+    # ---------------- 6. heating rates ------------------------------
+    kB   = const.k_B.value
+    u0   = u_sw.to(u.m/u.s).value
+    nu   = 8.4e-9   # ν_ep ≃ ν_pe  (SI)
+
+    Qp = (1.5*np_fit*u0*kB*dTpdr
+          - u0*kB*Tp_fit*dnpdr
+          - 1.5*np_fit*kB*nu*(Te_fit - Tp_fit))   # <-- sign fixed
+
+    # raw electron RHS (without heat-flux term)
+    Qe_no = (1.5*ne_fit*u0*kB*dTedr
+             - u0*kB*Te_fit*dnedr
+             - 1.5*ne_fit*kB*nu*(Tp_fit - Te_fit))
+
+    A  = r_m**2
+    dA = 2*r_m
+    B, dB = q_fit, dqdr
+    C, dC = np.cos(phi_fit)**2, -np.sin(2*phi_fit)*dphidr
+    conduction = (dA*B*C + A*dB*C + A*B*dC) / A    # = (1/r²)d/dr [...]
+
+    Qe = Qe_no + conduction
+
+    df['Qp']      = Qp
+    df['Qe']      = Qe_no
+    df['Qe_qpar'] = Qe
+
+    # ---------------- 7. uncertainty propagation -------------------
+    if return_std:
+        # analytic σ for basic y and dy/dr ---------------------------
+        def _sigma_y(coef, cov, lnr, y_val):
+            v = np.array([lnr**p for p in range(len(coef)-1, -1, -1)])
+            return y_val * np.sqrt(v.T @ cov @ v)
+
+        σTp = _sigma_y(cTp, sTp, ln_r, Tp_fit) if sTp is not None else 0.
+        σTe = _sigma_y(cTe, sTe, ln_r, Te_fit) if sTe is not None else 0.
+        σnp = _sigma_y(cNp, sNp, ln_r, np_fit) if sNp is not None else 0.
+        σne = _sigma_y(cNe, sNe, ln_r, ne_fit) if sNe is not None else 0.
+        σq  = _sigma_y(cQ , sQ , ln_r, q_fit ) if sQ  is not None else 0.
+        σphi= _sigma_y(cPh, sPh, ln_r, phi_fit) if (cPh is not None and sPh is not None) else 0.
+
+        # propagate to derivatives analytically --------------------
+        def _sigma_dy(coef, cov, lnr, dy_val):
+            v  = np.array([lnr**p for p in range(len(coef)-1, -1, -1)])
+            dv = np.array([(len(coef)-1-p)*lnr**(len(coef)-2-p)
+                           for p in range(len(coef)-1)])
+            tmp = np.zeros_like(coef)
+            tmp[:-1] = dv
+            return abs(dy_val) * np.sqrt(tmp.T @ cov @ tmp) / abs(np.polyval(tmp, 1))
+
+        σdTp = _sigma_dy(cTp, sTp, ln_r, dTpdr) if sTp is not None else 0.
+        σdTe = _sigma_dy(cTe, sTe, ln_r, dTedr) if sTe is not None else 0.
+        σdnp = _sigma_dy(cNp, sNp, ln_r, dnpdr) if sNp is not None else 0.
+        σdne = _sigma_dy(cNe, sNe, ln_r, dnedr) if sNe is not None else 0.
+        σdq  = _sigma_dy(cQ , sQ , ln_r, dqdr ) if sQ  is not None else 0.
+        σdphi= _sigma_dy(cPh, sPh, ln_r, dphidr) if (cPh is not None and sPh is not None) else 0.
+
+        # linear error propagation to Q ----------------------------
+        dQp_sq = (1.5*u0*kB)**2 * ( (np_fit*σdTp)**2 + (σnp*dTpdr)**2 ) \
+                 + (u0*kB)**2 * ( (Tp_fit*σdnp)**2 + (σTp*dnpdr)**2 ) \
+                 + (1.5*kB*nu)**2 * ( (σnp*(Te_fit-Tp_fit))**2
+                                       + (np_fit*(σTe+σTp))**2 )
+        dQp = np.sqrt(dQp_sq)
+
+        dQe_sq = (1.5*u0*kB)**2 * ( (ne_fit*σdTe)**2 + (σne*dTedr)**2 ) \
+                 + (u0*kB)**2 * ( (Te_fit*σdne)**2 + (σTe*dne)**2 ) \
+                 + (1.5*kB*nu)**2 * ( (σne*(Tp_fit-Te_fit))**2
+                                       + (ne_fit*(σTp+σTe))**2 )
+        # conduction term variances
+        σcond = np.sqrt(
+            ((dA*B*C)/A)**2 * (σdq/q_fit)**2
+            + ((A*B*dC)/A)**2 * (σphi/phi_fit)**2
+            + ((dB*C)/1)**2 * (σdq)**2
+        )
+        dQe_qpar = np.sqrt(dQe_sq + σcond**2)
+
+        df['dQp']      = dQp
+        df['dQe']      = np.sqrt(dQe_sq)
+        df['dQe_qpar'] = dQe_qpar
+
+    # ---------------- 8. metadata ----------------------------------
+    fit_x  = np.logspace(np.log10(r_min_full), np.log10(r_max_full), 100)
+    ln_fx  = np.log(fit_x)
+    def to_ltx(coef,var,expr):
+        d=len(coef)-1
+        s=[]
+        for i,c in enumerate(coef):
+            p=d-i
+            term=(f'{abs(c):.3g}{var}^{p}' if p>1
+                  else f'{abs(c):.3g}{var}'  if p==1
+                  else f'{abs(c):.3g}')
+            s.append(('+' if c>=0 and i else '-')+term if i else term)
+        return rf'$\ln({expr})={"".join(s)}$'
+
+    fits = {
+        'Tp': dict(latex=to_ltx(cTp,'x',r'T_p'),
+                   fit_x=fit_x, fit_y=np.exp(eval_lnpoly(cTp, ln_fx)),
+                   avg_x=bc_Tp, avg_y=bm_Tp, cov=sTp),
+        'Te': dict(latex=to_ltx(cTe,'x',r'T_e'),
+                   fit_x=fit_x, fit_y=np.exp(eval_lnpoly(cTe, ln_fx)),
+                   avg_x=bc_Te, avg_y=bm_Te, cov=sTe),
+        'np': dict(latex=to_ltx(cNp,'x',r'n_p'),
+                   fit_x=fit_x, fit_y=np.exp(eval_lnpoly(cNp, ln_fx)),
+                   avg_x=bc_np, avg_y=bm_np, cov=sNp),
+        'ne': dict(latex=to_ltx(cNe,'x',r'n_e'),
+                   fit_x=fit_x, fit_y=np.exp(eval_lnpoly(cNe, ln_fx)),
+                   avg_x=bc_ne, avg_y=bm_ne, cov=sNe),
+        'q':  dict(latex=to_ltx(cQ,'x',r'q_{\parallel,e}'),
+                   fit_x=fit_x, fit_y=np.exp(eval_lnpoly(cQ,  ln_fx)),
+                   avg_x=bc_q , avg_y=bm_q , cov=sQ)
+    }
+    if cPh is not None:
+        fits['phi'] = dict(latex=to_ltx(cPh,'x',r'\Phi'),
+                           fit_x=fit_x, fit_y=eval_lnpoly(cPh, ln_fx),
+                           avg_x=bc_ph, avg_y=bm_ph, cov=sPh)
+
+    return df, fits
+
+
+import numpy as np
+from scipy.stats import binned_statistic
+from scipy.interpolate import interp1d
+import astropy.units as u
+
+
+"""
+Bayesian polynomial fit  ln y(ln r)
+===================================
+
+* automatic degree selection by Bayesian evidence
+* outer‑loop parallel (one process per degree, joblib)
+* inner‑loop parallel (likelihood pool inside pocoMC)
+* returns:
+    - posterior samples of coefficients & σ
+    - noise‑free mean curve      (polynomial at posterior‑mean coeffs)
+    - model‑only 1σ / 2σ / 3σ bands (no intrinsic noise)
+    - predictive 1σ / 2σ / 3σ bands (includes noise)
+    - Bayesian p‑value and evidence table
+
+Requires:  pocomc  joblib  numpy  scipy  matplotlib
+           pip install pocomc joblib numpy scipy matplotlib
+"""
+
+
+import numpy as np, math, os
+import joblib, pocomc as pc
+from scipy.stats import norm
+import matplotlib.pyplot as plt
+from typing import Dict, List
+
+# -------------------------------------------------------------------------
+# Helper polynomial evaluator (ascending coeffs → np.polyval wants opposite)
+def poly_val(coeff_asc: np.ndarray, x: np.ndarray) -> np.ndarray:
+    return np.polyval(coeff_asc[::-1], x)
+
+# -------------------------------------------------------------------------
+def bayes_pol_fit(
+    r:                   np.ndarray,
+    y:                   np.ndarray,
+    *,
+    deg_max:             int   = 4,
+    delta_lnZ:           float = 2.0,
+    outer_jobs:          int|None = None,      # None → all physical cores
+    prior_std_coeff:     float = 5.0,
+    prior_std_logsigma:  float = 2.0,
+    grid_points:         int   = 300,
+    draws_model_band:    int   = 1000,
+    draws_pred_band:     int   = 1000,
+    draws_pvalue:        int   = 1000,
+    rng_seed:            int   = 0,
+    verbose:             bool  = False
+) -> Dict:
+    """
+    Bayesian fit of ln y vs ln r with a polynomial of *unknown* order.
+
+    Parameters
+    ----------
+    r, y                 : positive data arrays of identical length
+    deg_max              : highest polynomial degree to test
+    delta_lnZ            : keep lowest deg whose ln Z within this of max
+    outer_jobs           : #joblib workers (None → all cores)
+    prior_std_coeff      : σ of Normal prior on each coefficient
+    prior_std_logsigma   : σ of Normal prior on log σ
+    grid_points          : resolution of plotting grid (log‑spaced in r)
+    draws_model_band     : posterior draws for **model‐only** bands
+    draws_pred_band      : posterior draws for **predictive** bands
+    draws_pvalue         : draws for Bayesian p‑value
+    rng_seed             : master random seed
+    verbose              : print evidence table if True
+
+    Returns
+    -------
+    dict with keys
+        chosen_deg       : selected polynomial degree
+        evidence_table   : [{deg, lnZ, lnZ_err}, …]
+        coeff_samples    : (N, chosen_deg+1) coefficient samples
+        sigma_samples    : (N,) σ samples
+        r_grid           : log‑spaced grid
+        y_trend          : noise‑free trend  (= poly at mean coeffs)
+        band_model_1/2/3 : 1σ / 2σ / 3σ bands *without* intrinsic noise
+        band_pred_1/2/3  : same bands *with* intrinsic noise
+        p_value          : Bayesian p‑value
+    """
+
+    # ---------- 0. Checks -------------------------------------------------
+    r = np.asarray(r, float)
+    y = np.asarray(y, float)
+    if r.shape != y.shape:
+        raise ValueError("r and y must have the same shape.")
+    if np.any(r <= 0) or np.any(y <= 0):
+        raise ValueError("All r and y values must be > 0.")
+    ln_r, ln_y = np.log(r), np.log(y)
+    rng         = np.random.default_rng(rng_seed)
+
+    # ---------- 1. Factory: prior & log‑likelihood ------------------------
+    def make_prior(d: int) -> pc.Prior:
+        distr = [norm(0, prior_std_coeff) for _ in range(d+1)]
+        distr.append(norm(-1, prior_std_logsigma))
+        return pc.Prior(distr)
+
+    def make_loglike(d: int):
+        def _ll(theta, xx, yy):
+            sigma = math.exp(theta[-1])
+            if sigma <= 0:
+                return -np.inf
+            mu = poly_val(theta[:-1], xx)
+            res = ln_y - mu
+            return -0.5*np.sum(res**2 / sigma**2 + np.log(2*np.pi*sigma**2))
+        return _ll
+
+    # ---------- 2. Worker (executed in joblib process) --------------------
+    os.environ["TQDM_DISABLE"] = "1"      # silence tqdm in all workers
+
+    def fit_one_degree(d: int, seed_off: int, pool_inner: int) -> Dict:
+        np.random.seed(rng_seed + seed_off + d)
+        sam = pc.Sampler(make_prior(d), make_loglike(d),
+                         pool=pool_inner,
+                         likelihood_args=[ln_r, y])
+        sam.run()
+        lnZ, lnZ_err   = sam.evidence()
+        samples, _, _  = sam.posterior(resample=True)
+        return dict(deg=d, lnZ=lnZ, lnZ_err=lnZ_err,
+                    coeff=samples[:, :-1], sigma=np.exp(samples[:, -1]))
+
+    # ---------- 3. Parallel scan over degrees ----------------------------
+    cores       = os.cpu_count() or 4
+    outer       = outer_jobs or min(cores, deg_max+1)
+    inner_pool  = max(1, cores // outer)
+
+    fits: List[Dict] = joblib.Parallel(outer, backend="loky")(
+        joblib.delayed(fit_one_degree)(d, 1234, inner_pool)
+        for d in range(deg_max + 1)
+    )
+
+    best_lnZ = max(fits, key=lambda f: f['lnZ'])['lnZ']
+    viable   = [f for f in fits if best_lnZ - f['lnZ'] <= delta_lnZ]
+    chosen   = min(viable, key=lambda f: f['deg'])
+
+    if verbose:
+        print("Bayesian evidence (ln Z):")
+        for f in sorted(fits, key=lambda t: t['deg']):
+            flag = "<-- chosen" if f['deg'] == chosen['deg'] else ""
+            print(f"deg={f['deg']:2d}   {f['lnZ']:8.2f} ± {f['lnZ_err']:.2f} {flag}")
+        print()
+
+    coeff_s = chosen['coeff']
+    sigma_s = chosen['sigma']
+
+    # ---------- 4. r‑grid -------------------------------------------------
+    r_grid = np.logspace(np.log10(r.min()),
+                         np.log10(r.max()), grid_points)
+    ln_rg  = np.log(r_grid)
+
+    # ---------- 5. Noise‑FREE trend  -------------------------------------
+    mean_coeff = np.mean(coeff_s, axis=0)             # posterior mean vector
+    ln_trend   = poly_val(mean_coeff, ln_rg)
+    y_trend    = np.exp(ln_trend)
+
+    # ---------- 6. Model‑only bands (coeff uncertainty, no noise) --------
+    # draw subset for speed
+    idx_model  = rng.integers(0, coeff_s.shape[0], draws_model_band)
+    ln_mod_curves = np.array([poly_val(coeff_s[i], ln_rg) for i in idx_model])
+    y_mod_curves  = np.exp(ln_mod_curves)
+
+    band_m1 = np.percentile(y_mod_curves, [16, 84 ], axis=0)
+    band_m2 = np.percentile(y_mod_curves, [ 2.5,97.5], axis=0)
+    band_m3 = np.percentile(y_mod_curves, [0.15,99.85], axis=0)
+
+    # ---------- 7. Predictive bands (add intrinsic noise) ----------------
+    idx_pred = rng.integers(0, coeff_s.shape[0], draws_pred_band)
+    mu_pred  = np.array([poly_val(coeff_s[i], ln_rg) for i in idx_pred])
+    sig_pred = sigma_s[idx_pred, None]
+    ln_pred  = mu_pred + rng.normal(0, sig_pred)
+    y_pred   = np.exp(ln_pred)
+
+    band_p1 = np.percentile(y_pred, [16, 84 ], axis=0)
+    band_p2 = np.percentile(y_pred, [ 2.5,97.5], axis=0)
+    band_p3 = np.percentile(y_pred, [0.15,99.85], axis=0)
+
+    # ---------- 8. Bayesian p‑value --------------------------------------
+    idx_pv  = rng.integers(0, coeff_s.shape[0], draws_pvalue)
+    mu_pv   = np.array([poly_val(coeff_s[i], ln_r) for i in idx_pv])
+    sig_pv  = sigma_s[idx_pv, None]
+    T_obs   = np.sum((ln_y - mu_pv)**2 / sig_pv**2, axis=1)
+    ln_rep  = mu_pv + rng.normal(0, sig_pv)
+    T_rep   = np.sum((ln_rep - mu_pv)**2 / sig_pv**2, axis=1)
+    p_val   = np.mean(T_rep >= T_obs)
+
+    # ---------- 9. Return -------------------------------------------------
+    evid_tbl = [{k: f[k] for k in ('deg', 'lnZ', 'lnZ_err')} for f in fits]
+    return dict(
+        chosen_deg     = chosen['deg'],
+        evidence_table = evid_tbl,
+        coeff_samples  = coeff_s,
+        sigma_samples  = sigma_s,
+        r_grid         = r_grid,
+        y_trend        = y_trend,
+        band_model_1   = band_m1,
+        band_model_2   = band_m2,
+        band_model_3   = band_m3,
+        band_pred_1    = band_p1,
+        band_pred_2    = band_p2,
+        band_pred_3    = band_p3,
+        p_value        = p_val
+    )
+
+import numpy as np
+from scipy.stats import binned_statistic
+from scipy.interpolate import interp1d
+import astropy.units as u
+from astropy.constants import R_sun
+
+def CH_09_cascade_rate(
+    keep_Ma,
+    keep_d,
+    keep_V0,
+    keep_VA0,
+    keep_quant,
+    keep_rho,
+    units='SI',
+    n_bins=100,
+    fit_method="poly",      # "poly" or "rolling"
+    poly_deg=2,             # polynomial degree for "poly" method
+    statistic="mean",
+    rolling_window_au=0.25, # in AU for rolling window
+    R_min: float = 0.05,    # fit range start [AU]
+    R_max: float = 0.3      # fit range end [AU]
+):
+    """CH09-style turbulent heating rate (small-λ⊥ limit).
+
+    Parameters
+    ----------
+    [unchanged — see original docstring]
+
+    Returns
+    -------
+    dict
+        Keys
+        ----
+        'Ma_r'          : original M_A array
+        'x'             : heliocentric distance [AU]
+        'y'             : Q(r) in chosen energy units
+        'y_err'         : zeros (placeholder for future error estimates)
+        'units'         : string describing units of Q
+        'deriv'         : dV_A/dr  [m s⁻¹ m⁻¹]
+        'scale_height'  : (1/V_A)·dV_A/dr  [R_⊙⁻¹]
+        'scale_height_unit' : literal "1 / R_sun"
+        'fits'          : diagnostic fit data (unchanged)
+    """
+    # ---------- 1. constants & unit conversions ----------
+    AU_SI   = 1.496e11                                # m AU⁻¹
+    R_SUN_SI = R_sun.to_value(u.m)                    # m
+    r_si    = keep_d   * AU_SI                        # m
+    V0_si   = keep_V0  * 1e3                          # km s⁻¹ → m s⁻¹
+    Va0_si  = keep_VA0 * 1e3
+    Zp_rms_si = np.sqrt(keep_quant) * 1e3
+    rho_si  = keep_rho * 1e6                          # kg cm⁻³ → kg m⁻³
+
+    # ---------- 2. preprocess valid points ----------
+    eta  = (Va0_si / V0_si)**2
+    gp2  = (Zp_rms_si * (1 + np.sqrt(eta)) / eta**0.25)**2
+    mask = (r_si > 0) & np.isfinite(r_si) & (gp2 > 0) & np.isfinite(gp2)
+
+    r_valid  = r_si[mask]
+    d_valid  = keep_d[mask]
+    Va_valid = Va0_si[mask]
+    gp2_valid, rho_valid, eta_valid = gp2[mask], rho_si[mask], eta[mask]
+
+    # ---------- 3. sort by radius ----------
+    idx         = np.argsort(r_valid)
+    r_sorted    = r_valid[idx]
+    d_sorted    = d_valid[idx]
+    Va_sorted   = Va_valid[idx]
+    gp2_sorted  = gp2_valid[idx]
+    rho_sorted  = rho_valid[idx]
+    eta_sorted  = eta_valid[idx]
+
+    # ---------- 4. bin ⟨V_A⟩ for diagnostics ----------
+    def _bin_stat(x, y, bins, stat):
+        s, edges, _ = binned_statistic(x, y, statistic=stat, bins=bins)
+        centres = np.sqrt(edges[:-1] * edges[1:])
+        good    = np.isfinite(s)
+        return centres[good], s[good]
+
+    edges                = np.logspace(np.log10(r_sorted[0]),
+                                        np.log10(r_sorted[-1]), n_bins + 1)
+    avg_r, avg_Va        = _bin_stat(r_sorted, Va_sorted, edges, statistic)
+    avg_d                = avg_r / AU_SI
+
+    # ---------- 5. fit ln V_A versus ln r ----------
+    fit_mask     = (d_sorted >= R_min) & (d_sorted <= R_max)
+    ln_r_fit     = np.log(r_sorted[fit_mask])
+    ln_Va_fit    = np.log(Va_sorted[fit_mask])
+    deg          = min(poly_deg, max(len(ln_r_fit) - 1, 1))
+    coeff        = np.polyfit(ln_r_fit, ln_Va_fit, deg)
+
+    ln_r_sorted  = np.log(r_sorted)
+    ln_Va_model  = np.polyval(coeff, ln_r_sorted)
+    Va_model     = np.exp(ln_Va_model)
+
+    dcoef        = np.polyder(coeff)
+    dlnV_dlnr    = np.polyval(dcoef, ln_r_sorted)
+    dVa_dr_sorted = Va_model * dlnV_dlnr / r_sorted          # m s⁻¹ m⁻¹
+
+    # ---------- 6. interpolate derivative to full grid ----------
+    deriv_all = interp1d(np.log(r_sorted), dVa_dr_sorted,
+                         fill_value='extrapolate')(np.log(r_si))
+
+    # ---------- 7. CH09 heating rate ----------
+    fac_sorted = -(rho_sorted / 4.0) * gp2_sorted / (1 + np.sqrt(eta_sorted))
+    fac_all    = interp1d(np.log(r_sorted), fac_sorted,
+                          fill_value='extrapolate')(np.log(r_si))
+    Q_all      = fac_all * deriv_all
+
+    # allocate outputs on original sampling
+    Q_full     = np.full_like(keep_d, np.nan, dtype=float)
+    deriv_full = np.full_like(keep_d, np.nan, dtype=float)
+    Q_full[mask]     = Q_all[mask]
+    deriv_full[mask] = deriv_all[mask]
+
+
+
+    # ---------- 8. Alfvén‐speed scale height H = V_A / (dV_A/dr) ----------
+    
+    Va_full       = np.full_like(keep_d, np.nan, dtype=float)
+    Va_full[mask] = Va_sorted[idx]               # align V_A with mask
+    
+    # compute H in meters:
+    H_full        = Va_full / deriv_full         # [m]
+    
+    # convert H into solar radii:
+    Hinv_Rsun_full  = H_full / R_SUN_SI            # dimensionless, in R_⊙
+
+
+    # ---------- 9. format Q in requested units ----------
+    if units.lower() == 'si':
+        Q_out, out_unit = Q_full, 'W / m3'
+    elif units.lower() == 'cgs':
+        rho_full           = np.full_like(keep_d, np.nan, dtype=float)
+        rho_full[mask]     = rho_sorted
+        Q_mass             = Q_full / rho_full
+        Q_out              = (Q_mass * (u.W / u.kg)).to(u.erg / (u.g * u.s)).value
+        out_unit           = 'erg / (g s)'
+    elif units.lower() == 'cgs_vol':
+        Q_out              = (Q_full * (u.W / u.m**3)).to(u.erg / (u.cm**3 * u.s)).value
+        out_unit           = 'erg / (cm3 s)'
+    else:
+        raise ValueError("units must be 'SI', 'cgs', or 'cgs_vol'.")
+
+    # ---------- 10. analytic fit across full range (diagnostics) ----------
+    d_min, d_max = d_sorted[0], d_sorted[-1]
+    fit_x        = np.logspace(np.log10(d_min), np.log10(d_max), 100)   # AU
+    r_fit        = fit_x * AU_SI
+    if fit_method.lower() == 'rolling':
+        ln_interp = interp1d(np.log(r_sorted), np.log(Va_model),
+                             fill_value='extrapolate')
+        fit_y    = np.exp(ln_interp(np.log(r_fit)))
+    else:
+        fit_y    = np.exp(np.polyval(coeff, np.log(r_fit)))
+
+    # ---------- 11. pack results ----------
+    return {
+        'Ma_r'              : keep_Ma,
+        'x'                 : keep_d,           # AU
+        'y'                 : Q_out,
+        'y_err'             : np.zeros_like(Q_out),
+        'units'             : out_unit,
+        'deriv'             : deriv_full,       # dV_A/dr  [m s⁻¹ m⁻¹]
+        'scale_height'      : Hinv_Rsun_full,   # 1 R_⊙⁻¹
+        #'scale_height _unit' : '1 / R_sun',
+        'fits' : {
+            'fit_x'        : fit_x,    # AU
+            'fit_y'        : fit_y,    # m s⁻¹
+            'avg_x'        : avg_d,    # AU
+            'avg_y'        : avg_Va,   # m s⁻¹
+            
+            'order'        : deg
+        }
+    }
+
+
 
 # First method to find the deHoffmann-Teller frame velocity
 def HoffmannTellerizer(v, B):
@@ -1388,9 +2726,11 @@ from scipy.signal import stft, istft
 def remove_wheel_noise(data,
                        fs, 
                        window_size      = 2**15, 
-                       avg_length       = 2,
-                       power_threshold  = 3.0,
-                       freq_min         = 1.0):
+                       avg_length       = 1,
+                       power_threshold  = 6.0,
+                       freq_min         = 10.0, 
+                       hampel_wind      = 51,
+                       hampel_thresh    = 3.5):
     """
     Remove noise tones from a time series of magnetic field measurements.
 
@@ -1418,8 +2758,10 @@ def remove_wheel_noise(data,
     f, t_stft, Zxx = stft(data, fs=fs, window='hann', nperseg=window_size,
                           noverlap=window_size//2)
 
+    print(np.shape(f), np.shape(Zxx))
     # Compute power spectrum (magnitude squared)
-    power_spectrum = np.abs(Zxx)**2
+    power_spectrum = (np.abs(Zxx).T**2*f**(8/3)).T
+    #power_spectrum = np.abs(Zxx)**2
 
     # Average spectra: For every avg_length consecutive windows, average the spectra
     n_segments = Zxx.shape[1]
@@ -1448,7 +2790,7 @@ def remove_wheel_noise(data,
         group_power = power_spectrum[:, start_idx:end_idx]  # Shape: (n_frequencies, avg_length)
 
         # Thresholding
-        hamp     = func.hampel(averaged_power_spectra[i], 1201, 2.5)
+        hamp     = func.hampel(averaged_power_spectra[i], hampel_wind, hampel_thresh)
         threshold = power_threshold *hamp[0][:, np.newaxis]  # Shape: (n_frequencies, 1)
         # Identify noise frequencies
         noise_frequencies = (group_power > threshold) & (f[:, np.newaxis] >= freq_min)  # Shape: (n_frequencies, avg_length)
@@ -2090,8 +3432,6 @@ def local_parker_spiral(B,
                                 B.Bn**2 
                                ).values
 
-
-    
     sign = np.sign(B['Br'].rolling(window='2h', center=True).mean()).values
     # Transform the magnetic field to Parker spiral coordinates
     B_parker       =  B.copy()
@@ -2465,43 +3805,6 @@ def estimate_kurtosis_with_rand_samples(hmany_stds, di, vsw, xvals, yvals, nxbin
 
 
 
-
-
-
-def est_5_pt_sfuncs(B_df,
-                    dt,
-                    func_params = None):
-
-    max_hours   = round(len(B_df)*dt/60)+1
-    dt_step     = func_params['dt_step']
-    max_lag     = int((max_hours*3600)/dt)
-    tau_values  = 2**np.arange(0, 1000, dt_step)
-    max_ind     = (tau_values<max_lag) & (tau_values>0)
-    lags        = np.unique(tau_values[max_ind].astype(int))
-
-    # estimate sfuncs
-    res = turb.structure_functions_parallel(B_df, 
-                                            lags,
-                                            func_params['max_qorder'], 
-                                            five_points_sfunc  = func_params['five_points_sfunc'],
-                                            return_Bmod        = func_params['return_Bmod'],
-                                            return_compress    = 0,
-                                            return_flucts      = False,
-                                            return_components  = 1,
-                                            n_jobs             =-1)
-    
-    # Assign results
-    sfn, sdk, sfn_comps, SF_dBmod, compress, counts = res
-            
-    return {'dt'       : dt,
-            'lags'     : lags, 
-            'counts'   : counts,
-            
-            'SF_trace' : sfn.T,
-            'SF_mod'   : SF_dBmod.T,
-            
-            'SDK_vec'  : sfn.T[3]/sfn.T[1]**2,
-            'SDK_mod'  : SF_dBmod.T[3]/SF_dBmod.T[1]**2}
 
 
 

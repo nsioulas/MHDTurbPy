@@ -105,4 +105,3 @@ def mag(trange=['2020-06-01', '2020-06-02'],
 
     return mag_vars
 
-

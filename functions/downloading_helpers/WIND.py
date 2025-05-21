@@ -402,7 +402,7 @@ def LoadTimeSeriesWIND(start_time,
                                                                                    dfmag)
 
         # Identify big gaps in timeseries
-        big_gaps = func.find_big_gaps(dfmag, settings['Big_Gaps']['Mag_big_gaps']) 
+        big_gaps = func.find_big_gaps(dfmag, settings['Big_Gaps']['Mag_big_gaps'], str(ind1), str(ind2))
         
         # Resample the input dataframes
         diagnostics_MAG       = func.resample_timeseries_estimate_gaps(dfmag , settings['MAG_resol']  , large_gaps=10)      
@@ -432,7 +432,7 @@ def LoadTimeSeriesWIND(start_time,
 
 
             # Identify big gaps in timeseries
-            big_gaps_ELE = func.find_big_gaps(df_ELE, settings['Big_Gaps']['Par_big_gaps'])
+            big_gaps_ELE = func.find_big_gaps(df_ELE, settings['Big_Gaps']['Par_big_gaps'], str(ind1), str(ind2))
 
             # Resample the input dataframes
             diagnostics_ELE = func.resample_timeseries_estimate_gaps(df_ELE, settings['part_resol'] , large_gaps=10)
@@ -465,7 +465,7 @@ def LoadTimeSeriesWIND(start_time,
         
         
         # Identify big gaps in timeseries
-        big_gaps_par = func.find_big_gaps(dfpar, settings['Big_Gaps']['Par_big_gaps'])
+        big_gaps_par = func.find_big_gaps(dfpar, settings['Big_Gaps']['Par_big_gaps'], str(ind1), str(ind2))
         
         # Resample the input dataframes
         diagnostics_PAR = func.resample_timeseries_estimate_gaps(dfpar, settings['part_resol'] , large_gaps=10)
