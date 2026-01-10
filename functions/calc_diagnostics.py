@@ -17,7 +17,7 @@ sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
 import TurbPy as turb
 import general_functions as func
 import plasma_params as plasma
-import signal_processing 
+
 
 
 from scipy import constants
@@ -98,21 +98,40 @@ def calculate_components(dv, dva, signB):
     
     return np.array([Zpr, Zpt, Zpn]), np.array([Zmr, Zmt, Zmn])
 
-def calculate_energies_sigmas(Zp, Zm, dv, dva):
-    """Calculate energies and normalized residual energies."""
-    Z_plus_squared  = np.nansum(Zp**2, axis=0)
-    Z_minus_squared = np.nansum(Zm**2, axis=0)
-    Ek              = np.nansum(dv**2, axis=0)
-    Eb              = np.nansum(dva**2, axis=0)
+# def calculate_energies_sigmas(Zp, Zm, dv, dva):
+#     """Calculate energies and normalized residual energies."""
+
+#     num      = sig['dva_r']* sig['dv_r'] +  sig['dva_t']* sig['dv_t'] +  sig['dva_n']* sig['dv_n']
+#     den_1    = sig['dva_r']**2 +  sig['dva_t']**2 +  sig['dva_n']**2
+#     den_2    = sig['dv_r']**2  +  sig['dv_t']**2  +  sig['dv_n']**2
+     
+#     # Estimate for each term rolling averages independently
+#     sig_num  = (num.rolling(func_params['averaging_window'], center = True).mean()).resample(func_params['step']).mean()
+#     sig_den1 = (den_1.rolling(func_params['averaging_window'], center = True).mean()).resample(func_params['step']).mean()
+#     sig_den2 = (den_2.rolling(func_params['averaging_window'], center = True).mean()).resample(func_params['step']).mean()
+
+
+#     # Replace sigma_c
+#     coh_dicts['sig_c_v2'] = np.abs(2*sig_num/ (sig_den1 + sig_den2))
+
+
+
+
+
     
-    sigma_r         = (Ek - Eb) / (Ek + Eb)
-    sigma_c         = (Z_plus_squared - Z_minus_squared) / (Z_plus_squared + Z_minus_squared)
+#     Z_plus_squared  = np.nansum(Zp**2, axis=0)
+#     Z_minus_squared = np.nansum(Zm**2, axis=0)
+#     Ek              = np.nansum(dv**2, axis=0)
+#     Eb              = np.nansum(dva**2, axis=0)
     
-    # Apply threshold
-    sigma_r[np.abs(sigma_r) > 1e5] = np.nan
-    sigma_c[np.abs(sigma_c) > 1e5] = np.nan
+#     sigma_r         = (Ek - Eb) / (Ek + Eb)
+#     sigma_c         = (Z_plus_squared - Z_minus_squared) / (Z_plus_squared + Z_minus_squared)
     
-    return sigma_r, sigma_c
+#     # Apply threshold
+#     sigma_r[np.abs(sigma_r) > 1e5] = np.nan
+#     sigma_c[np.abs(sigma_c) > 1e5] = np.nan
+    
+#     return sigma_r, sigma_c
 
 
 
@@ -380,7 +399,7 @@ def calculate_diagnostics(
     signB            = calculate_signB(f_df, settings)               # Calculate sign of B
     dZp, dZm         = calculate_components(dv, dva, signB)          # Calculate Zp and Zm components
     Zp, Zm           = calculate_components(V_ts, Va_ts, signB)
-    sigma_r, sigma_c = calculate_energies_sigmas(dZp, dZm, dv, dva)    # Calculate energies and normalized residual energies
+    #sigma_r, sigma_c = calculate_energies_sigmas(dZp, dZm, dv, dva)    # Calculate energies and normalized residual energies
 
     
     sigs_df              = pd.DataFrame({'DateTime' : f_df.index.values,
@@ -398,8 +417,27 @@ def calculate_diagnostics(
                                          'beta'     : beta,     'np'      : Np,           'Tp'      : f_df.Tp.values,
                                          'VB'       : vbang,    'd_i'     : di,           'Ma'      : Ma_ts,   'rho_i': rho_i,
                                          'Vsw'      : Vsw,      'kin_norm': kinet_normal, 'Ma_r'    : Ma_r_ts,
-                                         'sigma_c'  : sigma_c,  'Va'      : alfv_speed,   'sigma_r' : sigma_r}).set_index('DateTime')
-    sigs_df              = sigs_df
+                                         'Va'       : alfv_speed}).set_index('DateTime')
+
+
+
+    # --- 2) Rolling-window moments for helicity/residual calc ---
+    rol_w = settings['rol_window']
+    
+    # compute dot products and sums over components
+    moments = pd.DataFrame({
+        'num'    : (dva * dv).sum(axis=0),
+        'den_v'  : (dv**2).sum(axis=0),
+        'den_b'  : (dva**2).sum(axis=0),
+    }, index=f_df.index).rolling(window=rol_w, center=True).mean()
+    
+    # --- 3) Normalized cross-helicity and residual-energy ---
+    sigs_df['sigma_c'] = 2 * signB * moments['num'] / (moments['den_v'] + moments['den_b'])
+    sigs_df['sigma_r'] = (moments['den_v'] - moments['den_b']) / (moments['den_v'] + moments['den_b'])
+
+    del moments
+
+
     
     # Also keep a dict containing psd_vv, psd_bb, psd_zp, psd_zm
     dict_psd, _ = estimate_psd_dict(settings,
@@ -436,13 +474,13 @@ def calculate_diagnostics(
                     'beta_mean'         : beta_mean,
                     'beta_std'          : beta_std,
         
-                    'sigma_r_mean'      : np.nanmean(sigma_r),
-                    'sigma_r_median'    : np.nanmedian(sigma_r),
-                    'sigma_r_std'       : np.nanstd(sigma_r),
+                    'sigma_r_mean'      : np.nanmean(sigs_df['sigma_r']),
+                    'sigma_r_median'    : np.nanmedian(sigs_df['sigma_r']),
+                    'sigma_r_std'       : np.nanstd(sigs_df['sigma_r']),
         
-                    'sigma_c_median'    : np.nanmedian(np.abs(sigma_c)),
-                    'sigma_c_mean'      : np.nanmean(np.abs(sigma_c)),
-                    'sigma_c_std'       : np.nanstd(np.abs(sigma_c)),
+                    'sigma_c_median'    : np.nanmedian(np.abs(sigs_df['sigma_c'])),
+                    'sigma_c_mean'      : np.nanmean(np.abs(sigs_df['sigma_c'])),
+                    'sigma_c_std'       : np.nanstd(np.abs(sigs_df['sigma_c'])),
         
                     'Vth_mean'          : Vth_mean,
                     'Vth_std'           : Vth_std,

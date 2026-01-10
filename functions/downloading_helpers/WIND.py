@@ -51,28 +51,46 @@ ev_2_K = 1 / k_B_ev_per_K
 def LoadTimeSeriesWind_electrons(start_time,
                                  end_time,
                                  settings):
-    """ 
-    Load Wind Plasma Data 
-    start_time: pd.Timestamp
-    end_time: pd.Timestamp
     """
-
-    
+    Load Wind Plasma Data.
+    start_time: str | datetime | pd.Timestamp
+    end_time:   str | datetime | pd.Timestamp
+    Returns: DataFrame with Te, Te_core in eV.
+    """
+    import pandas as pd
     from cdasws import CdasWs
+    from astropy import units as u
+
+    def _to_utc_pyDT(t):
+        t = pd.to_datetime(t)
+        if t.tzinfo is None:
+            t = t.tz_localize("UTC")
+        else:
+            t = t.tz_convert("UTC")
+        return t.to_pydatetime()
+
     cdas = CdasWs()
     vars = ['T_elec', 'TcElec']
-    time = [start_time.to_pydatetime( ).replace(tzinfo=pytz.UTC), end_time.to_pydatetime( ).replace(tzinfo=pytz.UTC)]
-    status, data         = cdas.get_data('WI_H5_SWE' , vars, time[0], time[1])
+
+    t0 = _to_utc_pyDT(start_time)
+    t1 = _to_utc_pyDT(end_time)
+
+    status, data = cdas.get_data('WI_H5_SWE', vars, t0, t1)
+
+    # Kelvin -> eV using temperature-energy equivalency
+    Te_eV      = u.Quantity(data['T_elec'],  u.K).to(u.eV, equivalencies=u.temperature_energy())
+    Te_core_eV = u.Quantity(data['TcElec'], u.K).to(u.eV, equivalencies=u.temperature_energy())
 
     dfpar = pd.DataFrame(
-            index = data['Epoch'],
-            data = {
-                'Te'          : data['T_elec'],
-                'Te_core'     : data['TcElec']
-            }
-        )
+        index = pd.to_datetime(data['Epoch']),
+        data = {
+            'Te'      : Te_eV.value,
+            'Te_core' : Te_core_eV.value
+        }
+    )
 
     return dfpar
+
 
 
 # def LoadTimeSeriesWind_electrons(start_time,

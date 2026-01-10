@@ -10,3 +10,14 @@ examples/WIND/*.pkl
 examples/PSP/*.pkl
 examples/WIND/*.pkl
 examples/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.DS_Store
+psp_data/
+solar_orbiter_data/
+*.cdf
+*.pkl
+*.parquet
+*.npz
+*.npy

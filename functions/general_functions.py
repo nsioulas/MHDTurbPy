@@ -22,6 +22,7 @@ import pytplot
 
 import warnings
 warnings.filterwarnings('ignore')
+import polars as pl
 
 
 # Import urbPy
@@ -29,46 +30,451 @@ sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
 
 
 from plasma_params import*
-import signal_processing 
+import signal_processing  #import synchronize_dfs
+
+
+
+def _finalize_alignment(df1, df2, *, interp_method='time'):
+    """
+    Internal helper: clamp two DataFrames to their overlapping time range,
+    time-interpolate small gaps, and trim leading/trailing NaNs jointly.
+
+    Assumes both have a DatetimeIndex.
+    """
+    if not isinstance(df1.index, pd.DatetimeIndex):
+        raise TypeError("df1 must have a DatetimeIndex.")
+    if not isinstance(df2.index, pd.DatetimeIndex):
+        raise TypeError("df2 must have a DatetimeIndex.")
+
+    # Ensure monotonic indices for time interpolation
+    df1 = df1.sort_index()
+    df2 = df2.sort_index()
+
+    # 1) Overlapping time window
+    overlap_start = max(df1.index.min(), df2.index.min())
+    overlap_end   = min(df1.index.max(), df2.index.max())
+
+    if overlap_start >= overlap_end:
+        # No overlap -> return empties with the right columns/dtypes
+        return df1.iloc[0:0].copy(), df2.iloc[0:0].copy()
+
+    df1 = df1.loc[overlap_start:overlap_end].copy()
+    df2 = df2.loc[overlap_start:overlap_end].copy()
+
+    # 2) Interpolate small internal gaps in time
+    df1 = df1.interpolate(method=interp_method)
+    df2 = df2.interpolate(method=interp_method)
+
+    # 3) Trim leading/trailing NaNs jointly
+    fvi1 = df1.first_valid_index()
+    lvi1 = df1.last_valid_index()
+    fvi2 = df2.first_valid_index()
+    lvi2 = df2.last_valid_index()
+
+    if fvi1 is None or fvi2 is None:
+        # One (or both) are all-NaN in this window
+        return df1.iloc[0:0].copy(), df2.iloc[0:0].copy()
+
+    new_start = max(fvi1, fvi2)
+    new_end   = min(lvi1, lvi2)
+
+    if new_start > new_end:
+        # No joint interval where both have finite values
+        return df1.iloc[0:0].copy(), df2.iloc[0:0].copy()
+
+    df1 = df1.loc[new_start:new_end]
+    df2 = df2.loc[new_start:new_end]
+
+    return df1, df2
+
+
+def synchronize_dfs(df_higher_freq, df_lower_freq, upsample):
+    """
+    Synchronize two time-indexed DataFrames with different cadences.
+
+    Parameters
+    ----------
+    df_higher_freq : pd.DataFrame
+        Higher-cadence time series.
+    df_lower_freq : pd.DataFrame
+        Lower-cadence time series.
+    upsample : bool
+        If True  -> upsample the lower-frequency DF to the higher cadence
+                    using signal_processing.upsample_dataframe.
+        If False -> downsample the higher-frequency DF to the lower cadence
+                    using signal_processing.downsample_and_filter (with
+                    anti-aliasing low-pass filtering).
+
+    Returns
+    -------
+    df_high_sync, df_low_sync : pd.DataFrame
+        Two DataFrames that:
+          1. Live strictly on the common overlapping time range,
+          2. Have small internal gaps interpolated in time,
+          3. Have leading/trailing NaNs removed based on the joint valid window.
+    """
+    if not isinstance(df_higher_freq.index, pd.DatetimeIndex):
+        raise TypeError("df_higher_freq must have a DatetimeIndex.")
+    if not isinstance(df_lower_freq.index, pd.DatetimeIndex):
+        raise TypeError("df_lower_freq must have a DatetimeIndex.")
+
+    # Work on sorted copies; do not modify the caller's frames in place
+    df_higher_freq = df_higher_freq.sort_index()
+    df_lower_freq  = df_lower_freq.sort_index()
+
+    if upsample:
+        # ===== UPSAMPLE: low cadence -> high cadence =====
+        # Clean low-cadence series before FIR + filtfilt to avoid NaNs in the filter
+        low_clean = df_lower_freq.interpolate(method='time').dropna(how='all')
+        if low_clean.empty:
+            # Nothing usable in low series
+            return df_higher_freq.iloc[0:0].copy(), df_lower_freq.iloc[0:0].copy()
+
+        high_sorted = df_higher_freq  # already sorted
+
+        # Anti-imaging FIR low-pass + interpolation onto the high-cadence grid
+        aligned_low = signal_processing.upsample_dataframe(
+            low_clean,
+            high_sorted,
+        )
+
+        # Final overlap clamp + interpolation + joint trim
+        high_sync, low_sync = _finalize_alignment(high_sorted, aligned_low)
+
+    else:
+        # ===== DOWNSAMPLE: high cadence -> low cadence =====
+        # Clean both before low-pass filtering; filtfilt cannot handle NaNs
+        high_clean = df_higher_freq.interpolate(method='time').dropna(how='all')
+        low_clean  = df_lower_freq.interpolate(method='time').dropna(how='all')
+
+        if high_clean.empty or low_clean.empty:
+            # Nothing usable in one of the series
+            return df_higher_freq.iloc[0:0].copy(), df_lower_freq.iloc[0:0].copy()
+
+        # Anti-aliasing low-pass filter at ~Nyquist(low_fs) and resample onto low_clean.index
+        aligned_high = signal_processing.downsample_and_filter(
+            high_clean,
+            low_clean,
+        )
+
+        # Final overlap clamp + interpolation + joint trim
+        high_sync, low_sync = _finalize_alignment(aligned_high, low_clean)
+
+    return high_sync, low_sync
+
+
+
+
+
+def read_pickle(path):
+    class FixUnpickler(pickle.Unpickler):
+        def find_class(self, module, name):
+            # intercept either numpy._core.multiarray._frombuffer
+            # or numpy.core.numeric._frombuffer
+            if name == '_frombuffer' and module.startswith('numpy'):
+                def _fixed(buf, dtype=None, shape=None, order=None):
+                    arr = np.frombuffer(buf, dtype=dtype)
+                    if shape is not None:
+                        return arr.reshape(shape, order=order)
+                    return arr
+                return _fixed
+            return super().find_class(module, name)
+    with open(path, 'rb') as f:
+        return FixUnpickler(f).load()
+
+
+
+def create_gap_mask(master_index: pd.DatetimeIndex,
+                    gap_dfs: list[pd.DataFrame],
+                    buffer: str = '10s',
+                    min_gap: str = '1s'
+                   ) -> pd.Series:
+    """
+    Build a 0/1 mask over master_index:
+      • 0 if timestamp lies in any gap [start-buffer, end+buffer],
+      • 1 otherwise.
+    Then remove any gap-run shorter than min_gap by setting it back to 1.
+
+    Parameters
+    ----------
+    master_index : pd.DatetimeIndex
+        Full timeline (e.g. coh['sig_c'].index)
+    gap_dfs : list of pd.DataFrame
+        Each DF must have 'Start'/'End' columns (case-insensitive).
+    buffer : str
+        Pandas offset string to extend each interval on both sides.
+    min_gap : str
+        Minimum gap duration; shorter zero-runs are reset to 1.
+    """
+
+    # Convert to Timedelta
+    buff       = pd.to_timedelta(buffer)
+    min_gap_td = pd.to_timedelta(min_gap)
+
+    # Initialize all valid (1)
+    mask_arr = np.ones(len(master_index), dtype=int)
+
+    # 1) Mark gaps with buffer
+    for gdf in gap_dfs:
+        if gdf.empty:
+            continue
+
+        cols_lc = {c.lower(): c for c in gdf.columns}
+        if 'start' not in cols_lc or 'end' not in cols_lc:
+            continue  # skip if no interval columns
+
+        starts = pd.to_datetime(gdf[cols_lc['start']], errors='coerce') - buff
+        ends   = pd.to_datetime(gdf[cols_lc['end']],   errors='coerce') + buff
+
+        for s, e in zip(starts, ends):
+            if pd.isna(s) or pd.isna(e):
+                continue
+            if s > e:
+                s, e = e, s
+            i0 = master_index.searchsorted(s, side='left')
+            i1 = master_index.searchsorted(e, side='right')
+            mask_arr[i0:i1] = 0
+
+    mask = pd.Series(mask_arr, index=master_index, name='data_valid')
+
+    # 2) Heal tiny gaps: any zero-run < min_gap → set back to 1
+    df = pd.DataFrame({'mask': mask})
+    # group number increments on mask-change
+    df['grp'] = (df['mask'] != df['mask'].shift()).cumsum()
+
+    for _, sub in df.groupby('grp'):
+        if sub['mask'].iat[0] == 0:
+            duration = sub.index[-1] - sub.index[0]
+            if duration < min_gap_td:
+                mask.loc[sub.index] = 1
+
+    return mask
+
 
 
 import numpy as np
 from joblib import Parallel, delayed
 
+# def compute_quantile_edges_function(
+#     x, y,
+#     Nx_bins,
+#     Ny_bins,
+#     log_x           = True,
+#     poly_order      = None,
+#     auto_poly       = True,               # NEW: automatic degree selector
+#     max_poly_order  = 5,              # NEW: search cap for auto selector
+#     criterion       = "bic",               # NEW: {"bic"} (others reserved)
+#     n_jobs          = -1,
+#     return_counts   = False,
+#     return_avg_y    = False,
+#     low_pct         = 0.05,
+#     high_pct        = 99.8,
+# ):
+#     """
+#     Compute quantile edges of y as a function of x.
+
+#     Extensions over the previous version
+#     ------------------------------------
+#       • y-values outside the [low_pct, high_pct] range are discarded;
+#       • polynomial fits are weighted by the # of points in each x-bin;
+#       • *optional* automatic selection of the best polynomial degree
+#         using a conservative weighted-BIC score (set auto_poly=True).
+#     """
+#     # ---------- input checks & percentile clipping -------------------
+#     x = np.asarray(x, float).ravel()
+#     y = np.asarray(y, float).ravel()
+#     if x.shape != y.shape:
+#         raise ValueError("x and y must have the same length")
+#     if not (0 <= low_pct < high_pct <= 100):
+#         raise ValueError("0 ≤ low_pct < high_pct ≤ 100")
+
+#     lo, hi = np.percentile(y, [low_pct, high_pct])
+#     keep   = (y >= lo) & (y <= hi)
+#     x, y   = x[keep], y[keep]
+
+#     # ---------- x-bin edges ------------------------------------------
+#     x_edges = (np.logspace(np.log10(x.min()), np.log10(x.max()), Nx_bins + 1)
+#                if log_x else
+#                np.linspace(x.min(), x.max(), Nx_bins + 1))
+
+#     order                = np.argsort(x)
+#     x_sorted, y_sorted   = x[order], y[order]
+#     bin_idx              = np.searchsorted(x_sorted, x_edges)
+#     q_levels             = np.linspace(0.0, 1.0, Ny_bins + 1)
+
+#     # ---------- quantiles per x-bin ----------------------------------
+#     def _bin_q(i):
+#         s, e = bin_idx[i], bin_idx[i + 1]
+#         return (np.quantile(y_sorted[s:e], q_levels)
+#                 if e - s >= 2 else np.full_like(q_levels, np.nan))
+
+#     y_edges_per_bin = np.vstack(
+#         Parallel(n_jobs=n_jobs)(delayed(_bin_q)(i) for i in range(Nx_bins))
+#     )
+#     x_centres = 0.5 * (x_edges[:-1] + x_edges[1:])
+#     bin_sizes = np.diff(bin_idx)                            # <-- counts for weighting
+
+#     # ---------- counts / averages if requested -----------------------
+#     counts = av_y = None
+#     if return_counts or return_avg_y:
+#         def _stats(i):
+#             s, e = bin_idx[i], bin_idx[i + 1]
+#             if e - s < 1:
+#                 return np.zeros(Ny_bins, int), np.full(Ny_bins, np.nan)
+#             yy = y_sorted[s:e]
+#             c, _ = np.histogram(yy, bins=y_edges_per_bin[i])
+#             av  = np.array([
+#                 yy[(yy >= y_edges_per_bin[i,j]) & (yy < y_edges_per_bin[i,j+1])].mean()
+#                 if c[j] else np.nan for j in range(Ny_bins)
+#             ])
+#             return c, av
+#         tmp = Parallel(n_jobs=n_jobs)(delayed(_stats)(i) for i in range(Nx_bins))
+#         if return_counts: counts = np.vstack([t[0] for t in tmp])
+#         if return_avg_y : av_y   = np.vstack([t[1] for t in tmp])
+
+#     # ---------- (auto-)select polynomial degree ----------------------
+#     # If auto_poly is requested, ignore any user-supplied poly_order
+#     selected_poly_order = None
+#     selection_table     = None
+#     if auto_poly:
+#         if max_poly_order < 0:
+#             raise ValueError("max_poly_order must be non-negative")
+#         degrees   = range(max_poly_order + 1)
+#         bic_score = []
+
+#         for p in degrees:
+#             wrss = 0.0
+#             npts = 0
+#             for j in range(Ny_bins + 1):
+#                 ok = (~np.isnan(y_edges_per_bin[:, j])) & (bin_sizes > 0)
+#                 if ok.sum() < p + 1:       # not enough points to fit p-th order
+#                     continue
+#                 coeffs = np.polyfit(
+#                     x_centres[ok],
+#                     y_edges_per_bin[ok, j],
+#                     p,
+#                     w=np.sqrt(bin_sizes[ok]),
+#                 )
+#                 resid  = (np.polyval(coeffs, x_centres[ok])
+#                           - y_edges_per_bin[ok, j])
+#                 wrss  += np.sum(bin_sizes[ok] * resid**2)
+#                 npts  += ok.sum()
+#             if npts == 0 or wrss <= 0:
+#                 bic = np.inf
+#             else:
+#                 k   = p + 1
+#                 bic = npts * np.log(wrss / npts) + k * np.log(npts)
+#             bic_score.append(bic)
+
+#         selected_poly_order = int(np.argmin(bic_score))
+#         poly_order          = selected_poly_order
+#         selection_table     = {"degree": list(degrees), "score": bic_score}
+
+#     # ---------- weighted polynomial fits -----------------------------
+#     edge_functions      = None
+#     quantile_classifier = None
+#     if isinstance(poly_order, int) and poly_order >= 0:
+#         edge_functions = []
+#         for j in range(Ny_bins + 1):
+#             ok = (~np.isnan(y_edges_per_bin[:, j])) & (bin_sizes > 0)
+#             if ok.sum() < poly_order + 1:
+#                 edge_functions.append(None)
+#                 continue
+#             coeffs = np.polyfit(
+#                 x_centres[ok],
+#                 y_edges_per_bin[ok, j],
+#                 poly_order,
+#                 w=np.sqrt(bin_sizes[ok])
+#             )
+#             edge_functions.append(np.poly1d(coeffs))
+
+#         def _classifier(x0, y0):
+#             edges = np.array([
+#                 f(x0) if f is not None else np.nan for f in edge_functions
+#             ])
+#             return np.searchsorted(edges, y0, side="right") - 1
+#         quantile_classifier = _classifier
+
+#     # ---------- return ------------------------------------------------
+#     out = dict(
+#         x_edges=x_edges,
+#         x_centres=x_centres,
+#         y_edges_per_bin=y_edges_per_bin,
+#     )
+#     if edge_functions is not None:
+#         out["edge_functions"]      = edge_functions
+#         out["quantile_classifier"] = quantile_classifier
+#     if counts is not None:  out["counts"]      = counts
+#     if av_y   is not None:  out["av_y_values"] = av_y
+#     if auto_poly:
+#         out["selected_poly_order"] = selected_poly_order
+#         out["selection_table"]     = selection_table
+#     return out
+
+
 import numpy as np
-from joblib import Parallel, delayed
+
+def masked_nanmean(arr, axis=1):
+    arr = np.asarray(arr)
+
+    # Mask: valid entries are non-nan and non-zero
+    mask = (~np.isnan(arr)) & (arr != 0)
+
+    # Replace nans with 0 for summation
+    arr_filled = np.nan_to_num(arr, nan=0.0)
+
+    # Sum over valid entries
+    sums = np.sum(arr_filled * mask, axis=axis)
+
+    # Count valid entries
+    counts = np.sum(mask, axis=axis)
+
+    # Compute mean safely
+    out = sums / counts
+    out[counts == 0] = np.nan  # if no valid entries, return nan
+    return out
+
 
 import numpy as np
 from joblib import Parallel, delayed
+
+# optional – only needed for model="parker" or "empirical"
+from scipy.special import lambertw
+from scipy.optimize import least_squares
+
 
 def compute_quantile_edges_function(
     x, y,
-    Nx_bins, Ny_bins,
+    Nx_bins,
+    Ny_bins,
     *,
-    log_x=True,
-    poly_order=None,
-    n_jobs=-1,
-    return_counts=False, return_avg_y=False,
-    low_pct=0.05, high_pct=99.8,
+    log_x           = True,
+    poly_order      = None,
+    auto_poly       = True,
+    max_poly_order  = 5,
+    criterion       = "bic",
+    model           = "parker",          # now: {"poly", "parker", "empirical"}
+    n_jobs          = -1,
+    return_counts   = False,
+    return_avg_y    = False,
+    low_pct         = 0.05,
+    high_pct        = 99.8,
 ):
-    """
-    Identical behaviour to the previous version but:
-      • y-values outside the [low_pct, high_pct] range are discarded;
-      • polynomial fits are weighted by the # of points in each x-bin.
-    """
-    # ---------- input checks & percentile clipping -------------------
+    # --- input checks & percentile clipping -------------------
     x = np.asarray(x, float).ravel()
     y = np.asarray(y, float).ravel()
     if x.shape != y.shape:
         raise ValueError("x and y must have the same length")
     if not (0 <= low_pct < high_pct <= 100):
         raise ValueError("0 ≤ low_pct < high_pct ≤ 100")
+    if model not in {"poly", "parker", "empirical"}:
+        raise ValueError("model must be 'poly', 'parker' or 'empirical'")
 
     lo, hi = np.percentile(y, [low_pct, high_pct])
     keep   = (y >= lo) & (y <= hi)
     x, y   = x[keep], y[keep]
 
-    # ---------- x-bin edges ------------------------------------------
+    # --- x‑bin edges --------------------------------------------
     x_edges = (np.logspace(np.log10(x.min()), np.log10(x.max()), Nx_bins + 1)
                if log_x else
                np.linspace(x.min(), x.max(), Nx_bins + 1))
@@ -78,19 +484,20 @@ def compute_quantile_edges_function(
     bin_idx              = np.searchsorted(x_sorted, x_edges)
     q_levels             = np.linspace(0.0, 1.0, Ny_bins + 1)
 
-    # ---------- quantiles per x-bin ----------------------------------
+    # --- quantiles per x‑bin ------------------------------------
     def _bin_q(i):
         s, e = bin_idx[i], bin_idx[i + 1]
-        return (np.quantile(y_sorted[s:e], q_levels)
-                if e - s >= 2 else np.full_like(q_levels, np.nan))
+        if e - s < 2:
+            return np.full_like(q_levels, np.nan)
+        return np.quantile(y_sorted[s:e], q_levels)
 
     y_edges_per_bin = np.vstack(
         Parallel(n_jobs=n_jobs)(delayed(_bin_q)(i) for i in range(Nx_bins))
     )
     x_centres = 0.5 * (x_edges[:-1] + x_edges[1:])
-    bin_sizes = np.diff(bin_idx)                            # <-- counts for weighting
+    bin_sizes = np.diff(bin_idx)
 
-    # ---------- counts / averages if requested -----------------------
+    # --- optional counts / averages -----------------------------
     counts = av_y = None
     if return_counts or return_avg_y:
         def _stats(i):
@@ -101,46 +508,203 @@ def compute_quantile_edges_function(
             c, _ = np.histogram(yy, bins=y_edges_per_bin[i])
             av  = np.array([
                 yy[(yy >= y_edges_per_bin[i,j]) & (yy < y_edges_per_bin[i,j+1])].mean()
-                if c[j] else np.nan for j in range(Ny_bins)
+                if c[j] else np.nan
+                for j in range(Ny_bins)
             ])
             return c, av
+
         tmp = Parallel(n_jobs=n_jobs)(delayed(_stats)(i) for i in range(Nx_bins))
         if return_counts: counts = np.vstack([t[0] for t in tmp])
-        if return_avg_y : av_y   = np.vstack([t[1] for t in tmp])
+        if return_avg_y: av_y  = np.vstack([t[1] for t in tmp])
 
-    # ---------- weighted polynomial fits -----------------------------
-    edge_functions      = None
-    quantile_classifier = None
-    if isinstance(poly_order, int) and poly_order >= 0:
-        edge_functions = []
+    # ========== MODEL‑SPECIFIC EDGE FUNCTIONS ======================
+    edge_functions      = []
+    fit_parameters      = []
+    selected_poly_order = None
+    selection_table     = None
+
+    # ----------------------------------------------------------------
+    # (A) Polynomial branch
+    # ----------------------------------------------------------------
+    if model == "poly":
+        # optional automatic degree selection
+        if auto_poly:
+            degrees   = range(max_poly_order + 1)
+            bic_score = []
+            for p in degrees:
+                wrss = 0.0
+                npts = 0
+                for j in range(Ny_bins + 1):
+                    ok = (~np.isnan(y_edges_per_bin[:, j])) & (bin_sizes > 0)
+                    if ok.sum() < p + 1:
+                        continue
+                    coeffs = np.polyfit(x_centres[ok], y_edges_per_bin[ok, j],
+                                        p, w=np.sqrt(bin_sizes[ok]))
+                    resid  = (np.polyval(coeffs, x_centres[ok])
+                              - y_edges_per_bin[ok, j])
+                    wrss  += np.sum(bin_sizes[ok] * resid**2)
+                    npts  += ok.sum()
+                bic = (np.inf if (npts == 0 or wrss <= 0)
+                       else npts*np.log(wrss/npts) + (p+1)*np.log(npts))
+                bic_score.append(bic)
+            selected_poly_order = int(np.argmin(bic_score))
+            poly_order          = selected_poly_order
+            selection_table     = {"degree": list(degrees), "score": bic_score}
+
+        if not isinstance(poly_order, int) or poly_order < 0:
+            raise ValueError("poly_order must be a non‑negative integer")
+
         for j in range(Ny_bins + 1):
-            ok  = (~np.isnan(y_edges_per_bin[:, j])) & (bin_sizes > 0)
-            coeffs = np.polyfit(
-                x_centres[ok],
-                y_edges_per_bin[ok, j],
-                poly_order,
-                w = np.sqrt(bin_sizes[ok])                 # weight = # points in x-bin
-            )
-            edge_functions.append(np.poly1d(coeffs))
-        def _classifier(x0, y0):
-            edges = np.array([f(x0) for f in edge_functions])
-            return np.searchsorted(edges, y0, side="right") - 1
-        quantile_classifier = _classifier
+            ok = (~np.isnan(y_edges_per_bin[:, j])) & (bin_sizes > 0)
+            if ok.sum() < poly_order + 1:
+                edge_functions.append(None)
+                fit_parameters.append(None)
+                continue
+            coeffs = np.polyfit(x_centres[ok], y_edges_per_bin[ok, j],
+                                poly_order, w=np.sqrt(bin_sizes[ok]))
+            fit_parameters.append(coeffs)
 
-    # ---------- return ------------------------------------------------
+            p = np.poly1d(coeffs)
+            edge_functions.append(p)
+
+    # ----------------------------------------------------------------
+    # (B) Parker branch
+    # ----------------------------------------------------------------
+    elif model == "parker":
+        def parker_speed(r, C, rc):
+            r  = np.asarray(r, float)
+            R  = 4.0 * (np.log(r/rc) + rc/r - 1.0)
+            z  = -np.exp(-(R + 1.0))
+            w0  = lambertw(z, k=0).real
+            w_1 = lambertw(z, k=-1).real
+            w   = np.where(r <= rc, w0, w_1)
+            return C * np.sqrt(-w)
+
+        for j in range(Ny_bins + 1):
+            ok = (~np.isnan(y_edges_per_bin[:, j])) & (bin_sizes > 0)
+            if ok.sum() < 3:
+                edge_functions.append(None)
+                fit_parameters.append(None)
+                continue
+
+            r_data = x_centres[ok]
+            v_data = y_edges_per_bin[ok, j]
+            wts    = np.sqrt(bin_sizes[ok])
+
+            C0  = np.nanmedian(v_data) / np.sqrt(2.0)
+            rc0 = np.nanmedian(r_data)
+
+            def resid_parker(p):
+                return (parker_speed(r_data, *p) - v_data) * wts
+
+            sol = least_squares(resid_parker, x0=[C0, rc0],
+                                bounds=([0.0, 0.0], np.inf))
+            C_fit, rc_fit = sol.x
+
+            fit_parameters.append((C_fit, rc_fit))
+            edge_functions.append(
+                lambda r, C=C_fit, rc=rc_fit: parker_speed(r, C, rc)
+            )
+
+    # ----------------------------------------------------------------
+    # (C) Empirical exponential branch
+    # ----------------------------------------------------------------
+    else:  # model == "empirical"
+        def empirical_speed(r, u_inf, r1, a):
+            return u_inf * (1 - np.exp(- (r / r1)**a))
+
+        for j in range(Ny_bins + 1):
+            ok = (~np.isnan(y_edges_per_bin[:, j])) & (bin_sizes > 0)
+            if ok.sum() < 3:
+                edge_functions.append(None)
+                fit_parameters.append(None)
+                continue
+
+            r_data = x_centres[ok]
+            v_data = y_edges_per_bin[ok, j]
+            wts    = np.sqrt(bin_sizes[ok])
+
+            # initial guesses
+            u_inf0 = np.nanmax(v_data)
+            r10    = np.nanmedian(r_data)
+            a0     = 1.0
+
+            def resid_empirical(p):
+                return (empirical_speed(r_data, *p) - v_data) * wts
+
+            sol = least_squares(
+                resid_empirical,
+                x0=[u_inf0, r10, a0],
+                bounds=([0.0, 0.0, 0.0], np.inf)
+            )
+            u_inf_fit, r1_fit, a_fit = sol.x
+
+            fit_parameters.append((u_inf_fit, r1_fit, a_fit))
+            edge_functions.append(
+                lambda r, ui=u_inf_fit, r1=r1_fit, a=a_fit: empirical_speed(r, ui, r1, a)
+            )
+
+    # --- common classifier -----------------------------------------
+    def _classifier(x0, y0):
+        edges = np.array([
+            f(x0) if f is not None else np.nan
+            for f in edge_functions
+        ])
+        return np.searchsorted(edges, y0, side="right") - 1
+
+    # --- package output --------------------------------------------
     out = dict(
-        x_edges=x_edges,
-        x_centres=x_centres,
-        y_edges_per_bin=y_edges_per_bin,
+        x_edges             = x_edges,
+        x_centres           = x_centres,
+        y_edges_per_bin     = y_edges_per_bin,
+        edge_functions      = edge_functions,
+        quantile_classifier = _classifier,
+        fit_parameters      = fit_parameters,
+        model               = model,
     )
-    if edge_functions is not None:
-        out["edge_functions"]      = edge_functions
-        out["quantile_classifier"] = quantile_classifier
-    if counts is not None:  out["counts"]      = counts
-    if av_y   is not None:  out["av_y_values"] = av_y
+    if counts is not None:    out["counts"]      = counts
+    if av_y is not None:      out["av_y_values"] = av_y
+    if model == "poly" and auto_poly:
+        out["selected_poly_order"] = selected_poly_order
+        out["selection_table"]     = selection_table
+
     return out
 
 
+from scipy.special import lambertw
+
+# Synthetic demonstration of full vs. surrogate Parker‐wind curves.
+# Replace fit_params, d_all, and v_all with your own quantile_functions and data_dict.
+
+# --- Define helper functions ---
+def eval_lambertw(r, fit_parameters):
+    r = np.asarray(r, float)
+    params = np.asarray(fit_parameters, float)
+    C  = params[:, 0][:, None]
+    rc = params[:, 1][:, None]
+    R  = r[None, :]
+    X  = 4.0 * (np.log(R/rc) + rc/R - 1.0)
+    Z  = -np.exp(-(X + 1.0))
+    W0 = lambertw(Z, k=0).real
+    W1 = lambertw(Z, k=-1).real
+    mask = (R <= rc)
+    W = np.where(mask, W0, W1)
+    return C * np.sqrt(-W)
+
+def build_parker_surrogates(fit_parameters, r_min, r_max, n_samples=100, poly_degree=5):
+    r_samp = np.exp(np.linspace(np.log(r_min), np.log(r_max), n_samples))
+    V_mat = eval_lambertw(r_samp, fit_parameters)
+    ln_r = np.log(r_samp)
+    coefs = np.zeros((len(fit_parameters), poly_degree+1))
+    for j in range(len(fit_parameters)):
+        ln_V = np.log(V_mat[j])
+        coefs[j] = np.polyfit(ln_r, ln_V, poly_degree)
+    return coefs
+
+def eval_parker_surrogates(r, coefs):
+    ln_r = np.log(r)
+    ln_V = np.vstack([np.polyval(coefs[j], ln_r) for j in range(len(coefs))])
+    return np.exp(ln_V)
 
 
 
@@ -484,149 +1048,8 @@ def tplot_to_dataframe(file_path,
 
 
 
-# def synchronize_dfs(df_higher_freq, df_lower_freq, upsample=True, 
-#                    order_up=3, order_down=5, percentage=1.15, interp_method='linear'):
-#     """
-#     Align two DataFrames based on their frequency by either upsampling the lower frequency DataFrame 
-#     or downsampling the higher frequency DataFrame.
-
-#     Args:
-#         df_higher_freq: [pandas DataFrame] DataFrame with higher frequency data.
-#         df_lower_freq: [pandas DataFrame] DataFrame with lower frequency data.
-#         upsample: [bool] If True, upsample the lower frequency DataFrame; otherwise, downsample the higher frequency one.
-#         order_up: [int] Order of the Butterworth filter for upsampling.
-#         order_down: [int] Order of the Butterworth filter for downsampling.
-#         percentage: [float] Multiplier for the cutoff frequency during downsampling.
-#         interp_method: [str] Interpolation method for reindexing.
-
-#     Returns:
-#         Tuple[pandas DataFrame, pandas DataFrame]: Aligned DataFrames (high_freq_df, low_freq_df).
-#     """
-    
-
-#     if overlapping_start >= overlapping_end:
-#         raise ValueError("No overlapping time range between high_df and low_df.")
-
-#     # Trim both DataFrames to the overlapping range before any processing
-
-#     if upsample:
-#         # Upsample the lower frequency DataFrame to match the higher frequency one
-#         aligned_lower_freq = signal_processing.upsample_and_filter(
-#             low_df         = df_lower_freq, 
-#             high_df        = df_higher_freq, 
-#             order          = order_up, 
-#             interp_method  = interp_method
-#         )
-#         # Ensure both DataFrames cover the exact same time range after synchronization
-#         aligned_high_freq = df_higher_freq.loc[aligned_lower_freq.index]
-#         return aligned_high_freq, aligned_lower_freq
-
-#     else:
-#         # Downsample the higher frequency DataFrame to match the lower frequency one
-#         aligned_higher_freq  = signal_processing.downsample_and_filter(
-#             high_df          = df_higher_freq, 
-#             low_df           = df_lower_freq, 
-#             order            = order_down, 
-#             percentage       = percentage
-#         )
-        
-#         # Ensure both DataFrames cover the exact same time range after synchronization
-#         aligned_low_freq = df_lower_freq.loc[aligned_higher_freq.index]
-#         return aligned_higher_freq, aligned_low_freq
 
 
-
-def synchronize_dfs(df_higher_freq, df_lower_freq, upsample):
-    """
-    Align two dataframes based on their frequency, upsample lower frequency 
-    dataframe if specified, otherwise downsample the higher frequency one.
-
-    In the end, we ensure that we return two DataFrames that:
-      1. Are strictly in the overlapping time range,
-      2. Have no NaNs at the beginning or end (trimmed away),
-      3. Are time-interpolated (so small internal gaps are filled).
-    """
-    if upsample:
-        # 1) Upsample lower frequency to match higher frequency
-        aligned_lower_freq = signal_processing.upsample_dataframe(df_lower_freq, df_higher_freq)
-
-        # 2) Overlap clamp
-        overlapping_start = max(df_higher_freq.index.min(), aligned_lower_freq.index.min())
-        overlapping_end   = min(df_higher_freq.index.max(), aligned_lower_freq.index.max())
-
-        df_higher_freq     = df_higher_freq.loc[overlapping_start:overlapping_end]
-        aligned_lower_freq = aligned_lower_freq.loc[overlapping_start:overlapping_end]
-
-        # 3) Interpolate both to fill small gaps
-        df_higher_freq     = df_higher_freq.interpolate(method='time')
-        aligned_lower_freq = aligned_lower_freq.interpolate(method='time')
-
-        # 4) Remove leading/trailing NaNs from both
-
-        # (a) Find first/last valid index in each
-        fvi_high = df_higher_freq.first_valid_index()
-        lvi_high = df_higher_freq.last_valid_index()
-
-        fvi_low  = aligned_lower_freq.first_valid_index()
-        lvi_low  = aligned_lower_freq.last_valid_index()
-
-        # If either is entirely NaN, just return empty slices
-        if fvi_high is None or fvi_low is None:
-            return (df_higher_freq.iloc[0:0], aligned_lower_freq.iloc[0:0])
-
-        # (b) Take the maximum of first_valid_indices => start
-        new_start = max(fvi_high, fvi_low)
-        # (c) Take the minimum of last_valid_indices  => end
-        new_end   = min(lvi_high, lvi_low)
-
-        # (d) Trim both DataFrames
-        df_higher_freq     = df_higher_freq.loc[new_start:new_end]
-        aligned_lower_freq = aligned_lower_freq.loc[new_start:new_end]
-
-        return df_higher_freq, aligned_lower_freq
-
-    else:
-        # 1) Downsample higher frequency to match lower frequency
-        try:
-            # Interpolate + dropna inside, if needed (unchanged)
-            aligned_higher_freq = signal_processing.downsample_and_filter(
-                df_higher_freq.interpolate().dropna(),
-                df_lower_freq.interpolate().dropna()
-            )
-            
-            # 2) Overlap clamp
-            overlapping_start = max(aligned_higher_freq.index.min(), df_lower_freq.index.min())
-            overlapping_end   = min(aligned_higher_freq.index.max(), df_lower_freq.index.max())
-
-            aligned_higher_freq = aligned_higher_freq.loc[overlapping_start:overlapping_end]
-            df_lower_freq       = df_lower_freq.loc[overlapping_start:overlapping_end]
-
-            # 3) Interpolate both (fills small internal gaps)
-            aligned_higher_freq = aligned_higher_freq.interpolate(method='time')
-            df_lower_freq       = df_lower_freq.interpolate(method='time')
-
-            # 4) Remove leading/trailing NaNs from both
-            fvi_high = aligned_higher_freq.first_valid_index()
-            lvi_high = aligned_higher_freq.last_valid_index()
-
-            fvi_low  = df_lower_freq.first_valid_index()
-            lvi_low  = df_lower_freq.last_valid_index()
-
-            if fvi_high is None or fvi_low is None:
-                return (aligned_higher_freq.iloc[0:0], df_lower_freq.iloc[0:0])
-
-            new_start = max(fvi_high, fvi_low)
-            new_end   = min(lvi_high, lvi_low)
-
-            aligned_higher_freq = aligned_higher_freq.loc[new_start:new_end]
-            df_lower_freq       = df_lower_freq.loc[new_start:new_end]
-
-            return aligned_higher_freq, df_lower_freq
-
-        except Exception as e:
-            print(f'Error aligning dataframes: {e}')
-            # Optionally handle error or return the original dataframes
-            return df_higher_freq, df_lower_freq
 
 
 def clean_data(x, y):
@@ -1283,30 +1706,121 @@ def curve_fit_log(xdata, ydata) :
     # There is no need to apply fscalex^-1 as original data is already available
     return (popt_log, pcov_log, ydatafit_log)
 
+import numpy as np
+import matplotlib.pyplot as plt
+
+import numpy as np
+import matplotlib.pyplot as plt
 
 
-def find_fit(x, y, x0, xf):  
-    x    = np.array(x)
-    y    = np.array(y)
-    ind1 = np.argsort(x)
-     
-    x   = x[ind1]
-    y   = y[ind1]
-    ind = y>-1e15
+# ----------------------------------------------------------------------
+# plaw_fit_est_plot
+# ----------------------------------------------------------------------
+def plaw_fit_est_plot(
+    x, y,
+    x0, xf,
+    ax=None,
+    n_plot: int = 200,
+    var_symbol: str = "R",
+    **plot_kwargs,
+):
+    """
+    Fit and (optionally) plot a power law :math:`y = A\,x^{m}` on
+    the interval :math:`[x_0,\,x_f]`.
 
-    x   = x[ind]
-    y   = y[ind]
-    # Apply fit on specified range #
-   # print(len(np.where(x == x.flat[np.abs(x - x0).argmin()])[0]))
-    if  len(np.where(x == x.flat[np.abs(x - x0).argmin()])[0])>-0:
-        s = np.where(x == x.flat[np.abs(x - x0).argmin()])[0][0]
-        e = np.where(x  == x.flat[np.abs(x - xf).argmin()])[0][0]
-        
-        if (len(y[s:e])>1):
-            fit = curve_fit_log(x[s:e],y[s:e])
-            return fit, s, e, x, y
-        else:
-            return [0],0,0,0,[0]
+    Parameters
+    ----------
+    x, y : array‑like
+        Data vectors.
+    x0, xf : float
+        Lower and upper bounds of the fitting window.
+    ax : matplotlib.axes.Axes, optional
+        Axis on which to draw the fitted curve.
+    n_plot : int, default = 200
+        Number of points in the smooth curve plotted for visualisation.
+    var_symbol : str, default = ``"R"``
+        LaTeX variable to display as the base of the power‑law in the legend.
+        For example, ``var_symbol="k"`` will label the fit as
+        :math:`k^{m\\,\\pm\\,\\Delta m}`.
+    **plot_kwargs
+        Passed directly to :py:meth:`matplotlib.axes.Axes.loglog`.
+
+    Returns
+    -------
+    x_fit : ndarray
+        Geometric grid spanning :math:`[x_0,\,x_f]` (length = *n_plot*).
+    y_fit : ndarray
+        Best‑fit curve :math:`A\,x^{m}`.
+    plaw_exp : float
+        Slope :math:`m` of the power law.
+    err_plaw_exp : float
+        1‑σ uncertainty on :math:`m` (from covariance of the log–log fit).
+    """
+    # --- 1. clean & select data ------------------------------------------
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+
+    good = (x > 0) & (y > 0)      # enforce domain (logarithms below)
+    x, y = x[good], y[good]
+
+    sel = (x >= x0) & (x <= xf)
+    if sel.sum() < 2:
+        raise ValueError("Not enough points in fitting window")
+
+    x_win, y_win = x[sel], y[sel]
+
+    # --- 2. log–log linear regression ------------------------------------
+    logx, logy = np.log(x_win), np.log(y_win)
+    (m, logA), cov = np.polyfit(logx, logy, 1, cov=True)
+    err_m = float(np.sqrt(cov[0, 0]))
+    A     = float(np.exp(logA))
+
+    # --- 3. smooth curve for plotting ------------------------------------
+    x_fit = np.geomspace(x0, xf, n_plot)
+    y_fit = A * x_fit**m
+
+    # --- 4. optional plotting --------------------------------------------
+    if ax is None:
+        ax = plt.gca()
+    lbl = rf"${var_symbol}^{{{m:.2f}\,\pm\,{err_m:.2f}}}$"
+    ax.loglog(x_fit, y_fit, label=lbl, **plot_kwargs)
+
+    return x_fit, y_fit, m, err_m
+
+
+def find_fit(x, y, x0, xf, return_fit_values=False):
+    """
+    Perform a log–log (power‐law) fit of y(x) over [x0, xf], using natural logs.
+
+    Returns fit parameters and, optionally, the fit curve values.
+    """
+    x = np.array(x)
+    y = np.array(y)
+    # Sort and clean positive values
+    order = np.argsort(x)
+    x = x[order]
+    y = y[order]
+    mask = y > 0
+    x = x[mask]
+    y = y[mask]
+
+    # Determine slice indices for the fitting range
+    s = np.searchsorted(x, x0, 'left')
+    e = np.searchsorted(x, xf, 'right')
+    if e - s < 2:
+        raise ValueError("Not enough points in fitting range")
+
+    # Fit log–log: log y = a + m log x
+    logx = np.log(x[s:e])
+    logy = np.log(y[s:e])
+    m, a = np.polyfit(logx, logy, 1)
+
+    if return_fit_values:
+        x_fit = x[s:e]
+        y_fit = np.exp(a) * x_fit**m
+        return (a, m), s, e, x_fit, y_fit
+
+    return (a, m), s, e, x, y
 
 def curve_fit_log_wrap(x, y, x0, xf):  
     
@@ -2346,78 +2860,256 @@ def ensure_time_format(start_time, end_time):
     return t0.strftime(desired_format), t1.strftime(desired_format)
 
 
-import numpy as np
-from scipy import stats
 
-def binned_quantity(x, y, what='mean', std_or_error_of_mean=True, bins=100, loglog=True, return_counts=False, return_percentiles=False, lower_percentile =25, higher_percentile = 75):
+
+
+def binned_quantity(
+    x, y,
+    what                             = "mean",
+    std_or_error_of_mean: bool | int = True,
+    bins: int | np.ndarray = 100,
+    loglog: bool = True,
+    return_counts: bool = False,
+    return_percentiles: bool = False,
+    lower_percentile: float = 25,
+    higher_percentile: float = 75,
+    low_per: float | None = None,
+    high_perc: float | None = None,
+    *,                       # NEW: keyword-only opt-out flags
+    return_edges: bool = False,
+):
     """
-    Calculate binned statistics of one variable (y) with respect to another variable (x).
+    Identical call signature; two improvements:
 
-    Parameters
-    ----------
-    x : array_like
-        Input array. This represents the independent variable.
-    y : array_like
-        Input array. This represents the dependent variable.
-    what : str or callable, optional
-        The type of binned statistic to compute. This can be any of the options supported by `scipy.stats.binned_statistic()`.
-        The default is 'mean'.
-    std_or_error_of_mean : bool, optional
-        Indicates whether to return the standard deviation (True) or the error of the mean (False) of the binned statistic.
-        The default is True.
-    bins : int or array_like, optional
-        The number of bins to use for the histogram. If `loglog` is True, this value is used to generate logarithmic bins.
-        The default is 100.
-    loglog : bool, optional
-        If True, logarithmic bins are used instead of linear bins. The default is True.
-    return_counts : bool, optional
-        If True, also return the number of points in each bin. The default is False.
-    return_percentiles : bool, optional
-        If True, also return the 25th and 75th percentiles for each bin. The default is False.
-
-    Returns
-    -------
-    x_b : ndarray
-        The centers of the bins.
-    y_b : ndarray
-        The value of the binned statistic.
-    z_b : ndarray
-        The standard deviation or error of the mean of the binned statistic.
-    points : ndarray, optional
-        The number of points in each bin. This is only returned if `return_counts` is True.
-    percentiles : tuple of ndarrays, optional
-        The 25th and 75th percentiles for each bin. This is only returned if `return_percentiles` is True.
+    • For log-bins the centre x_b is now the geometric mean √(x_L x_R).
+    • Set return_edges=True to also receive (x_lo, x_hi).
     """
-    
-    if loglog:
-        mask = np.where((y > -1e10) & (x > 0) )[0]        
+    # 1 · sanitise
+    x, y = map(np.asarray, (x, y))
+    mask = (x > 0) if loglog else np.ones_like(x, bool)
+    mask &= np.isfinite(x) & np.isfinite(y)
+    x, y = x[mask], y[mask]
+
+    # 2 · bin edges
+    if np.ndim(bins) == 0 or isinstance(bins, (int, np.integer)):
+        bins = (np.logspace if loglog else np.linspace)(
+            np.log10(x.min()) if loglog else x.min(),
+            np.log10(x.max()) if loglog else x.max(),
+            int(bins),
+        )
+        # if loglog:
+        #     bins = 10 ** bins
+    bins = np.asarray(bins, float)
+    n_bins = bins.size - 1
+    x_lo, x_hi = bins[:-1], bins[1:]
+    x_ctr = np.sqrt(x_lo * x_hi) if loglog else 0.5 * (x_lo + x_hi)  # FIX 1
+
+    # 3 · fast grouping
+    idx = np.digitize(x, bins) - 1
+    keep = (idx >= 0) & (idx < n_bins)
+    idx, y = idx[keep], y[keep]
+
+    count = np.bincount(idx, minlength=n_bins).astype(float)
+    sum_y = np.bincount(idx, weights=y, minlength=n_bins)
+    mean  = sum_y / np.where(count, count, np.nan)
+
+    # robust variance
+    sum_y2 = np.bincount(idx, weights=y ** 2, minlength=n_bins)
+    var = (sum_y2 / np.where(count, count, np.nan)) - mean ** 2
+    var[var < 0] = 0.0
+    std = np.sqrt(var)
+
+    # optional: per-bin custom statistic
+    if callable(what):
+        y_stat = np.array([what(y[idx == i]) if c else np.nan
+                           for i, c in enumerate(count)])
     else:
-        mask = np.where((y > -1e10) & (x > -1e10) )[0]
-    x = np.asarray(x[mask], dtype=float)
-    y = np.asarray(y[mask], dtype=float)
+        mapping = {"mean": mean, "std": std,
+                   "median": np.array([np.nan if c == 0 else
+                                       np.median(y[idx == i])
+                                       for i, c in enumerate(count)]),
+                   "count": count}
+        y_stat = mapping.get(what, mean)
 
-    if loglog:
-        bins = np.logspace(np.log10(np.nanmin(x)), np.log10(np.nanmax(x)), bins)
+    z_stat = std if std_or_error_of_mean else std / np.sqrt(count)
 
-    # Binned statistic calculation
-    y_b, x_b, _ = stats.binned_statistic(x, y, statistic=what, bins=bins)
-    z_b, _, _ = stats.binned_statistic(x, y, statistic='std', bins=bins)
-    points, _, _ = stats.binned_statistic(x, y, statistic='count', bins=bins)
-
-    if std_or_error_of_mean == 0:
-        z_b /= np.sqrt(points)
-
-    x_b = x_b[:-1] + 0.5 * (x_b[1:] - x_b[:-1])
-
-    result = (x_b, y_b, z_b, points) if return_counts else (x_b, y_b, z_b)
-
+    out = (x_ctr, y_stat, z_stat)
+    if return_counts:
+        out += (count,)
     if return_percentiles:
-        percentile_25, _, _ = stats.binned_statistic(x, y, statistic=lambda y: np.percentile(y, lower_percentile), bins=bins)
-        percentile_75, _, _ = stats.binned_statistic(x, y, statistic=lambda y: np.percentile(y, higher_percentile), bins=bins)
-        percentiles = (percentile_25, percentile_75)
-        result += (percentiles,)
+        pct_lo  = np.full_like(mean, np.nan)
+        pct_hi  = np.full_like(mean, np.nan)
+        for i, c in enumerate(count):
+            if c:
+                yy = y[idx == i]
+                pct_lo[i], pct_hi[i] = np.percentile(yy,
+                                                     [lower_percentile,
+                                                      higher_percentile])
+        out += ((pct_lo, pct_hi),)
+    if return_edges:                         # NEW
+        out = (x_lo, x_hi) + out
+    return out
 
-    return result
+
+# def binned_quantity(x, y, what='mean', std_or_error_of_mean=True, bins=100, loglog=True, return_counts=False, return_percentiles=False, lower_percentile =25, higher_percentile = 75):
+#     """
+#     Vectorised alternative to `binned_quantity` that avoids multiple passes
+#     through the data.  Median and percentile estimates are ∼10‑100× faster
+#     (depending on sample size) because the data are sorted only once.
+#     """
+#     # 1. sanitise & mask
+#     x, y = np.asarray(x), np.asarray(y)
+#     if loglog:
+#         mask = (x > 0) & np.isfinite(x) & np.isfinite(y)
+#     else:
+#         mask = np.isfinite(x) & np.isfinite(y)
+#     x, y = x[mask].astype(float), y[mask].astype(float)
+
+#     # 2. bin edges
+#     if np.ndim(bins)==0 or isinstance(bins, (int, np.integer)):
+#         if loglog:
+#             bins = np.logspace(np.log10(x.min()), np.log10(x.max()), int(bins))
+#         else:
+#             bins = np.linspace(x.min(), x.max(), int(bins))
+#     bins = np.asarray(bins, dtype=float)
+#     n_bins = bins.size - 1
+
+#     # 3. assign each point to a bin (−1 for out‑of‑range)
+#     bin_idx = np.digitize(x, bins) - 1
+#     valid = (bin_idx >= 0) & (bin_idx < n_bins)
+#     bin_idx = bin_idx[valid]
+#     x, y = x[valid], y[valid]
+
+#     # 4. fast aggregated sums
+#     count = np.bincount(bin_idx, minlength=n_bins).astype(float)
+#     sum_y  = np.bincount(bin_idx, weights=y, minlength=n_bins)
+#     sum_y2 = np.bincount(bin_idx, weights=y*y, minlength=n_bins)
+
+#     with np.errstate(invalid='ignore', divide='ignore'):
+#         mean = sum_y / count
+#         var  = (sum_y2 / count) - mean**2
+#         std  = np.sqrt(var)
+
+#     # 5. optional median/percentiles (single pass sorting)
+#     y_median = None
+#     pct_low = pct_high = None
+#     if (what == 'median') or return_percentiles:
+#         order = np.argsort(bin_idx, kind='mergesort')  # stable
+#         sorted_bins = bin_idx[order]
+#         sorted_y    = y[order]
+#         # cumulative counts to split
+#         split_idx = np.cumsum(np.bincount(sorted_bins, minlength=n_bins))[:-1]
+#         groups = np.split(sorted_y, split_idx)
+#         # list comprehension is fine: n_bins is small (∼10‑100)
+#         if what == 'median':
+#             y_median = np.array([np.median(g) if g.size else np.nan for g in groups])
+#         if return_percentiles:
+#             pct_low  = np.array([np.percentile(g, lower_percentile) if g.size else np.nan for g in groups])
+#             pct_high = np.array([np.percentile(g, higher_percentile) if g.size else np.nan for g in groups])
+
+#     # 6. choose requested statistic
+#     stats_map = {
+#         'mean': mean,
+#         'std': std,
+#         'count': count,
+#         'median': y_median,
+#     }
+#     if callable(what):
+#         y_b = np.full(n_bins, np.nan)
+#         for idx, grp in enumerate(np.split(sorted_y, split_idx) if (what!='mean' and what!='median') else []):
+#             y_b[idx] = what(grp) if grp.size else np.nan
+#     else:
+#         y_b = stats_map.get(what, mean)  # default mean
+
+#     # 7. error of mean or std
+#     z_b = std.copy()
+#     if std_or_error_of_mean == 0:
+#         with np.errstate(divide='ignore', invalid='ignore'):
+#             z_b = std/np.sqrt(count)
+
+#     # 8. bin centres
+#     x_b = 0.5*(bins[1:] + bins[:-1])
+
+#     # 9. assemble output
+#     out = (x_b, y_b, z_b)
+#     if return_counts:
+#         out += (count,)
+#     if return_percentiles:
+#         out += ((pct_low, pct_high),)
+#     return out
+
+# import numpy as np
+# from scipy import stats
+
+# def binned_quantity(x, y, what='mean', std_or_error_of_mean=True, bins=100, loglog=True, return_counts=False, return_percentiles=False, lower_percentile =25, higher_percentile = 75):
+#     """
+#     Calculate binned statistics of one variable (y) with respect to another variable (x).
+
+#     Parameters
+#     ----------
+#     x : array_like
+#         Input array. This represents the independent variable.
+#     y : array_like
+#         Input array. This represents the dependent variable.
+#     what : str or callable, optional
+#         The type of binned statistic to compute. This can be any of the options supported by `scipy.stats.binned_statistic()`.
+#         The default is 'mean'.
+#     std_or_error_of_mean : bool, optional
+#         Indicates whether to return the standard deviation (True) or the error of the mean (False) of the binned statistic.
+#         The default is True.
+#     bins : int or array_like, optional
+#         The number of bins to use for the histogram. If `loglog` is True, this value is used to generate logarithmic bins.
+#         The default is 100.
+#     loglog : bool, optional
+#         If True, logarithmic bins are used instead of linear bins. The default is True.
+#     return_counts : bool, optional
+#         If True, also return the number of points in each bin. The default is False.
+#     return_percentiles : bool, optional
+#         If True, also return the 25th and 75th percentiles for each bin. The default is False.
+
+#     Returns
+#     -------
+#     x_b : ndarray
+#         The centers of the bins.
+#     y_b : ndarray
+#         The value of the binned statistic.
+#     z_b : ndarray
+#         The standard deviation or error of the mean of the binned statistic.
+#     points : ndarray, optional
+#         The number of points in each bin. This is only returned if `return_counts` is True.
+#     percentiles : tuple of ndarrays, optional
+#         The 25th and 75th percentiles for each bin. This is only returned if `return_percentiles` is True.
+#     """
+    
+#     if loglog:
+#         mask = np.where((y > -1e10) & (x > 0) )[0]        
+#     else:
+#         mask = np.where((y > -1e10) & (x > -1e10) )[0]
+#     x = np.asarray(x[mask], dtype=float)
+#     y = np.asarray(y[mask], dtype=float)
+
+#     if loglog:
+#         bins = np.logspace(np.log10(np.nanmin(x)), np.log10(np.nanmax(x)), bins)
+
+#     # Binned statistic calculation
+#     y_b, x_b, _ = stats.binned_statistic(x, y, statistic=what, bins=bins)
+#     z_b, _, _ = stats.binned_statistic(x, y, statistic='std', bins=bins)
+#     points, _, _ = stats.binned_statistic(x, y, statistic='count', bins=bins)
+
+#     if std_or_error_of_mean == 0:
+#         z_b /= np.sqrt(points)
+
+#     x_b = x_b[:-1] + 0.5 * (x_b[1:] - x_b[:-1])
+
+#     result = (x_b, y_b, z_b, points) if return_counts else (x_b, y_b, z_b)
+
+#     if return_percentiles:
+#         percentile_25, _, _ = stats.binned_statistic(x, y, statistic=lambda y: np.percentile(y, lower_percentile), bins=bins)
+#         percentile_75, _, _ = stats.binned_statistic(x, y, statistic=lambda y: np.percentile(y, higher_percentile), bins=bins)
+#         percentiles = (percentile_25, percentile_75)
+#         result += (percentiles,)
+
+#     return result
 
 
 
@@ -3598,7 +4290,7 @@ def saveparquet(df, path_to_save, filename, column_names=None):
     # Save the DataFrame (or the subset) to a Parquet file
     df_to_save.to_parquet(full_file_path)
     
-import pandas as pd
+# import pandas as pd
 
 def load_parquet(path_to_save, filename= None, column_names= None, engine='pyarrow'):
     """
@@ -3624,6 +4316,44 @@ def load_parquet(path_to_save, filename= None, column_names= None, engine='pyarr
     
     return df
 
+
+
+# def load_parquet(path: str,
+#                       *,
+#                       columns: list[str] | None = None,
+#                       memory_map: bool          = True,
+#                       threads: bool             = True):
+#     md  = pq.read_metadata(path).metadata
+#     idx = []
+#     if b"pandas" in md:
+#         meta = json.loads(md[b"pandas"].decode())
+#         idx_descr = meta.get("index_columns", [])
+#         if idx_descr and isinstance(idx_descr[0], str):
+#             idx = idx_descr
+
+#     proj_cols = None
+#     if columns is not None:
+#         proj_cols = list(columns)
+#         for c in idx:
+#             if c not in proj_cols:
+#                 proj_cols.append(c)
+
+#     table = pq.read_table(
+#         path,
+#         columns=proj_cols,
+#         memory_map=memory_map,
+#         use_threads=threads
+#     )
+
+#     df = table.to_pandas(
+#         types_mapper=pd.ArrowDtype,
+#         use_threads=threads
+#     )
+
+#     if columns is not None:
+#         df = df[columns]
+
+#     return df
 
 def replace_filename_extension(oldfilename, newextension, addon=False):
     """

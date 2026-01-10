@@ -1,49 +1,44 @@
 import warnings
 warnings.filterwarnings('ignore')
 
-
-import traceback
-import ssqueezepy
-
-import scipy
 import os
-import numpy as np
-import pandas as pd
-import matplotlib as mpl
-import matplotlib.pyplot as plt
-from matplotlib.colors import LinearSegmentedColormap
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-from matplotlib.gridspec import GridSpec
-from datetime import datetime
-from pathlib import Path
+import sys
+import traceback
 import pickle
-from scipy import stats
-import numba
-from numba import jit, njit, prange, objmode
-from scipy.optimize import curve_fit
-import joblib
-from joblib import Parallel, delayed
+from pathlib import Path
+from datetime import datetime
 import statistics
 from statistics import mode
-#import orderedstructs
-import sys
+
+# Scientific computing
+import numpy as np
+import pandas as pd
+import scipy
+from scipy import stats
+from scipy.optimize import curve_fit
 from scipy.signal import stft
 
 
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+# Performance
+import numba
+from numba import jit, njit, prange, objmode
+import joblib
+from joblib import Parallel, delayed
 
+# Progress bar
+from tqdm import tqdm
+
+# Third-party signal processing
+import ssqueezepy
+#from CWTPy import cwt_module
+
+# Local modules
+sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
 import TurbPy as turb
 import general_functions as func
 
 
-import traceback
-from numba import njit, prange
-from joblib import Parallel, delayed
-from tqdm import tqdm
-from CWTPy import cwt_module
-
-
-def estimate_cwt_old(signal,
+def estimate_cwt(signal,
                  dt,
                  nv            = 32,
                  omega0        = 6,
@@ -136,104 +131,6 @@ def estimate_cwt_old(signal,
     return w_df, scales, freqs, 2*dt, coi
 
 
-def estimate_cwt    (signal,
-                     dt,
-                     nv                = 16,
-                     omega0            = 6.0,
-                     min_freq          = None,
-                     max_freq          = None,
-                     use_omp           = False,
-                     consider_coi      = False,
-                     compute_trace_psd = False,
-                     scale_type       = 'log'):
-    """
-    Estimate the CWT of the given signal using cwt_module.cwt_morlet_full.
-    
-    This wrapper accepts a 1D numpy array or a pandas DataFrame (processed column-wise) 
-    and returns a dictionary with:
-      - 'W': wavelet coefficients (2D array, num_scales x time_points)
-      - 'scales': 1D array of scales
-      - 'freqs': 1D array of wavelet frequencies (Hz)
-      - 'psd_norm': normalization factor for converting power to a PSD
-      - 'fft_freqs': 1D array of FFT frequencies (Hz)
-      - (optionally) 'trace_psd': the trace PSD (if compute_trace_psd is True)
-      - (optionally) 'coi': the cone-of-influence (if consider_coi is True)
-    
-    Parameters
-    ----------
-    signal : np.ndarray or pd.DataFrame
-        Input time-series data.
-    dt : float
-        Sampling interval.
-    nv : int, optional
-        Voices per octave (default 16).
-    omega0 : float, optional
-        Morlet wavelet parameter (default 6.0).
-    min_freq : float or None, optional
-        Lowest frequency of interest (Hz). If None, C++ uses ~1/(N*dt).
-    max_freq : float or None, optional
-        Highest frequency of interest (Hz). If None, defaults to fs/2.
-    use_omp : bool, optional
-        If True, parallelize using OpenMP.
-    consider_coi : bool, optional
-        If True, return the cone of influence (COI) and use it in PSD masking.
-    compute_trace_psd : bool, optional
-        If True, compute the trace PSD from the wavelet coefficients.
-    
-    Returns
-    -------
-    dict or dict of dicts
-        For a 1D input, returns a dictionary with keys:
-          'W', 'scales', 'freqs', 'psd_norm', 'fft_freqs', and optionally 'trace_psd', 'coi'.
-        For a DataFrame, returns a dictionary mapping column names to such dictionaries.
-    """
-    # Convert None to 0.0 so C++ defaults are used.
-    if min_freq is None:
-        min_freq = 0.0
-    if max_freq is None:
-        max_freq = 0.0
-
-    def _process_1d(sig_1d):
-        sig_1d = np.asarray(sig_1d, dtype=np.float64)
-        # Call the C++ function, with always returning FFT frequencies.
-        ret = cwt_module.cwt_morlet_full(
-            sig_1d,
-            float(dt),
-            int(nv),
-            float(omega0),
-            float(min_freq),
-            float(max_freq),
-            bool(use_omp),
-            1.0,              # norm_mult, can be adjusted if needed4
-            str(scale_type),
-            bool(consider_coi),
-            True              # Always return FFT frequencies.
-        )
-        # Unpack outputs.
-        W         = ret[0]
-        scales    = ret[1]
-        freqs     = ret[2]
-        psd_norm  = ret[3]
-        fft_freqs = ret[4]
-
-        return W, scales, freqs, psd_norm
-
-    w_df = {}
-    if isinstance(signal, pd.DataFrame):
-        result_dict = {}
-        trace_psd   = 0
-        for col in signal.columns:
-            W, scales, freqs, psd_norm = _process_1d(signal[col].values)
-            w_df[col]       = W   
-    else:
-        W, scales,freqs,psd_norm  = _process_1d(signal)
-        w_df                      = W
-
-    return w_df, scales, freqs, psd_norm, None
-
-
-
-
 def local_gaussian_averaging(signal, dt, scale, alpha=1.0, num_efoldings=3):
     """
     Smooth `signal` with a Gaussian of standard deviation sigma = alpha * scale (seconds).
@@ -273,194 +170,6 @@ def local_gaussian_averaging(signal, dt, scale, alpha=1.0, num_efoldings=3):
     # 4) Convolve
     return scipy.signal.convolve(signal, kernel, mode='same')
 
-
-
-# def unit_vectors(df, prefix, sufix ='_hat', vector_cols=None):
-#     """
-#     Normalize specified numeric columns of the DataFrame and add unit vector columns with the specified prefix.
-
-#     Parameters:
-#     - df (pd.DataFrame): The input DataFrame containing the columns to normalize.
-#     - prefix (str): The prefix for the new unit vector columns.
-#     - columns (list of str, optional): List of column names to normalize. 
-#       If None, all numeric columns will be normalized.
-
-#     Returns:
-#     - pd.DataFrame: The DataFrame with new unit vector columns added.
-#     """
-
-    
-#     # Create new column names with the specified prefix
-#     unit_col_names = [f"{prefix}{col}{sufix}" for col in vector_cols]
-    
-    
-#     #print('Worked on', vector_cols)
-#     # Assign unit vectors back to the DataFrame
-#     df[unit_col_names] =  df[vector_cols].values / np.linalg.norm(df[vector_cols].values, axis=1)[:, np.newaxis]
-    
-#     #print('Created', unit_col_names)
-#     return df
-
-
-
-    
-# def coherence_analysis(B0_f_o,
-#                        V0_f_o,
-#                        df_w,
-#                        method,
-#                        func_params = None
-#                       ):
-    
-
-
-    
-#     def compute_first_eigenvectors(RRe, RTe, RNe, TTe, TNe, NNe):
-#         n = RRe.shape[0]
-#         # Stack matrices into a 3D array
-#         M = np.zeros((n, 3, 3))
-#         M[:, 0, 0] = RRe
-#         M[:, 0, 1] = RTe
-#         M[:, 0, 2] = RNe
-#         M[:, 1, 0] = RTe
-#         M[:, 1, 1] = TTe
-#         M[:, 1, 2] = TNe
-#         M[:, 2, 0] = RNe
-#         M[:, 2, 1] = TNe
-#         M[:, 2, 2] = NNe
-
-#         # Compute eigenvalues and eigenvectors for all matrices
-#         eigvals, eigvecs = np.linalg.eigh(M)
-
-#         # Extract the eigenvector corresponding to the largest eigenvalue
-#         largest_eigvecs = eigvecs[:, :, -1]
-
-#         return largest_eigvecs
-
-    
-#     def unit_eigenvector_computation(df, prefix='eigen'):
-#         RRe = df['RRe'].values
-#         RTe = df['RTe'].values
-#         RNe = df['RNe'].values
-#         TTe = df['TTe'].values
-#         TNe = df['TNe'].values
-#         NNe = df['NNe'].values
-
-#         eigen_vectors = compute_first_eigenvectors(RRe, RTe, RNe, TTe, TNe, NNe)
-
-#         df[[f"{prefix}_1_hat", f"{prefix}_2_hat", f"{prefix}_3_hat"]] = eigen_vectors
-        
-#         # Estimate unit vector
-#         return unit_vectors(df,
-#                            prefix      = '',
-#                            sufix       = '', 
-#                            vector_cols =['eigen_1_hat', 'eigen_2_hat', 'eigen_3_hat'])
-
-
-#     # Estimate the unit vectors
-#     B0_f_o = unit_vectors(B0_f_o, prefix = 'B_0_', vector_cols= ['R', 'T', 'N'])
-#     V0_f_o = unit_vectors(V0_f_o, prefix = 'V_0_', vector_cols= ['R', 'T', 'N'])
-    
-
-  
-#     # Estimate angle between local backgrounds
-#     VBangles = np.degrees(np.arccos(np.einsum('ij,ij->i',
-#                                               B0_f_o[['B_0_R_hat', 'B_0_T_hat', 'B_0_N_hat']].values, 
-#                                               V0_f_o[['V_0_R_hat', 'V_0_T_hat', 'V_0_N_hat']].values)))
-    
-#     if method== 'min_var':
-        
-  
-#         # Calculate matrix elements
-#         B0_f_o['RRe'] = B0_f_o['RR'] - np.square(B0_f_o['R'])
-#         B0_f_o['TTe'] = B0_f_o['TT'] - np.square(B0_f_o['T'])
-#         B0_f_o['NNe'] = B0_f_o['NN'] - np.square(B0_f_o['N'])
-#         B0_f_o['RTe'] = B0_f_o['RT'] - B0_f_o['R'] * B0_f_o['T']
-#         B0_f_o['RNe'] = B0_f_o['RN'] - B0_f_o['R'] * B0_f_o['N']
-#         B0_f_o['TNe'] = B0_f_o['TN'] - B0_f_o['T'] * B0_f_o['N']
-
-#         # Find eigenvectors
-#         B0_f_o = unit_eigenvector_computation(B0_f_o, prefix='eigen')
-        
-
-#         # Calculate the first perpendicular unit vector
-#         B0_f_o[['B_1_R_hat', 'B_1_T_hat', 'B_1_N_hat']] = np.cross(B0_f_o[['eigen_1_hat', 'eigen_2_hat', 'eigen_3_hat']], 
-#                                                                    B0_f_o[['B_0_R_hat', 'B_0_T_hat', 'B_0_N_hat']])
-  
-
-#         # Calculate second perpendicular unit vector
-#         B0_f_o[['B_2_R_hat', 'B_2_T_hat', 'B_2_N_hat']] = np.cross(B0_f_o[['B_0_R_hat', 'B_0_T_hat', 'B_0_N_hat']], 
-#                                                                    B0_f_o[['B_1_R_hat', 'B_1_T_hat', 'B_1_N_hat']])
-
-#         # Memory cleanup by dropping intermediate columns
-#         columns_to_drop = [
-#                            # 'B_1_R', 'B_1_T', 'B_1_N', 
-#                             'RR', 'TT', 'NN', 'RT', 'RN', 'TN', 
-#                             'RRe', 'TTe', 'NNe', 'RTe', 'RNe', 'TNe'
-#         ]
-#         B0_f_o.drop(columns=columns_to_drop, inplace=True, errors='ignore')
-        
-        
-#         # Extract necessary arrays without copying
-#         B0    = B0_f_o[['B_0_R_hat', 'B_0_T_hat', 'B_0_N_hat']].to_numpy(copy=False)
-#         B1    = B0_f_o[['B_1_R_hat', 'B_1_T_hat', 'B_1_N_hat']].to_numpy(copy=False)
-#         B2    = B0_f_o[['B_2_R_hat', 'B_2_T_hat', 'B_2_N_hat']].to_numpy(copy=False)
-#         r_t_n = df_w[['R', 'T', 'N']].to_numpy(copy=False)
-
-#         # Compute Wz, Wy, and Wx
-#         df_w['W0'] = np.einsum('ij,ij->i', B0, r_t_n)
-#         df_w['W1'] = np.einsum('ij,ij->i', B1, r_t_n)
-#         df_w['W2'] = np.einsum('ij,ij->i', B2, r_t_n)
-
-#         # Drop original 'R', 'T', 'N'
-#         df_w.drop(columns = ['R', 'T', 'N'], inplace=True, errors='ignore')
-
-#         PL, PR            = calculate_polarization_spectra(df_w['W1'].values, df_w['W2'].values)
-
-#         return df_w,  VBangles, PR - PL, PR + PL, -2*np.imag((np.conj(df_w['W0'])*df_w['W1'])), np.abs((np.conj(df_w['W1'])*df_w['W1'])) + np.abs((np.conj(df_w['W0'])*df_w['W0'])) + np.abs((np.conj(df_w['W2'])*df_w['W2']))
-    
-#     elif method =='TN_only':
-        
-#        # PL, PR            = calculate_polarization_spectra(df_w['T'].values, df_w['N'].values)
-
-#         #return df_w,  VBangles, PR - PL, PR + PL, None   
-#         return df_w,  VBangles, 2*np.imag((np.conj(df_w['N'])*df_w['T'])), np.abs(np.conj(df_w['N'])*df_w['N']) + np.abs(np.conj(df_w['T'])*df_w['T']), np.abs(np.conj(df_w['N'])*df_w['N']) + np.abs(np.conj(df_w['T'])*df_w['T']), np.abs(np.conj(df_w['N'])*df_w['N']) #-> Last one does not matter
-#     else :
-
-#         # Calculate second perpendicular unit vector
-#         B0_f_o[['B_y_R_hat', 'B_y_T_hat', 'B_y_N_hat']] =  np.cross( B0_f_o[['R', 'T', 'N']],
-#                                                                      V0_f_o[['R', 'T', 'N']])
-          
-#         B0_f_o                                          =  unit_vectors(B0_f_o,
-#                                                                          prefix       = '', 
-#                                                                          sufix        = '', 
-#                                                                          vector_cols = ['B_y_R_hat', 'B_y_T_hat', 'B_y_N_hat'])
-
-        
-#         Bz    = B0_f_o[['B_0_R_hat', 'B_0_T_hat', 'B_0_N_hat']].to_numpy(copy=False)
-#         By    = B0_f_o[['B_y_R_hat', 'B_y_T_hat', 'B_y_N_hat']].to_numpy(copy=False)
-#         Bx    = np.cross(By, Bz) 
-#         r_t_n = df_w[['R', 'T', 'N']].to_numpy(copy=False)
-
-
-#         # Compute Wz, Wy, and Wx
-#         df_w['Wx'] = np.einsum('ij,ij->i', Bx, r_t_n)
-#         df_w['Wy'] = np.einsum('ij,ij->i', By, r_t_n)
-#         df_w['W0'] = np.einsum('ij,ij->i', Bz, r_t_n)
-        
-    
-#         # Drop original 'R', 'T', 'N'
-#         df_w.drop(columns=['R', 'T', 'N'], inplace=True, errors='ignore')
-        
-#         PL, PR = calculate_polarization_spectra(df_w['Wx'].values, df_w['Wy'].values)
-
-
-#         return df_w,  VBangles, PR - PL, PR + PL, 2*np.imag((np.conj(df_w['Wy'])*df_w['W0'])),  np.abs((np.conj(df_w['Wy'])*df_w['Wy'])) + np.abs((np.conj(df_w['Wx'])*df_w['Wx'])) + np.abs((np.conj(df_w['W0'])*df_w['W0']))
-
-
-
-
-import numpy as np
-import pandas as pd
 
 
 # ───────────────────────────────────────────────────────────────
@@ -582,15 +291,6 @@ def coherence_analysis(B0_f_o,
         df_w['Wy'] = W_perp2
         df_w['Wx'] = W_perp1
 
-        # corrected e_perp1 sign for right-handedness:
-       # e_perp2 =  sinφ[:,None]*Bx_vec + cosφ[:,None]*By_vec
-       # e_perp1 =  cosφ[:,None]*Bx_vec - sinφ[:,None]*By_vec
-
-
-        # (iv) build k̂  =  e⊥2  ×  e‖
-        #k_hat = np.cross(e_perp2, Bz_vec)
-        #k_hat /= np.linalg.norm(k_hat, axis=1, keepdims=True)
-        #df_w[['k_R_hat', 'k_T_hat', 'k_N_hat']] = k_hat
 
     # -----------------------------------------------------------
     # 3.  diagnostics  (exactly as before)
@@ -608,6 +308,7 @@ def coherence_analysis(B0_f_o,
     df_w.drop(columns=['R', 'T', 'N'], inplace=True, errors='ignore')
 
     return df_w, VBangles, helicity, trace_PSD, cross_term, power_sum
+             #df_w, VBangles, S3, S0, Syz, S0_full
 
     
 
@@ -704,42 +405,37 @@ def compute_norm_psd(df_ws_needed, rolling_params, dt, counts, window_size, step
     return PSD
 
 
-def calculate_wavelet_flatness(df_ws_needed, rolling_params, step):
+def calculate_wavelet_flatness(df_ws, rolling_params, step):
     """
-    Calculate Wavelet flatness (SDK) over a rolling window, then resample.
+    Compute the flatness of the vector wavelet coefficients,
+    for a DataFrame `df_ws` with N columns (e.g. 1,2,3,... components).
 
-    Parameters:
-    -----------
-    df_ws_needed : pd.DataFrame or np.ndarray
-        Input wavelet spectrogram data (complex).
-    rolling_params : dict
-        Parameters for rolling window operations (e.g. {'window': '60s', 'center': True, 'min_periods': 10}).
-    step : str
-        Resampling step size (e.g. '10s').
+    1) Form the amplitude series A(t) = sqrt(sum_i |W_i(t)|^2)
+    2) Compute rolling 2nd and 4th moments of A
+    3) Flatness F = <A^4> / <A^2>^2
+    4) Resample F at the given step (e.g. '10s')
 
-    Returns:
-    --------
+    Returns
+    -------
     pd.Series
-        Wavelet flatness values over time.
+        Flatness time series of A, indexed at the resampled times.
     """
-    if not isinstance(df_ws_needed, pd.DataFrame):
-        df_ws_needed = pd.DataFrame(df_ws_needed)
-        
-    # Power of each column, then sum across columns
-    power       = df_ws_needed * np.conj(df_ws_needed)
-    
-    # Fourth moment in the time domain (sum of power, then squared)
-    numerator   = (power.sum(axis=1).pow(2)).rolling(**rolling_params).mean()
-    
-    # Square of second moment (i.e. squared average power)
-    denominator = (power.sum(axis=1)
-                   .rolling(**rolling_params)
-                   .mean()
-                   .pow(2)
-                  )
-    flatness = (numerator / denominator).resample(step).mean()
-    return flatness
+    # ensure DataFrame
+    if not isinstance(df_ws, pd.DataFrame):
+        df_ws = pd.DataFrame(df_ws)
 
+    # 1) compute power per component, then sum to get A^2
+    power = np.abs(df_ws)**2            # shape (time, N)
+    A2    = power.sum(axis=1)           # series of A^2
+    A     = np.sqrt(A2)                 # series of A
+
+    # 2) rolling moments of A
+    m2 = A.pow(2).rolling(**rolling_params).mean()   # ⟨A^2⟩
+    m4 = A.pow(4).rolling(**rolling_params).mean()   # ⟨A^4⟩
+
+    # 3) flatness and 4) resample
+    flatness = (m4 / m2.pow(2)).resample(step).mean()
+    return flatness
 
 
 
@@ -792,9 +488,7 @@ def compute_psd_with_counts(df_ws_needed, rolling_params, dt, index_mask, step, 
 
 
 
-import numpy as np
-import pandas as pd
-import traceback
+
 
 def calculate_wavelet_flatness_from_power(power, rolling_params, step):
     """
@@ -1159,30 +853,30 @@ def est_compress(df_mod,
             else:
                 # --- Compute compressibility WITHOUT rolling means (simple nanmeans) ---
                 # parallel
-                w0_par_power     = np.real(df_w['W0'][index_par] * np.conj(df_w['W0'][index_par]))
+                #w0_par_power     = np.real(df_w['W0'][index_par] * np.conj(df_w['W0'][index_par]))
                 tot_par_power    = np.real(df_w.iloc[index_par] * np.conj(df_w.iloc[index_par]))
-                compress_par     = (np.nanmean(w0_par_power) /
-                                    np.nanmean(tot_par_power.sum(axis=1)))
+                # compress_par     = (np.nanmean(w0_par_power) /
+                #                     np.nanmean(tot_par_power.sum(axis=1)))
                 
                 mod_par_power    = np.real(df_mod[index_par] * np.conj(df_mod[index_par]))
                 compress_mod_par = (np.nanmean(mod_par_power) /
                                     np.nanmean(tot_par_power.sum(axis=1)))
                 
                 # perp
-                w0_per_power     = np.real(df_w['W0'][index_per] * np.conj(df_w['W0'][index_per]))
+                # w0_per_power     = np.real(df_w['W0'][index_per] * np.conj(df_w['W0'][index_per]))
                 tot_per_power    = np.real(df_w.iloc[index_per] * np.conj(df_w.iloc[index_per]))
-                compress_per     = (np.nanmean(w0_per_power) /
-                                    np.nanmean(tot_per_power.sum(axis=1)))
+                # compress_per     = (np.nanmean(w0_per_power) /
+                #                     np.nanmean(tot_per_power.sum(axis=1)))
                 
                 mod_per_power    = np.real(df_mod[index_per] * np.conj(df_mod[index_per]))
                 compress_mod_per = (np.nanmean(mod_per_power) /
                                     np.nanmean(tot_per_power.sum(axis=1)))
 
                 # all
-                w0_all_power   = np.real(df_w['W0'] * np.conj(df_w['W0']))
+                # w0_all_power   = np.real(df_w['W0'] * np.conj(df_w['W0']))
                 tot_all_power  = np.real(df_w * np.conj(df_w))
-                compress       = (np.nanmean(w0_all_power) /
-                                  np.nanmean(tot_all_power.sum(axis=1)))
+                # compress       = (np.nanmean(w0_all_power) /
+                #                   np.nanmean(tot_all_power.sum(axis=1)))
                 
                 mod_all_power  = np.real(df_mod * np.conj(df_mod))
                 compress_mod   = (np.nanmean(mod_all_power) /
@@ -1213,9 +907,9 @@ def est_compress(df_mod,
         'compress_mod_par'   : compress_mod_par,
         'compress_mod_per'   : compress_mod_per,
 
-        'compress'           : compress,
-        'compress_par'       : compress_par,
-        'compress_per'       : compress_per,
+        # 'compress'           : compress,
+        # 'compress_par'       : compress_par,
+        # 'compress_per'       : compress_per,
 
         'SDK_par'            : SDK_par,
         'SDK_per'            : SDK_per,
@@ -1233,7 +927,8 @@ def est_compress(df_mod,
 
 
 
-def do_coh_analysis(df_w,
+def do_coh_analysis(k_df, 
+                    df_w,
                     S0,
                     S3,
                     S0_full,
@@ -1335,8 +1030,10 @@ def do_coh_analysis(df_w,
        
             del sigma_yz_ind, den_value, num_value#, sigma_yz_ind 
             
-                 
 
+        # Compute ks
+        k_df =  k_df.rolling(**rolling_params).mean().resample(step).mean()
+        
         # Compute sigma_xy, sigma_yz
         sigma_xy     = (pd.Series(S3, index=df_w.index).rolling(**rolling_params).mean()  / pd.Series(S0, index=df_w.index).rolling(**rolling_params).mean()).resample(step).mean()
         sigma_yz     = (pd.Series(Syz, index=df_w.index).rolling(**rolling_params).mean()  / pd.Series(S0_full, index=df_w.index).rolling(**rolling_params).mean()).resample(step).mean()
@@ -1467,6 +1164,10 @@ def do_coh_analysis(df_w,
                 
 
         return {
+
+                    'k'                  : k_df['k'].values,
+                    #'k_par'              : k_df['k_par'].values,
+            
                     'sigma_xy_av'        : sigma_av_xy,
                     'sigma_yz_av'        : sigma_av_yz,
             
@@ -1593,6 +1294,7 @@ def return_desired_quants( df_w,
                            S0_full,
                            Syz,
                            VBangles,
+                           k_df, 
                            dt,
                            scale,
                            psd_norm,
@@ -1618,7 +1320,7 @@ def return_desired_quants( df_w,
     
     
     # Do polarization analysis
-    coh_res = do_coh_analysis(df_w, S0, S3, S0_full, Syz, index_par, index_per, dt, scale, psd_norm, func_params=func_params)
+    coh_res = do_coh_analysis(k_df, df_w, S0, S3, S0_full, Syz, index_par, index_per, dt, scale, psd_norm, func_params=func_params)
     
     # Estimate Anisotropic PSD
     #anis_res = est_anisotropic_PSDs(df_w, df_mod, index_par, index_per, dt, psd_norm, func_params=func_params)
@@ -1635,6 +1337,8 @@ def return_desired_quants( df_w,
     # Estimate compressibility diagnostics
     comp_res = est_compress(df_mod, df_w, index_par, index_per, dt,psd_norm, func_params=func_params)
 
+
+
     # Merge all dictionaries into one and return
     return {**coh_res,  **comp_res, **sf_res}
 
@@ -1646,15 +1350,27 @@ def define_W_df(B_index, R, T, N):
                                 'N'       : N}).set_index('DateTime')
 
 
-def anisotropy_coherence2(  
+# B_df.copy(),
+#                                                                                 Vfin.copy(),
+#                                                                                 field_flag  = field,
+#                                                                                 E_df        = E_df.copy() if field == 'E' else (E_sw.copy() if field == 'E_sw' else None),
+#                                                                                 Np_df       =  N_df,
+#                                                                                 method      = method,
+#                                                                                 func_params = func_params,
+#                                                                                 f_dict      = None if mm==0 else coh_dict
+
+def anisotropy_coherence(  
                            B_df,
                            V_df, 
+                           mag_V_mod_TH,
+                           
                            field_flag,
                            E_df                  =  None,
                            Np_df                 =  None,
                            method                =  'min_var',
                            func_params           =  None,
-                           f_dict                =  None
+                           f_dict                =  None,
+                           frame_flag            =  None
                           ):
     """
     Method to calculate the 1) wavelet coefficients in RTN 2) The scale dependent angle between Vsw and Β.
@@ -1693,37 +1409,47 @@ def anisotropy_coherence2(
               
 
 
-    def parallel_oper(ii, 
+    def parallel_oper(mag_V_mod_TH,
+                      ii, 
                       scale,
                       dt,
                       B_df,
                       V_df, 
                       df_w,
                       df_mod,
+                      frequencies,
                       psd_norm,
                       method      = 'min_var',
-                      func_params = None):
+                      func_params = None,
+                      frame_flag  =  None ):
         try:
 
             if func_params['do_coherence_analysis']:
 
                 if method =='min_var':
                     B_df = define_B_df(B_df)
-                          
+
+                # Estimate local B
+                B_df = B_df.apply(lambda col: local_gaussian_averaging(col.values, dt, scale, alpha =func_params['alpha']), axis=0)
+
+                if func_params['estimate_local_V']:
+                    # Estimate local V
+                    V_df = V_df.apply(lambda col: local_gaussian_averaging(col.values, dt, scale, alpha =func_params['alpha']), axis=0)
+
                 # Do coherence analysis
                 df_w, VBangles, S3, S0, Syz, S0_full       = coherence_analysis(
-                                                                        B_df.apply(lambda col: local_gaussian_averaging(col.values, dt, scale, alpha =func_params['alpha']), axis=0),
-                                                                        V_df.apply(lambda col: local_gaussian_averaging(col.values, dt, scale, alpha =func_params['alpha']), axis=0),
+                                                                        B_df,
+                                                                        V_df,
                                                                         df_w,
                                                                         method,
                                                                         func_params       = func_params)
             else:
 
-                B_df.apply(lambda col: local_gaussian_averaging(col.values, dt, scale, alpha =func_params['alpha']), axis=0)
+                B_df = B_df.apply(lambda col: local_gaussian_averaging(col.values, dt, scale, alpha =func_params['alpha']), axis=0)
                 
 
                 if func_params['estimate_local_V']:
-                    V_df.apply(lambda col: local_gaussian_averaging(col.values, dt, scale, alpha =func_params['alpha']), axis=0)
+                    V_df = V_df.apply(lambda col: local_gaussian_averaging(col.values, dt, scale, alpha =func_params['alpha']), axis=0)
                     
 
                 # Estimate the unit vectors
@@ -1741,19 +1467,24 @@ def anisotropy_coherence2(
                 
             # Restrict VB angles
             VBangles[VBangles > 90] = 180 - VBangles[VBangles > 90]
-            
-            #Estimate Anistropic Power Spectra
-            est_quants = return_desired_quants(df_w,
-                                               df_mod,
-                                               S0,
-                                               S3,
-                                               S0_full, 
-                                               Syz,
-                                               VBangles,
-                                               dt,
-                                               scale,
-                                               psd_norm,
-                                               func_params = func_params)
+
+            est_quants = return_desired_quants(
+                df_w, 
+                df_mod,
+                S0,
+                S3,
+                S0_full, 
+                Syz,
+                VBangles,
+                pd.DataFrame({
+                    'k' : 2 * np.pi * frequencies / np.hstack(mag_V_mod_TH.values)
+                    #'k_perp': 2 * np.pi * frequencies / np.linalg.norm(V_df.values, axis=1)* np.sin(np.deg2rad(VBangles))
+                }, index=V_df.index),
+                dt          = dt, 
+                scale       = scale, 
+                psd_norm    = psd_norm, 
+                func_params = func_params
+            )
 
             if func_params['return_coeffs'] is False:
                 return est_quants, None, None, None, None, None
@@ -1814,47 +1545,34 @@ def anisotropy_coherence2(
     if dt_V != dt_B:
         B_df, V_df = func.synchronize_dfs(B_df, V_df,True)#(B_df, E_df.index)
 
+    print('passed')
+
     # Determine the common dt
     dt = dt_E if dt_E is not None else dt_B
     
     # Estimate wavelet coefficients
-    if func_params['use_custom_cwt']:
-        Wvec, scales, freqs, psd_norm, coi= estimate_cwt(E_df if E_df is not None else  B_df, 
-                                                      dt,
-                                                      nv       = func_params['nv'],
-                                                      min_freq = func_params['min_freq'],
-                                                      max_freq = func_params['max_freq'],
-                                                      use_omp  = func_params['open_mp'])
-    else:
-
-        Wvec, scales, freqs, psd_norm, coi= estimate_cwt_old(E_df if E_df is not None else  B_df, 
-                                                      dt,
-                                                      nv       = func_params['nv'],
-                                                      min_freq = func_params['min_freq'],
-                                                      max_freq = func_params['max_freq'])
+    Wvec, scales, freqs, psd_norm, coi= estimate_cwt(E_df if E_df is not None else  B_df, 
+                                                  dt,
+                                                  nv       = func_params['nv'],
+                                                  min_freq = func_params['min_freq'],
+                                                  max_freq = func_params['max_freq'])
 
 
 
     # Estimate magnitude of magnetic field
     if func_params['est_mod']:
-        if func_params['use_custom_cwt']:
+
+        if Np_df is None:
             Wmod, _, _, _ ,_= estimate_cwt( pd.DataFrame({'Mod': np.linalg.norm(B_df.iloc[:, :3], axis=1)},index=B_df.index),
                                             dt, 
                                             nv       = func_params['nv'],
-                                            min_freq = func_params['min_freq'], max_freq = func_params['max_freq'],
-                                            use_omp  = func_params['open_mp'])
+                                            min_freq = func_params['min_freq'], max_freq = func_params['max_freq'],)     
         else:
-            if Np_df is None:
-                Wmod, _, _, _ ,_= estimate_cwt_old( pd.DataFrame({'Mod': np.linalg.norm(B_df.iloc[:, :3], axis=1)},index=B_df.index),
-                                                dt, 
-                                                nv       = func_params['nv'],
-                                                min_freq = func_params['min_freq'], max_freq = func_params['max_freq'],)     
-            else:
-                
-                Wmod, _, _, _ ,_= estimate_cwt_old( pd.DataFrame({'Mod': Np_df.values.T[0]},index= Np_df.index),
-                                                dt, 
-                                                nv       = func_params['nv'],
-                                                min_freq = func_params['min_freq'], max_freq = func_params['max_freq'])  
+            
+            Wmod, _, _, _ ,_= estimate_cwt( pd.DataFrame({'Mod': Np_df.values.T[0]},index= Np_df.index),
+                                            dt, 
+                                            nv       = func_params['nv'],
+                                            min_freq = func_params['min_freq'], max_freq = func_params['max_freq'])  
     else:
         Wmod             = None
         
@@ -1869,6 +1587,7 @@ def anisotropy_coherence2(
     # Use joblib for parallel processing
     results = Parallel(n_jobs=func_params['njobs'])(
         delayed(parallel_oper)(
+                                mag_V_mod_TH,
                                 ii, 
                                 scale,
                                 dt,
@@ -1876,9 +1595,11 @@ def anisotropy_coherence2(
                                 V_df.copy(), 
                                 define_W_df(B_df.index, Wvec['R'][ii], Wvec['T'][ii], Wvec['N'][ii]),
                                 Wmod['Mod'][ii],
+                                freqs[ii],
                                 psd_norm,
                                 method                = method,
-                                func_params           = func_params
+                                func_params           = func_params,
+                                frame_flag            =  frame_flag 
         ) for ii, scale in tqdm(enumerate(scales), total=len(scales))
     )
 
@@ -1894,27 +1615,31 @@ def anisotropy_coherence2(
         
         if func_params['use_rolling_mean']:
             f_dict                = {field_flag : {key: np.array([q[key] for q in est_quants]) for key in est_quants[0].keys()}}
+
+            f_dict['freqs']       = freqs
+            f_dict['scales']      = scales
+            f_dict['Wave_coeffs'] = df_w
+            f_dict['S3_ts']       = S3
+            f_dict['S0_ts']       = S0
+            f_dict['VB_ts']       = VBangles
+            f_dict['flag']        = method
         else:
             f_dict                = {field_flag : {key: np.hstack(np.array([q[key] for q in est_quants])) for key in est_quants[0].keys()}}           
     else:
         if func_params['use_rolling_mean']:
-            f_dict[field_flag ]    = {key: np.array([q[key] for q in est_quants]) for key in est_quants[0].keys()}
+            f_dict[field_flag ]   = {key: np.array([q[key] for q in est_quants]) for key in est_quants[0].keys()}
         else:
+
             f_dict[field_flag ]   =  {key: np.hstack(np.array([q[key] for q in est_quants])) for key in est_quants[0].keys()}       
-    f_dict['freqs']       = freqs
-    f_dict['scales']      = scales
-    f_dict['Wave_coeffs'] = df_w
-    f_dict['S3_ts']       = S3
-    f_dict['S0_ts']       = S0
-    f_dict['VB_ts']       = VBangles
-    f_dict['flag']        = method
+
+
     
     return f_dict  
 
 
 
 
-from scipy.signal import stft
+
 
 def TN_polarization_stft(E_df, B_df, V_df, sig, fs, 
                          window_duration=1.0, overlap_fraction=0.5):
@@ -2001,551 +1726,6 @@ def TN_polarization_stft(E_df, B_df, V_df, sig, fs,
     return f, Et, En, avg_angles, sig_c, di, rhoi, Vsw, counts
 
 
-
-
-# def coherence_analysis(df_w,
-#                        B0_f_o,
-#                        V0_f_o,
-#                        freq,
-#                        dt, 
-#                        min_var       = True
-#                       ):
-    
-
-
-#     @njit(parallel=True)
-#     def compute_first_eigenvectors(RRe, RTe, RNe, TTe, TNe, NNe):
-#         n = RRe.shape[0]
-#         eigen_vectors = np.empty((n, 3), dtype=np.float64)
-
-#         for i in prange(n):
-#             # Construct the symmetric 3x3 matrix
-#             M = np.array([
-#                 [RRe[i], RTe[i], RNe[i]],
-#                 [RTe[i], TTe[i], TNe[i]],
-#                 [RNe[i], TNe[i], NNe[i]]
-#             ])
-
-#             # Compute eigenvalues and eigenvectors
-#             eigvals, eigvecs = np.linalg.eigh(M)
-
-#             # Store the eigenvector corresponding to the largest eigenvalue (maximum variance)
-#             eigen_vectors[i, :] = eigvecs[:, -1]
-
-#         return eigen_vectors
-    
-
-    
-#     def unit_eigenvector_computation(df, prefix='eigen'):
-#         RRe = df['RRe'].values
-#         RTe = df['RTe'].values
-#         RNe = df['RNe'].values
-#         TTe = df['TTe'].values
-#         TNe = df['TNe'].values
-#         NNe = df['NNe'].values
-
-#         eigen_vectors = compute_first_eigenvectors(RRe, RTe, RNe, TTe, TNe, NNe)
-
-#         df[[f"{prefix}_1_hat", f"{prefix}_2_hat", f"{prefix}_3_hat"]] = eigen_vectors
-        
-#         # Estimate unit vector
-#         return unit_vectors(df,
-#                            prefix      = '',
-#                            sufix       = '', 
-#                            vector_cols =['eigen_1_hat', 'eigen_2_hat', 'eigen_3_hat'])
-
-#     # Estimate the unit vectors
-#     B0_f_o = unit_vectors(B0_f_o, prefix = 'B_0_', vector_cols= ['R', 'T', 'N'])
-#     V0_f_o = unit_vectors(V0_f_o, prefix = 'V_0_', vector_cols= ['R', 'T', 'N'])
-  
-#     # Estimate angle between local backgrounds
-#     VBangles = np.degrees(np.arccos(np.einsum('ij,ij->i',
-#                                               B0_f_o[['B_0_R_hat', 'B_0_T_hat', 'B_0_N_hat']].values, 
-#                                               V0_f_o[['V_0_R_hat', 'V_0_T_hat', 'V_0_N_hat']].values)))
-    
-#     if min_var:
-  
-#         # Calculate matrix elements
-#         B0_f_o['RRe'] = B0_f_o['RR'] - np.square(B0_f_o['R'])
-#         B0_f_o['TTe'] = B0_f_o['TT'] - np.square(B0_f_o['T'])
-#         B0_f_o['NNe'] = B0_f_o['NN'] - np.square(B0_f_o['N'])
-#         B0_f_o['RTe'] = B0_f_o['RT'] - B0_f_o['R'] * B0_f_o['T']
-#         B0_f_o['RNe'] = B0_f_o['RN'] - B0_f_o['R'] * B0_f_o['N']
-#         B0_f_o['TNe'] = B0_f_o['TN'] - B0_f_o['T'] * B0_f_o['N']
-
-#         # Find eigenvectors
-#         B0_f_o = unit_eigenvector_computation(B0_f_o, prefix='eigen')
-        
-
-#         # Calculate the first perpendicular unit vector
-#         B0_f_o[['B_1_R_hat', 'B_1_T_hat', 'B_1_N_hat']] = np.cross(B0_f_o[['eigen_1_hat', 'eigen_2_hat', 'eigen_3_hat']], 
-#                                                                    B0_f_o[['B_0_R_hat', 'B_0_T_hat', 'B_0_N_hat']])
-  
-
-#         # Calculate second perpendicular unit vector
-#         B0_f_o[['B_2_R_hat', 'B_2_T_hat', 'B_2_N_hat']] = np.cross(B0_f_o[['B_0_R_hat', 'B_0_T_hat', 'B_0_N_hat']], 
-#                                                                    B0_f_o[['B_1_R_hat', 'B_1_T_hat', 'B_1_N_hat']])
-
-#         # Memory cleanup by dropping intermediate columns
-#         columns_to_drop = [
-#                            # 'B_1_R', 'B_1_T', 'B_1_N', 
-#                             'RR', 'TT', 'NN', 'RT', 'RN', 'TN', 
-#                             'RRe', 'TTe', 'NNe', 'RTe', 'RNe', 'TNe'
-#         ]
-#         B0_f_o.drop(columns=columns_to_drop, inplace=True, errors='ignore')
-        
-        
-#         # Extract necessary arrays without copying
-#         B0    = B0_f_o[['B_0_R_hat', 'B_0_T_hat', 'B_0_N_hat']].to_numpy(copy=False)
-#         B1    = B0_f_o[['B_1_R_hat', 'B_1_T_hat', 'B_1_N_hat']].to_numpy(copy=False)
-#         B2    = B0_f_o[['B_2_R_hat', 'B_2_T_hat', 'B_2_N_hat']].to_numpy(copy=False)
-#         r_t_n = df_w[['R', 'T', 'N']].to_numpy(copy=False)
-
-#         # Compute Wz, Wy, and Wx
-#         df_w['W0'] = np.einsum('ij,ij->i', B0, r_t_n)
-#         df_w['W1'] = np.einsum('ij,ij->i', B1, r_t_n)
-#         df_w['W2'] = np.einsum('ij,ij->i', B2, r_t_n)
-        
-#         df_w, _, _, _ = estimate_cwt(df_w[['W0', 'W1', 'W2']], dt, freqs= np.array([freq]), return_df =True,  col_names = ['W0', 'W1', 'W2'])
-
-        
-#         return df_w,  VBangles, 2*np.imag( (np.conj(df_w['W2'])*df_w['W1'])), (np.abs(df_w['W1'])**2+np.abs(df_w['W2'])**2), -2*np.imag((np.conj(df_w['W0'])*df_w['W1']))
-
-        
-#     else:
-#         #print('Using Loyds method')
-        
-
-#         # Calculate second perpendicular unit vector
-#         B0_f_o[['B_y_R', 'B_y_T', 'B_y_N']]             =  np.cross( B0_f_o[['R', 'T', 'N']],
-#                                                                      V0_f_o[['R', 'T', 'N']])
-          
-#         B0_f_o                                          =   unit_vectors(B0_f_o,
-#                                                                          prefix       = '', 
-#                                                                          #sufix        = '', 
-#                                                                          vector_cols  = ['B_y_R', 'B_y_T', 'B_y_N'])
-        
- 
-#         # Extract necessary arrays without copying
-#         Bz    = B0_f_o[['B_0_R_hat', 'B_0_T_hat', 'B_0_N_hat']].to_numpy(copy=False)
-#         By    = B0_f_o[['B_y_R_hat', 'B_y_T_hat', 'B_y_N_hat']].to_numpy(copy=False)
-#         Bx    = np.cross(By, Bz) 
-
-        
-#         r_t_n = df_w[['R', 'T', 'N']].to_numpy(copy=False)
-
-#         # Project the data  (X,Y,Z)
-#         df_w['Wx'] = np.einsum('ij,ij->i', Bx, r_t_n)
-#         df_w['Wy'] = np.einsum('ij,ij->i', By, r_t_n)
-#         df_w['Wz'] = np.einsum('ij,ij->i', Bz, r_t_n)
-
-#         # Estimate wavelet coefficints
-#         #df_w, _, _, _ = estimate_cwt(df_w[['Wx', 'Wy', 'Wz']], dt, freqs= np.array([freq]), return_df =True,  col_names = ['Wx', 'Wy', 'Wz'])
-#         df_w, _, _, _ = estimate_cwt(df_w[['R', 'T', 'N']], dt, freqs= np.array([freq]), return_df =True,  col_names = ['R', 'T', 'N'])
-    
-
-#         #return df_w,  VBangles, 2*np.imag( (np.conj(df_w['Wy'])*df_w['Wx'])), (np.abs(df_w['Wy'])**2 + np.abs(df_w['Wx'])**2 + np.abs(df_w['Wz'])**2), 2*np.imag((np.conj(df_w['Wy'])*df_w['Wz']))
-#         return df_w,  VBangles, 2*np.imag( (np.conj(df_w['N'])*df_w['T'])), (np.abs(df_w['R'])**2 + np.abs(df_w['T'])**2 + np.abs(df_w['N'])**2), 2*np.imag((np.conj(df_w['T'])*df_w['R']))
-
-    
-# import pycwt
-# def estimate_cwt(signal, dt, freqs=None, omega0 =6.0, return_df =False, col_names = ['R', 'T', 'N']):
-
-#     """
-#     Estimate continuous wavelet transform of the signal using PyWavelets.
-
-#     Parameters:
-#     - signal (pd.DataFrame or np.ndarray): Input signal(s).
-#     - dt (float): Sampling interval.
-#     - freqs (np.ndarray or None): Frequencies at which to compute the CWT. If None, frequencies are computed automatically.
-#     - dj: determines how many scales are used to estimate wavelet coeff
-
-#         (e.g., for dj=1 -> 2**numb_scales 
-
-#     Returns:
-#     - w_df (dict or np.ndarray): Wavelet coefficients per column or array.
-#     - scales_used (np.ndarray): Scales used.
-#     - freqs_used (np.ndarray): Frequencies corresponding to scales.
-#     - coi (None): Cone of influence (not computed here).
-#     """
-
-#     # Now, compute scales and frequencies
-#     if freqs is not None:
-#         # Ensure freqs is an array
-#         freqs = np.array(np.asarray(freqs).astype(float))
-
-#         # Compute corresponding scales
-#         scales = (omega0) / (2 * np.pi * freqs) * (1 + 1 / (2 * omega0**2))
-
-
-#     # Perform the CWT
-#     if isinstance(signal, pd.DataFrame):
-#         if return_df:
-#             w_df             = pd.DataFrame()
-#             w_df['datetime'] = signal.index.values
-#         else:
-#             w_df = {}
-            
-#         for jj, (col, col_name) in enumerate(zip(signal.columns, col_names)):
-
-#             coeffs, _, freqs, _, _, _ = pycwt.cwt(signal[col].values, dt, wavelet=pycwt.Morlet(), freqs= freqs)
-
-#             print(col, col_name)
-#             if len(scales) == 1:
-#                 w_df[col_name] = coeffs[0, :]
-#             else:
-#                 w_df[col_name] = coeffs
-
-#     else:
-#         coeffs, _, freqs, _, _, _ = pycwt.cwt(signal, dt, wavelet=pycwt.Morlet(), freqs= freqs)
-#         if len(scales) == 1:
-#             w_df = coeffs[0, :]
-#         else:
-#             w_df = coeffs
-
-#     coi = None  # Cone of influence not computed
-
-#     if return_df:
-#         w_df = w_df.set_index('datetime')
-
-#     return w_df, scales, freqs, coi
-
-
-# def anisotropy_coherence(
-#                                B_df,
-#                                V_df, 
-#                                E_df                  = None,
-#                                dt                    = 0, 
-#                                nv                    = 32,
-#                                alpha                 = 1, 
-#                                per_thresh            = 80,
-#                                par_thresh            = 10,
-#                                coh_th                = 0.7,
-#                                njobs                 = -1,
-#                                est_mod               = True,
-#                                estimate_local_V      = False,
-#                                min_var               = False,
-#                                do_coherence_analysis = False,
-#                                estimate_PSDs         = False,
-#                                estimate_coh_coeffs   = False,
-#                                return_coeffs         = True 
-#                               ):
-#     """
-#     Method to calculate the 1) wavelet coefficients in RTN 2) The scale dependent angle between Vsw and Β.
-
-#     Parameters:
-#         B_df (pandas.DataFrame): Magnetic field timeseries dataframe.
-#         V_df (pandas.DataFrame): Velocity timeseries dataframe.
-#         dj (float): The time resolution.
-#         alpha (float, optional): Gaussian parameter. Default is 3.
-#         pycwt (bool, optional): Use the PyCWT library for wavelet transform. Default is False.
-
-#     Returns:
-#         tuple: A tuple containing the following elements:
-#             np.ndarray: Frequencies in the x-direction.
-#             np.ndarray: Frequencies in the y-direction.
-#             np.ndarray: Frequencies in the z-direction.
-#             pandas.DataFrame: Angles between magnetic field and scale dependent background in degrees.
-#             pandas.DataFrame: Angles between velocity and scale dependent background in degrees.
-#             np.ndarray: Frequencies in Hz.
-#             np.ndarray: Power spectral density.
-#             np.ndarray: Physical space scales in seconds.
-#             np.ndarray: Wavelet scales.
-#     """
-    
-    
-
-
-#     def generate_scales_2_use(N, dt, nv=32, omega0=6):
-#         fs           = 1 / dt  # Sampling frequency
-#         T            = N * dt
-#         f_min        = 1 / T
-#         f_max        = fs / 2
-#         num_octaves  = np.log2(f_max / f_min)
-#         num_freqs    = nv * int(np.ceil(num_octaves))
-#         freqs_used   = np.logspace(np.log10(f_min), np.log10(f_max), num=num_freqs, base=10)
-#         scales_used  = omega0 / (2 * np.pi * freqs_used) * (1 + 1 / (2 * omega0**2))
-
-#         return freqs_used, scales_used
-
-    
-
-#     def define_B_df(B_df):
-    
-#         B_df['RR'] = B_df.R* B_df.R
-#         B_df['TT'] = B_df['T']* B_df['T']
-#         B_df['NN'] = B_df.N* B_df.N
-
-#         B_df['RT'] = B_df.R* B_df['T']
-#         B_df['RN'] = B_df.R* B_df.N
-#         B_df['TN'] = B_df['T']* B_df.N
-#         return B_df
-              
-
-#     def define_W_df(B_index, R, T, N):
-#         return      pd.DataFrame({ 'DateTime' : B_index,
-#                                     'R'       : R,
-#                                     'T'       : T,
-#                                     'N'       : N}).set_index('DateTime')
-    
-    
-                    
-
-
-#     def parallel_oper(ii, 
-#                       scale,
-#                       freq,
-#                       dt,
-#                       CWT_df,
-#                       B_df,
-#                       V_df, 
-#                       # df_w,
-#                       # df_mod,
-#                       alpha,
-#                       per_thresh            = 80,
-#                       par_thresh            = 10,
-#                       coh_th                = 0.7,
-#                       njobs                 = -1,
-#                       est_mod               = False,
-#                       estimate_local_V      = False,
-#                       min_var               = False,
-#                       do_coherence_analysis = False,
-#                       estimate_PSDs         = False,
-#                       estimate_coh_coeffs   = False,
-#                       return_coeffs         = True):
-#         try:
-
-#             if do_coherence_analysis:
-
-#                 if min_var:
-#                     B_df = define_B_df(B_df)
-                          
-                        
-
-#                 # Do coherence analysis
-#                 df_w, VBangles, S3, S0, Syz       = coherence_analysis(CWT_df,
-#                                                                        B_df.apply(lambda col: local_gaussian_averaging(col.values, dt, scale, alpha =alpha), axis=0),
-#                                                                        V_df.apply(lambda col: local_gaussian_averaging(col.values, dt, scale, alpha =alpha), axis=0),
-#                                                                        freq,
-#                                                                        dt,
-#                                                                        min_var       = min_var)
-#             else:
-
-#                 df_w, _, _, _ = estimate_cwt(CWT_df, dt, freqs= np.array([freq]), return_df =True)
-                
-
-                    
-                    
-                
-                
-#                 B_df.apply(lambda col: local_gaussian_averaging(col.values, dt, scale, alpha =alpha), axis=0)
-                
-
-#                 if estimate_local_V:
-#                     V_df.apply(lambda col: local_gaussian_averaging(col.values, dt, scale, alpha =alpha), axis=0)
-                    
-
-#                 # Estimate the unit vectors
-#                 B_df = unit_vectors(B_df, prefix = 'B_0_', vector_cols= ['R', 'T', 'N'])
-#                 V_df = unit_vectors(V_df, prefix = 'V_0_', vector_cols= ['R', 'T', 'N'])
-                    
-#                 # Estimate angle between local backgrounds
-#                 VBangles = np.degrees(np.arccos(np.einsum('ij,ij->i',
-#                                                           B_df[['B_0_R_hat', 'B_0_T_hat', 'B_0_N_hat']].values, 
-#                                                           V_df[['V_0_R_hat', 'V_0_T_hat', 'V_0_N_hat']].values)))
-                
-                
-#                 S3, S0, Syz = None, None, None
-                
-                
-#             # Restrict VB angles
-#             VBangles[VBangles > 90] = 180 - VBangles[VBangles > 90]
-            
-            
-#             if est_mod:
-#                 df_mod, _, _, _ = estimate_cwt(np.sqrt(CWT_df.values.T[0]**2 + CWT_df.values.T[1].values**2 + CWT_df.values.T[2].values**2),
-#                                                  dt,
-#                                                  freqs     = np.array([freq]),
-#                                                  return_df = False)
-#             else:
-#                 df_mod          = None
-            
-#             #Estimate Anistropic Power Spectra
-#             est_quants = return_desired_quants(df_w,
-#                                                df_mod,
-#                                                S0,
-#                                                S3,
-#                                                Syz,
-#                                                VBangles,
-#                                                dt,
-#                                                scale,
-#                                                alpha                 = alpha,
-#                                                num_efoldings         = 3, 
-#                                                coh_th                = coh_th,
-#                                                par_thresh            = par_thresh,
-#                                                per_thresh            = per_thresh,
-#                                                estimate_PSDs         = estimate_PSDs,
-#                                                estimate_coh_coeffs   = estimate_coh_coeffs,
-#                                                est_mod               = est_mod)
-            
-            
-            
-       
-#             if return_coeffs is False:
-#                 return est_quants, None, None, None, None, None
-                
-
-#             return est_quants, VBangles, df_w.values.T, S3, S0, Syz
-#         except Exception as e:
-#             traceback.print_exc()
-#             return np.nan, np.nan
-        
-        
-#     # Rename the columns
-#     if B_df.columns[0] =='Bx':
-#         B_df  = B_df.rename(columns={'Bx': 'R', 'By': 'T', 'Bz': 'N'}) 
-#         V_df  = V_df.rename(columns={'Vx': 'R', 'Vy': 'T', 'Vz': 'N'})
-#         E_df  = None if E_df is None else E_df.rename(columns={'Ex': 'R', 'Ey': 'T', 'Ez': 'N'})
-#     else:
-#         B_df  = B_df.rename(columns={'Br': 'R', 'Bt': 'T', 'Bn': 'N'})
-#         V_df  = V_df.rename(columns={'Vr': 'R', 'Vt': 'T', 'Vn': 'N'})
-#         E_df  = None if E_df is None else E_df.rename(columns={'Er': 'R', 'Et': 'T', 'En': 'N'})
-
- 
-#     print(B_df.columns)
-
-#     print('Using', njobs, 'cores')
-#     print('C1')
-#     # Estimate sampling times of time series
-#     dt_B, dt_V = func.find_cadence(B_df), func.find_cadence(V_df)
-#     dt_E       = func.find_cadence(E_df) if E_df is not None else None
-
-#     # Synchronize E_df and B_df if necessary
-#     if E_df is not None and dt_E != dt_B:
-#         B_df = func.newindex(B_df, E_df.index)
-
-#     print('C2')
-#     # Synchronize B_df and V_df if necessary
-#     if dt_V != dt_B:
-#         V_df = func.newindex(V_df, B_df.index)
-
-#     print('C3')
-#     # Determine the common dt
-#     dt = dt_E if dt_E is not None else dt_B
-
-#     # print('C4')
-#     # # Estimate wavelet coefficients
-#     # Wvec, scales, freqs, coi       = estimate_cwt(E_df if E_df is not None else  B_df, 
-#     #                                               dt,
-#     #                                               nv = nv)
-#     # print('C5')
-#     # # Estimate magnitude of magnetic field
-#     # if est_mod:
-#     #     Wmod, _, _, _, _ = estimate_cwt(np.sqrt(B_df.values.T[0]**2 + B_df.values.T[1].values**2 + B_df.values.T[2].values**2), dt, nv=nv)
-#     # else:
-#     #     Wmod             = None
-
-    
-#     # Define scales and frequencies to estimate the CWT
-#     freqs, scales  = generate_scales_2_use(len(E_df)if E_df is not None else  len(B_df), dt, nv=nv)
-    
-#     # Define the dataframe to estimate the CWT
-#     CWT_df = E_df.copy() if E_df is not None else  B_df.copy()
- 
-    
-#     PSD_par = np.zeros(len(freqs))
-#     PSD_per = np.zeros(len(freqs)) 
- 
-#     PSD_par_mod = np.zeros(len(freqs))
-#     PSD_per_mod = np.zeros(len(freqs))
-
-#     # Use joblib for parallel processing
-#     print('C6')
-#     print('Using', njobs, 'cores')
-
-#     # Assuming the scales and other parameters are already defined
-#     results = Parallel(n_jobs=njobs)(
-#         delayed(parallel_oper)(
-#             ii, 
-#             scale,
-#             freq,
-#             dt,
-#             CWT_df.copy(),
-#             B_df.copy(),
-#             V_df.copy(), 
-#             alpha                 = alpha,
-#             per_thresh            = per_thresh,
-#             par_thresh            = par_thresh,
-#             coh_th                = coh_th, 
-#             njobs                 = njobs,
-#             est_mod               = est_mod,
-#             estimate_local_V      = estimate_local_V,
-#             min_var               = min_var,
-#             do_coherence_analysis = do_coherence_analysis,
-#             estimate_PSDs         = estimate_PSDs,
-#             return_coeffs         = return_coeffs,
-#             estimate_coh_coeffs    = estimate_coh_coeffs
-#         ) for ii, (freq, scale) in tqdm(enumerate(zip(freqs, scales)), total=len(scales))
-#     )
-
-
-    
-#     # Unpack results
-#     #PSD_par, PSD_per,PSD_par_mod, PSD_per_mod, sigma_xy, sigma_xy_par, sigma_xy_per, PSD_coh, PSD_non_coh, overall_PSD,  VBangles, df_w, S3, S0 = zip(*results)
-#     est_quants, VBangles, df_w, S3, S0, Syz = zip(*results)
-    
-    
-
-#     return est_quants, freqs, scales,  VBangles, df_w, S3, S0, Syz
-
-
-
-
-
-# Outdated functions
-
-def estimate_polarization(num_coh, den_coh, scales, dt, alpha=1, num_efoldings=3, n_jobs=-1):
-    """
-    Estimates the polar values based on the ratio of local Gaussian averaged numerator
-    to the local Gaussian averaged denominator across different scales.
-
-    Parameters:
-    num_coh (list): Numerator values for computation.
-    den_coh (list): Denominator values for computation.
-    scales (list): List of scales at which the local averaging is done.
-    dt (float): Time step used in the local Gaussian averaging.
-    alpha (int, optional): Alpha parameter for the Gaussian averaging. Default is 1.
-    num_efoldings (int, optional): Number of e-foldings in the Gaussian averaging. Default is 1.
-    n_jobs (int, optional): The number of parallel jobs to run. Default is -1 (use all processors).
-
-    Returns:
-    list: A list of sigma values computed as the ratio of averaged values.
-    """
-    
-
-    def compute_ratio(i, num_coh, den_coh, scales, dt, alpha, num_efoldings):
-        num_value = local_gaussian_averaging(num_coh[i], dt,  scales[i],  alpha =alpha, num_efoldings = num_efoldings)
-        den_value = local_gaussian_averaging(den_coh[i], dt, scales[i],  alpha = alpha, num_efoldings = num_efoldings)
-        return num_value / den_value
-
-    results = Parallel(n_jobs=n_jobs)(
-        delayed(compute_ratio)(i, num_coh, den_coh, scales, dt, alpha, num_efoldings)
-        for i in range(len(num_coh))
-    )
-    return results
-
-
-
-
-
-def choose_dates_heatmap(freqs, inds,  data, original, target):
-    fe = []
-    dt = []
-    increment = original // target
-    for i in range (0, len(freqs), increment):
-        fe.append(freqs[i])
-        dt.append(data[i][inds[0]: inds[1]])
-    return np.array(fe), np.array(dt)
 
 
 

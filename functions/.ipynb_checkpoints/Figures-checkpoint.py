@@ -169,7 +169,7 @@ def create_colors_new(hmany, which=None, return_cmap=False):
         return cmap  # Return only the colormap object
     
     
-def create_colors(hmany, which=None):
+def create_colors(hmany, which=None, return_cmap =False, NN =None):
     import numpy as np
     import matplotlib.pyplot as plt
     from matplotlib.colors import LinearSegmentedColormap
@@ -195,8 +195,13 @@ def create_colors(hmany, which=None):
         
     elif which == 'half_blues':
         # Focus on the lower half of the Blues colormap.
-        interval = np.linspace(0.25, 0.75, hmany)
-        colors = plt.cm.Blues(interval)
+        interval = np.linspace(0, 0.6, hmany)
+        colors = plt.cm.PuBu_r(interval)
+
+    elif which == 'half_blues_r':
+        # Focus on the lower half of the Blues colormap.
+        interval = np.linspace(0.4, 1, hmany)
+        colors = plt.cm.PuBu(interval)
         
     elif which == 'cusia':
         # Use a custom NeutralGrey colormap from a custom mapping function.
@@ -205,9 +210,18 @@ def create_colors(hmany, which=None):
     else:
         raise ValueError("Unknown colormap option: {}".format(which))
 
-    # Create the custom colormap from the selected colors.
-    cmap = LinearSegmentedColormap.from_list('custom_colormap', colors)
-    return cmap(np.linspace(0, 1, hmany))
+
+    if  return_cmap:
+        # Create the custom colormap from the selected colors.
+        if NN==None:
+            cmap = LinearSegmentedColormap.from_list('custom_colormap', colors)
+        else:
+            cmap = LinearSegmentedColormap.from_list('custom_colormap', colors, NN)            
+        return cmap, cmap(np.linspace(0, 1, hmany))
+    else:
+        # Create the custom colormap from the selected colors.
+        cmap = LinearSegmentedColormap.from_list('custom_colormap', colors)
+        return cmap(np.linspace(0, 1, hmany))
 
 
 # import numpy as np

@@ -134,7 +134,7 @@ def mag_of_ell_projections_and_angles(
 def local_structure_function(
                              B,
                              V,
-                             V_sc,
+                             V_sc_vel_removed,
                              Np,
                              tau,
                              dt,
@@ -148,7 +148,9 @@ def local_structure_function(
                              also_return_db_nT        = False,
                              use_local_polarity       = True,
                              use_np_factor            = 1,
-                             est_proj_ells            =  True
+                             est_proj_ells            =  True,
+                             sc                       = None,
+                             frame                    = None,
                             ): 
     '''
     Parameters:
@@ -199,7 +201,7 @@ def local_structure_function(
         dB           = dB.values
 
         #Compute the fluctuations in V
-        du           = turb.shifted_df_calcs(V - V_sc.values, lag_coefs_db, coefs_db )
+        du           = turb.shifted_df_calcs(V, lag_coefs_db, coefs_db )
         
         #Compute the fluctuations in Np
         dN           = turb.shifted_df_calcs(Np, lag_coefs_db, coefs_db )
@@ -208,8 +210,8 @@ def local_structure_function(
         B_l          = turb.shifted_df_calcs(B, lag_coefs_loc, coefs_loc)
 
         # Estimate local Vsw
-        #V_l          = turb.shifted_df_calcs(V func.perp_vector(dB, B_l, return_paral_comp = True- V_sc.values +  Va.values, lag_coefs_loc, coefs_loc)
-        V_l          = turb.shifted_df_calcs(V - V_sc.values, lag_coefs_loc, coefs_loc) + turb.shifted_df_calcs( Va, lag_coefs_loc, coefs_loc)
+
+        V_l          = turb.shifted_df_calcs(V_sc_vel_removed, lag_coefs_loc, coefs_loc) 
         
         # Est d
         di_array     = turb.shifted_df_calcs(228 / np.sqrt(Np), lag_coefs_loc, coefs_loc)
@@ -224,7 +226,7 @@ def local_structure_function(
         dVa          = Va.iloc[:-tau].values - Va.iloc[tau:].values
         
         #Compute the fluctuations in V
-        du           = (V - V_sc.values).iloc[:-tau].values - (V - V_sc.values).iloc[tau:].values
+        du           = V.iloc[:-tau].values - V.iloc[tau:].values
         
         #Compute the fluctuations in Np
         dN           = Np.iloc[:-tau].values - Np.iloc[tau:].values
@@ -233,36 +235,15 @@ def local_structure_function(
         B_l          = (B.iloc[:-tau].values + B.iloc[tau:].values)/2
         
         # Estimate local Vsw
-        V_l          = ((V - V_sc.values + Va.values).iloc[:-tau].values + (V - V_sc.values + Va.values).iloc[tau:].values)/2
+        V_l          = (V_sc_vel_removed.iloc[:-tau].values + V_sc_vel_removed.iloc[tau:].values)/2
         
         # Est d
         quant        = 228 / np.sqrt(Np)
         di_array     = (quant.iloc[:-tau].values + quant.iloc[tau:].values)/2
-        
-        #print('bl', np.shape(B_l)), print('dB', np.shape(dB))
+
         # Keep df index
         needed_index = B.iloc[:-tau,:].index
-        
-        # print('Orig length', dB.shape)
-        
-        # # Pad the computed arrays to the original length with NaNs,
-        # # preserving the original shape along any additional dimensions
-        # orig_len = B.shape[0]
-        # pad = lambda x: np.pad(x, ((0, orig_len - x.shape[0]),) + ((0, 0),) * (x.ndim - 1), mode='constant', constant_values=np.nan)
-        # dB       = pad(dB)
-        # dVa      = pad(dVa)
-        # du       = pad(du)
-        # dN       = pad(dN)
-        # B_l      = pad(B_l)
-        # V_l      = pad(V_l)
-        # di_array = pad(di_array)
 
-
-
-    # print('Orig length', dB)
-    # print('Fin length', len(B_l))
-
-                
 
     # Estimate local perpendicular displacement direction
     dB_perp, dB_parallel     = func.perp_vector(dB, B_l, return_paral_comp = True)
@@ -281,13 +262,11 @@ def local_structure_function(
                                                                                   dB_perp,
                                                                                   est_proj_ells  =  est_proj_ells)
     
-    #print(type(l_xi), np.shape(l_xi), type(di_array), np.shape(di_array) )
-    #di_array_flat =   # Flatten di_array to (367660,)
+    # Convert to units of d_i
     l_ell, l_xi, l_lambda = l_ell / di_array.ravel(), l_xi / di_array.ravel(), l_lambda / di_array.ravel()
     lmag                  = func.estimate_vec_magnitude(l_vec)/ di_array.ravel()
 
-    #l_ell, l_xi, l_lambda = l_ell / di_array[:, None], l_xi / di_array[:, None], l_lambda / di_array[:, None]
-    print('Got here 2')
+
     
     # Estimate magntidtues of the par and perp components of increments
     dB_perp_amp        = np.sqrt(dB_perp.T[0]**2 + dB_perp.T[1]**2 + dB_perp.T[2]**2)
@@ -304,23 +283,34 @@ def local_structure_function(
         du_perp = func.perp_vector(du, B_l)
 
         # Determine the sign of background Br
-        polarity        = np.sign(func.newindex(B['Br'].rolling('30min', center=True).mean().interpolate(), needed_index).values)
-        signBx          = - polarity if fix_sign else polarity
-        local_polarity  = - np.sign(B_l.T[0]) if fix_sign else np.sign(B_l.T[0])
+        if (sc =='PSP') or (sc =='SOLO'):
+            if frame =='RTN':
+                 polarity        = - np.sign(func.newindex(B.Br.rolling('30min', center=True).mean().interpolate(), needed_index).values)
+                 local_polarity  = - np.sign(B_l.T[0]) 
+            else:
+                 polarity        =  np.sign(func.newindex(B.Bz.rolling('30min', center=True).mean().interpolate(), needed_index).values)
+                 local_polarity  =  np.sign(B_l.T[2])    
+        else:       
+           print('BAD')
         
         # Estimate fluctuations in Elssaser variables
-        
         if use_local_polarity:
-            dzp_perp = du_perp + signBx[:, None] * dVa_perp
-            dzm_perp = du_perp - signBx[:, None] * dVa_perp
-        else:
+
             dzp_perp = du_perp + local_polarity[:, None] * dVa_perp
-            dzm_perp = du_perp - local_polarity[:, None] * dVa_perp           
+            dzm_perp = du_perp - local_polarity[:, None] * dVa_perp   
+
+        else:
+            dzp_perp = du_perp + polarity[:, None] * dVa_perp
+            dzm_perp = du_perp - polarity[:, None] * dVa_perp        
 
         if turb_amp_analysis:
             try:
 
-                Bmag                 = pd.DataFrame(np.sqrt(B.Br**2 + B.Bt**2 + B.Bn**2))
+                if frame =='RTN':
+
+                    Bmag                 = pd.DataFrame(np.sqrt(B.Br**2 + B.Bt**2 + B.Bn**2))
+                else:
+                    Bmag                 = pd.DataFrame(np.sqrt(B.Bx**2 + B.By**2 + B.Bz**2))                    
                 if five_points_sfunc:
                     dB_mod           = turb.shifted_df_calcs(Bmag, lag_coefs_db, coefs_db)
                 else:
@@ -403,11 +393,11 @@ def local_structure_function(
         dVa_perp_amp = np.sqrt(dVa_perp.T[0]**2 + dVa_perp.T[1]**2 + dVa_perp.T[2]**2)
         dVa_par_amp  = np.sqrt(dVa_parallel.T[0]**2 + dVa_parallel.T[1]**2 + dVa_parallel.T[2]**2)
         
-        return Vsw, B_l, V_l, keep_turb_amp, dVa, dVa_perp_amp, dVa_par_amp, du, dN, kinet_normal, signBx,  normal_flag,  lmag, l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb,align_angles_zpm, needed_index, local_polarity
+        return Vsw, B_l, V_l, keep_turb_amp, dVa, dVa_perp_amp, dVa_par_amp, du, dN, kinet_normal, polarity, normal_flag,  lmag, l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb,align_angles_zpm, needed_index, local_polarity
         
         
     else:
-        return Vsw, B_l, V_l, keep_turb_amp, dB, dB_perp_amp, dB_parallel_amp, du, dN, kinet_normal, signBx,normal_flag, lmag, l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb, align_angles_zpm, needed_index, local_polarity
+        return Vsw, B_l, V_l, keep_turb_amp, dB, dB_perp_amp, dB_parallel_amp, du, dN, kinet_normal, polarity, normal_flag, lmag, l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb, align_angles_zpm, needed_index, local_polarity
 
 
 
@@ -503,7 +493,7 @@ def quants_2_estimate(
                     Np, 
                     keep_turb_amp,
                     kinet_normal,
-                    sign_Bx,
+                    polarity,
                     B,
                     V,
                     phis,
@@ -706,10 +696,10 @@ def quants_2_estimate(
         del dV
          
 
-    if 'sign_Bx' in quants:
-        variables['sign_Bx']         =  sign_Bx 
+    if 'polarity' in quants:
+        variables['polarity']         =  polarity 
         
-        del sign_Bx 
+        del polarity 
         
     if 'local_polarity' in quants:
         variables['local_polarity']  =  local_polarity
@@ -740,10 +730,17 @@ def quants_2_estimate(
         del thetas
         
     if 'Vsw' in quants:
-        variables['Vsw']           =  func.newindex(np.sqrt(V.Vr**2 + V.Vt**2 + V.Vn**2), needed_index).values
+        try:
+            variables['Vsw']           =  func.newindex(np.sqrt(V.Vr**2 + V.Vt**2 + V.Vn**2), needed_index).values
+        except:
+            variables['Vsw']           =  func.newindex(np.sqrt(V.Vx**2 + V.Vy**2 + V.Vz**2), needed_index).values
+            
 
     if 'Bmod' in quants:
-        variables['Bmod']          =  func.newindex(np.sqrt(B.Br**2 + B.Bt**2 + B.Bn**2), needed_index).values  
+        try:
+            variables['Bmod']          =  func.newindex(np.sqrt(B.Br**2 + B.Bt**2 + B.Bn**2), needed_index).values  
+        except:
+            variables['Bmod']          =  func.newindex(np.sqrt(B.x**2 + B.By**2 + B.Bz**2), needed_index).values              
         
     if 'VBangle_big' in quants:
         variables['VBangle_big']   =  func.newindex(pd.DataFrame({'DateTime':B.index,
@@ -812,15 +809,17 @@ def quants_2_estimate(
     if 'compress_simple' in quants:
 
         variables['compress_simple'] = func.newindex(turb. calculate_compressibility( 
-                                                                                   tau_value,
-                                                                                   B.copy(),
-                                                                                   five_points_sfunc=five_points_sfunc),needed_index).values.T[0]
+                                                                                    tau_value,
+                                                                                    B.copy(),
+                                                                                    keys     = list(B.keys()),
+                                                                                    five_points_sfunc=five_points_sfunc),needed_index).values.T[0]
+
     if 'compress_simple_V' in quants:
 
         variables['compress_simple_V'] = func.newindex(turb. calculate_compressibility( 
                                                                                    tau_value,
                                                                                    V.copy(),
-                                                                                   keys     = ['Vr', 'Vt', 'Vn'],
+                                                                                   keys     = list(V.keys()),
                                                                                    five_points_sfunc=five_points_sfunc),needed_index).values.T[0]
     if 'variance' in quants:
         # Estimate expansion factor
@@ -999,7 +998,7 @@ def finner_bins_SFs(  dB,
 def estimate_3D_sfuncs(
                        B,
                        V,
-                       V_sc,
+                       V_sc_vel_removed,
                        Np,
                        dt,
                       # Vsw,
@@ -1017,7 +1016,6 @@ def estimate_3D_sfuncs(
                        theta_thresh_gen         = 0,
                        phi_thresh_gen           = 0,
                        extra_conditions         = False,
-                       fix_sign                 = True,
                        ts_list                  = None,
                        thetas_phis_step         = 10,
                        return_B_in_vel_units    = False,
@@ -1026,7 +1024,9 @@ def estimate_3D_sfuncs(
                        also_return_db_nT        = False,
                        use_local_polarity       = True,
                        use_np_factor            = True,
-                       est_proj_ells            = True):
+                       est_proj_ells            = True,
+                       sc                       = None, 
+                       frame                    = 'RTN'):
     """
     Estimate the 3D structure functions for the data given in `B` and `V`
 
@@ -1131,10 +1131,10 @@ def estimate_3D_sfuncs(
        
 
             # Call the function with keyword arguments directly
-            Vsw, B_l, V_l, keep_turb_amp,  dB, dB_perp, dB_parallel, dV, dN,  kinet_normal, sign_Bx, normal_flag,  l_mag,  l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb, align_angles_zpm, needed_index, local_polarity = local_structure_function(
+            Vsw, B_l, V_l, keep_turb_amp,  dB, dB_perp, dB_parallel, dV, dN,  kinet_normal, polarity, normal_flag,  l_mag,  l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb, align_angles_zpm, needed_index, local_polarity = local_structure_function(
                            B.copy(),
                            V.copy(),
-                           V_sc.copy(),
+                           V_sc_vel_removed.copy(),
                            Np.copy(),
                            int(tau_value),
                            dt,
@@ -1142,13 +1142,14 @@ def estimate_3D_sfuncs(
                            five_points_sfunc        = five_points_sfuncs,
                            estimate_alignment_angle = estimate_alignment_angle,
                            return_mag_align_correl  = return_mag_align_correl,
-                           fix_sign                 = fix_sign,
                            return_B_in_vel_units    = return_B_in_vel_units,
                            turb_amp_analysis        = turb_amp_analysis,
                            also_return_db_nT        = also_return_db_nT,
                            use_local_polarity       = use_local_polarity,
                            use_np_factor            = use_np_factor,
-                           est_proj_ells            =  est_proj_ells
+                           est_proj_ells            =  est_proj_ells,
+                           sc                       = sc,
+                           frame                    = frame
             )
             
             
@@ -1180,7 +1181,7 @@ def estimate_3D_sfuncs(
             if use_local_polarity:
                 sign_B_back  = local_polarity
             else:
-                sign_B_back  = sign_Bx               
+                sign_B_back  = polarity               
             
 
             # Estimate elssaser variables
@@ -1217,7 +1218,7 @@ def estimate_3D_sfuncs(
                                                     Np,
                                                     keep_turb_amp,
                                                     np.concatenate(kinet_normal),
-                                                    sign_Bx,
+                                                    polarity,
                                                     B.copy(),
                                                     V.copy(),
                                                     Phiangle,

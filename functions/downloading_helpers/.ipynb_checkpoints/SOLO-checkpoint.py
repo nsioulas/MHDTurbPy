@@ -377,6 +377,7 @@ def LoadTimeSeriesSOLO(start_time,
         except:
             dfrpw                = None
             dfqtn_flag           =  'NO_QTN'
+            big_gaps_qtn         = None
             traceback.print_exc()
 
             diagnostics_RPW      = {'Frac_miss':100, 'Large_gaps':100, 'Tot_gaps':100, 'resol':100}
@@ -390,6 +391,8 @@ def LoadTimeSeriesSOLO(start_time,
 
                 # Return the originaly requested interval
                 dfpar = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfpar)
+
+                
                 
                 # Identify big gaps in timeseries
                 big_gaps_par = func.find_big_gaps(dfpar, settings['Big_Gaps']['Par_big_gaps'], ind1, ind2)
@@ -466,6 +469,9 @@ def LoadTimeSeriesSOLO(start_time,
                     dfdis                = None
                     logging.exception("No distance data because: %s", e)
                     pass
+
+
+                print('GOT HERE!!')
 
 
                 keys_to_keep           = ['Frac_miss', 'Large_gaps', 'Tot_gaps', 'resol']

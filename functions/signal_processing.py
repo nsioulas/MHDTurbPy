@@ -39,7 +39,7 @@ def downsample_and_filter(high_df,
                           low_df,
                           order=5,
                           # percentage=1.1,
-                          percentage=1.15):
+                          percentage=0.999):
     """
     Downsample (and low-pass filter) high_df to match low_df's sampling rate.
     Keeps the same function signature, but trims to the overlapping time range first.

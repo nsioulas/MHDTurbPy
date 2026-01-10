@@ -44,7 +44,7 @@ import general_functions as func
 import TurbPy as turb
 import polarization_analysis
 import calibrate_efield as efield
-import calibrate_sc_potential as sc_potential
+from  calibrate_sc_potential import *
 
 sys.path.insert(1, os.path.join(os.getcwd(), 'functions/downloading_helpers'))
 from  PSP import  LoadTimeSeriesPSP, download_ephemeris_PSP
@@ -88,7 +88,8 @@ def download_files( ok,
         foldername  = "%s_%s_sc_%d" %(str(start_time.strftime(tfmt)), str(end_time.strftime(tfmt)), 0)
 
         #if not os.path.exists(path0.joinpath(foldername).joinpath('final_data.pkl')):
-        if (not os.path.exists(path0.joinpath(foldername)))  | (settings['overwrite_files']):
+        if (not os.path.exists(path0.joinpath(foldername).joinpath('final.pkl')))  | (settings['overwrite_files']):
+        #if (not os.path.exists(path0.joinpath(foldername)))  | (settings['overwrite_files']):
             if (not os.path.exists(path0.joinpath(foldername))):
                 logging.info(BG_WHITE +'Creating new folder  %s'+ RESET, path0.joinpath(foldername))
             else:
@@ -139,21 +140,6 @@ def download_files( ok,
                                                         min_correlation      = settings.get('E_field', {}).get('min_correlation', 0.8)    # Minimum acceptable cross-correlation value
                         )
 
-
-                                                    
-                        # # Estimate coefficients
-                        # E_cal, coeffs = efield.calibrate_electric_field(
-                        #                                 final['E'].copy(),
-                        #                                 final['Par']['V_resampled'][['Vx', 'Vy', 'Vz']].copy(), 
-                        #                                 final['Mag']['B_resampled'].copy(),
-                        #                                 window               = settings.get('E_field', {}).get('fit_window', '30s'), # Length of each fitting interval in minutes
-                        #                                 overlap              = settings.get('E_field', {}).get('overlap_ratio', 0.9),      # Block-averaging cadence in second
-                        #                                 lowpass_hz           = settings.get('E_field', {}).get('cut_off_freq', 1e-3),      # Block-averaging cadence in second
-                        #                                 pct_clip       = settings.get('E_field', {}).get('pct_clip', (0, 99.9)),     # Stride length between intervals in minutes
-                                                       
-                        # )
-
-
                         # Use coefficients to calibrate the df      
                         if settings.get('E_field', {}).get('keep_sc_pot', False):
                             final['sc_pot_E'] = final['E']
@@ -168,16 +154,20 @@ def download_files( ok,
 
                         print('Calibrating sc potential data')
 
-                        sc_pot_dens, _ = sc_potential.calibrate_density(
-                                                                        sc_potential.process_sc_pot(pd.DataFrame(final['SC_pot'].interpolate().dropna())),
-                                                                        pd.DataFrame(final['Par']['V_resampled']['np'].interpolate().dropna()),
-                                                                        window_str    = settings.get('sc_pot', {}).get('fit_window', '300s'),
-                                                                        overlap_ratio = settings.get('sc_pot', {}).get('overlap_ratio', 0.99),
-                                                                        cut_off_freq  = settings.get('sc_pot', {}).get('cut_off_freq', 3))
-
+                        sc_pot_dens= calibrate_density(
+                                                        process_sc_pot(pd.DataFrame(final['SC_pot'].interpolate().dropna())),
+                                                        pd.DataFrame(final['Par']['V_resampled']['np'].interpolate().dropna()),
+                                                        window_str    = settings.get('sc_pot', {}).get('fit_window', '6000s'),
+                                                        mode          = settings.get('sc_pot', {}).get('mode', 'local'),
+                                                        overlap_ratio = settings.get('sc_pot', {}).get('overlap_ratio', 0.5))
                         
-                        final['np_sc_pot'] =  pd.DataFrame({'DateTime' : sc_pot_dens.index,
-                                                                  'Np' : sc_pot_dens.values} ).set_index('DateTime')
+                        if settings['sc_pot']['mode'] =='global':
+                        
+                            final['np_sc_pot'] =  pd.DataFrame({'DateTime' : sc_pot_dens[0][0].index,
+                                                                      'Np' : sc_pot_dens[0][0].values} ).set_index('DateTime')
+                        else:
+                            final['np_sc_pot'] =  pd.DataFrame({'DateTime' : sc_pot_dens[0].index,
+                                                                      'Np' : sc_pot_dens[0].values} ).set_index('DateTime')
                                               
                     except:
                         traceback.print_exc()          
