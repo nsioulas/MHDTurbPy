@@ -1,61 +1,59 @@
-![MHDTurbpy](logo/final.png "turb")
-
+![MHDTurbPy](logo/final.png "turb")
 
 # MHDTurbPy
-A collection of functions for downloading, cleaning, and analyzing data from:
+MHDTurbPy is a Python toolkit for downloading, cleaning, and analyzing heliophysics spacecraft data from:
 
- - Parker Solar Probe
- - Solar Orbiter 
- - WIND
- - Helios A
- - Helios B
- - Ulysses
+- Parker Solar Probe
+- Solar Orbiter
+- WIND
+- Helios A
+- Helios B
+- Ulysses
 
-Additional functions and documentation will be added soon.
-
-
- I welcome contributions to this repository!
+Documentation and additional functionality are under active development, and contributions are welcome.
 
 
 
 # Installation
 
-
- Install virtualenv using pip:
+## 1) Download the package
 ```bash
- pip install virtualenv
- ```
-Create a new virtual environment: 
+git clone https://github.com/nsioulas/MHDTurbPy/
+cd MHDTurbPy
+```
+
+## 2) Create and activate a virtual environment
+Install virtualenv using pip:
+```bash
+pip install virtualenv
+```
+Create a new virtual environment:
 ```bash
 virtualenv MHDTurbPy
- ```
- Activate the virtual environment: 
- ```bash
- source MHDTurbPy/bin/activate
- ```
-
-Install the required packages from your environment file. Don't forget to change the path to your downloaded .txt file: 
+```
+Activate the virtual environment:
 ```bash
-pip install -r path/to/file/requirements.txt
- ```
- 
- To continue installing packages even if some fail, you can use a bash loop to try installing each package individually. This way, even if one package fails to install, the loop will proceed to the next package in the list. 
- 
-```bash
+source MHDTurbPy/bin/activate
+```
 
+## 3) Install dependencies
+Install the required packages from the repo requirements file:
+```bash
+pip install -r requirements/requirements.txt
+```
+
+If you need to continue installing packages even when some fail, you can try a bash loop that falls back to conda:
+
+```bash
 while read p; do
     pip install "$p" || (echo "Trying to install $p with conda" && conda install "$p" -y || echo "Failed to install $p with both pip and conda")
-done < /path/to/file/requirements.txt
- ```
-
- - Download the package
-``` bash
-git clone https://github.com/nsioulas/MHDTurbPy/
+done < requirements/requirements.txt
 ```
 
 # Usage
 
-Some examples of how to download, visualize data can be found in the folder ```Notebooks_Examples```
+Example notebooks that demonstrate how to download and visualize data are available in `Notebooks_Examples`.
+Start with the notebooks in `Notebooks_Examples/` if you want end-to-end data download and analysis examples.
 
 # Contact
 If you have any questions, please don't hesitate to reach out to nsioulas@g.ucla.edu.
@@ -76,6 +74,4 @@ If you use this work, please cite:
   url          = {https://doi.org/10.5281/zenodo.7572468}
 }
 ```
-
-
 

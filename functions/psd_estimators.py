@@ -11,8 +11,20 @@ import pycwt
 import pywt
 import ssqueezepy
 
-sys.path.insert(1, os.path.join(os.getcwd(), "functions/modwt/wmtsa"))
-import modwt
+_MODWT_MODULE: Optional[Any] = None
+
+
+def _load_modwt() -> Any:
+    """Lazy-load modwt with an explicit path tweak to avoid import-time side effects."""
+    global _MODWT_MODULE
+    if _MODWT_MODULE is None:
+        modwt_path = os.path.join(os.getcwd(), "functions/modwt/wmtsa")
+        if modwt_path not in sys.path:
+            sys.path.insert(1, modwt_path)
+        import modwt  # noqa: WPS433 (import inside function for optional dependency)
+
+        _MODWT_MODULE = modwt
+    return _MODWT_MODULE
 
 
 def _as_array(values: Any) -> np.ndarray:
@@ -69,6 +81,7 @@ class MODWTTracePSD:
     def estimate(
         self, r: Any, t: Any, n: Any, dt: float
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        modwt = _load_modwt()
         wr, _ = modwt.modwt(r, wtf=self.wname, nlevels="conservative", boundary="reflection", RetainVJ=True)
         wt, _ = modwt.modwt(t, wtf=self.wname, nlevels="conservative", boundary="reflection", RetainVJ=True)
         wn, _ = modwt.modwt(n, wtf=self.wname, nlevels="conservative", boundary="reflection", RetainVJ=True)
@@ -153,10 +166,14 @@ class SSqueezepyWaveletPSD:
     def estimate(
         self, x: Any, y: Any, z: Any, dt: float
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray], np.ndarray, Optional[np.ndarray], Optional[np.ndarray], np.ndarray]:
-        if self.wavelet is None:
-            wavelet = ssqueezepy.Wavelet(("morlet", {"mu": 13.4}))
+        if self.wavelet is not None:
+            if isinstance(self.wavelet, ssqueezepy.Wavelet):
+                wavelet = self.wavelet
+            else:
+                wavelet = ssqueezepy.Wavelet(self.wavelet)
         else:
-            wavelet = ssqueezepy.Wavelet((self.wname, {"mu": 13.4}))
+            wname = self.wname or "morlet"
+            wavelet = ssqueezepy.Wavelet((wname, {"mu": 13.4}))
 
         scales_type = self.scales_type or "log"
         fs = 1 / dt
@@ -206,7 +223,7 @@ PSD_ESTIMATORS: Dict[str, Any] = {
 
 
 def get_psd_estimator(method: str, **kwargs: Any) -> Any:
-    estimator = PSD_ESTIMATORS.get(method)
+    estimator = PSD_ESTIMATORS.get(method.lower())
     if estimator is None:
         raise ValueError(f"Unknown PSD estimator method: {method}")
     return estimator(**kwargs)

@@ -73,6 +73,7 @@ from psd_estimators import (
     MODWTTracePSD,
     PyCWTWaveletPSD,
     SSqueezepyWaveletPSD,
+    get_psd_estimator,
 )
 
 
@@ -1079,7 +1080,7 @@ def estimate_trace_psd(
         Sampling time step.
     method : str, optional
         PSD estimation method. Default is "traceFFT".
-        Supported: "traceFFT", "modwt", "haar", "pycwt", "ssqueezepy".
+        Supported: "traceFFT" (alias for "fft"), "fft", "modwt", "haar", "pycwt", "ssqueezepy".
     **kwargs
         Method-specific keyword arguments forwarded to the underlying estimator.
 
@@ -1090,17 +1091,11 @@ def estimate_trace_psd(
     """
 
     method_key = method.lower()
-    dispatch = {
-        "tracefft": TracePSD,
-        "modwt": Trace_PSD_MODWT,
-        "haar": Trace_haar_wavelet_psd,
-        "pycwt": trace_PSD_wavelet,
-        "ssqueezepy": trace_PSD_cwt_ssqueezepy,
+    aliases = {
+        "tracefft": "fft",
     }
-    estimator = dispatch.get(method_key)
-    if estimator is None:
-        raise ValueError(f"Unknown PSD method: {method}")
-    return estimator(x, y, z, dt, **kwargs)
+    estimator = get_psd_estimator(aliases.get(method_key, method_key), **kwargs)
+    return estimator.estimate(x, y, z, dt)
 
 def Trace_psd_Hann(B,  dt, nperseg=2**14, noverlap=2**13):
     from scipy.signal import welch
