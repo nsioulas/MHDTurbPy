@@ -23,32 +23,22 @@ cd MHDTurbPy
 ```
 
 ## 2) Create and activate a virtual environment
-Install virtualenv using pip:
+We recommend conda because it handles scientific dependencies (e.g., `spacepy`, `netCDF4`) more reliably across platforms.
+
 ```bash
-pip install virtualenv
-```
-Create a new virtual environment:
-```bash
-virtualenv MHDTurbPy
-```
-Activate the virtual environment:
-```bash
-source MHDTurbPy/bin/activate
+conda env update --file environment.yml --name mhdturbpy
+conda activate mhdturbpy
 ```
 
-## 3) Install dependencies
-Install the required packages from the repo requirements file:
+If you prefer `venv` + `pip`, you can use:
+
 ```bash
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements/requirements.txt
 ```
 
-If you need to continue installing packages even when some fail, you can try a bash loop that falls back to conda:
-
-```bash
-while read p; do
-    pip install "$p" || (echo "Trying to install $p with conda" && conda install "$p" -y || echo "Failed to install $p with both pip and conda")
-done < requirements/requirements.txt
-```
+> Note: The requirements file contains the core dependencies used across the download/clean/analyze pipeline, including Solar Orbiter retrieval support (`sunpy`, `sunpy-soar`) and the plotting colormap package (`colormaps`). Notebook/Jupyter tooling is intentionally left out so you can install it only when needed.
 
 # Usage
 
@@ -74,4 +64,3 @@ If you use this work, please cite:
   url          = {https://doi.org/10.5281/zenodo.7572468}
 }
 ```
-
