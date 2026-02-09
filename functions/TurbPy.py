@@ -1094,7 +1094,14 @@ def estimate_trace_psd(
     aliases = {
         "tracefft": "fft",
     }
-    estimator = get_psd_estimator(aliases.get(method_key, method_key), **kwargs)
+    estimator_key = aliases.get(method_key, method_key)
+    estimator_kwargs = dict(kwargs)
+    if estimator_key == "ssqueezepy":
+        if "est_PSD" in estimator_kwargs and "est_psd" not in estimator_kwargs:
+            estimator_kwargs["est_psd"] = estimator_kwargs.pop("est_PSD")
+        else:
+            estimator_kwargs.pop("est_PSD", None)
+    estimator = get_psd_estimator(estimator_key, **estimator_kwargs)
     return estimator.estimate(x, y, z, dt)
 
 def Trace_psd_Hann(B,  dt, nperseg=2**14, noverlap=2**13):
