@@ -1083,7 +1083,7 @@ def estimate_trace_psd(
         Supported: "traceFFT" (alias for "fft"), "fft", "modwt", "haar", "pycwt", "ssqueezepy".
     **kwargs
         Method-specific keyword arguments forwarded to the underlying estimator
-        constructor.
+        constructor (not its ``estimate`` method).
 
     Returns
     -------

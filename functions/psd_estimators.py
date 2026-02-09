@@ -18,7 +18,7 @@ def _load_modwt() -> Any:
     """Lazy-load modwt with an explicit path tweak to avoid import-time side effects."""
     global _MODWT_MODULE
     if _MODWT_MODULE is None:
-        module_root = os.path.dirname(__file__)
+        module_root = os.path.dirname(os.path.abspath(__file__))
         modwt_path = os.path.join(module_root, "modwt", "wmtsa")
         if modwt_path not in sys.path:
             sys.path.insert(1, modwt_path)
