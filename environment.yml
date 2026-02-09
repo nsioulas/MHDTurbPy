@@ -3,6 +3,9 @@ channels:
   - conda-forge
 dependencies:
   - python=3.10
+  - h5py>=3.8
+  - netCDF4>=1.6
   - pip
+  - spacepy>=0.5
   - pip:
       - -r requirements/requirements.txt

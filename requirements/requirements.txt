@@ -3,10 +3,12 @@ cdasws>=1.8
 cdflib>=1.2
 colormaps>=0.4
 dill>=0.3
-h5py>=3.8
+geopack>=1.0.11
 joblib>=1.2
+hapiclient>=0.2.2
+loguru
 matplotlib>=3.7
-netCDF4>=1.6
+mth5
 numba>=0.57
 numexpr>=2.8
 numpy>=1.24
@@ -21,10 +23,10 @@ pytz>=2023.3
 PyWavelets>=1.4
 requests>=2.31
 scipy>=1.10
-spacepy>=0.5
 ssqueezepy>=0.6
 statsmodels>=0.14
 sunpy>=5.1
 sunpy-soar>=1.6
 tqdm>=4.65
+viresclient
 xarray>=2023.1
