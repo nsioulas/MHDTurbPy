@@ -1082,7 +1082,8 @@ def estimate_trace_psd(
         PSD estimation method. Default is "traceFFT".
         Supported: "traceFFT" (alias for "fft"), "fft", "modwt", "haar", "pycwt", "ssqueezepy".
     **kwargs
-        Method-specific keyword arguments forwarded to the underlying estimator.
+        Method-specific keyword arguments forwarded to the underlying estimator
+        constructor.
 
     Returns
     -------
