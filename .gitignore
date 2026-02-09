@@ -10,6 +10,7 @@ examples/WIND/*.pkl
 examples/PSP/*.pkl
 examples/WIND/*.pkl
 examples/
+public_data/examples/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
