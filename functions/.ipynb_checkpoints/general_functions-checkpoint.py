@@ -434,6 +434,23 @@ def masked_nanmean(arr, axis=1):
     out[counts == 0] = np.nan  # if no valid entries, return nan
     return out
 
+import numpy as np
+
+def masked_nanmedian(arr, axis=1):
+    arr = np.asarray(arr)
+
+    # valid entries are non-nan and non-zero
+    mask = (~np.isnan(arr)) & (arr != 0)
+
+    # need float dtype to support NaNs
+    arr_masked = arr.astype(float, copy=True)
+    arr_masked[~mask] = np.nan
+
+    # median over valid entries (nanmedian ignores NaNs)
+    out = np.nanmedian(arr_masked, axis=axis)
+    return out
+
+
 
 import numpy as np
 from joblib import Parallel, delayed
@@ -4625,33 +4642,44 @@ def find_closest_values_of_2_arrays(a, b):
     return np.column_stack((uni, ret_b))
 
 
-def find_cadence(df, mean_or_median_cadence='median'):
+
+
+def find_cadence(df, method="mode", round_ns=1000, max_gap_factor=10.0):
     """
-    Find the cadence (time interval) between successive timestamps in a DataFrame's index.
+    Robust cadence estimator using ONLY the DatetimeIndex (never a data column).
 
-    Parameters
-    ----------
-    df : pandas DataFrame
-        The input DataFrame.
-    mean_or_median_cadence : str, optional
-        The type of cadence to compute. It can be 'Mean' or 'Median'. The default is 'Mean'.
-
-    Returns
-    -------
-    float
-        The mean or median cadence in seconds between successive timestamps in the DataFrame's index.
-
-    Notes
-    -----
-    This function calculates the cadence (time interval) between successive timestamps in the DataFrame's index.
-    It drops any rows with missing values and computes either the mean or median cadence based on the `mean_or_median_cadence` parameter.
+    method:
+      - "mode": most common dt (recommended for instrument data with gaps)
+      - "median": median dt after excluding large gaps
+      - "mean": mean dt after excluding large gaps
     """
-    keys = list(df.keys())
-    if mean_or_median_cadence == 'mean':
-        return np.nanmean((df[keys[0]].dropna().index.to_series().diff() / np.timedelta64(1, 's')))
-    else:
-        return np.nanmedian((df[keys[0]].dropna().index.to_series().diff() / np.timedelta64(1, 's')))
+    if df is None or len(df) < 3:
+        return np.nan
 
+    idx = pd.DatetimeIndex(df.index).sort_values()
+    dt_ns = np.diff(idx.asi8)  # nanoseconds between successive samples
+    dt_ns = dt_ns[dt_ns > 0]
+
+    if dt_ns.size == 0:
+        return np.nan
+
+    # exclude huge gaps (dropouts) so they don't poison cadence
+    dt_med = np.median(dt_ns)
+    dt_ns = dt_ns[dt_ns <= max_gap_factor * dt_med]
+
+    if dt_ns.size == 0:
+        return np.nan
+
+    if method == "mode":
+        dt_r = (dt_ns / round_ns).round().astype(np.int64) * int(round_ns)
+        vals, counts = np.unique(dt_r, return_counts=True)
+        dt_mode_ns = vals[np.argmax(counts)]
+        return float(dt_mode_ns) / 1e9
+
+    if method == "mean":
+        return float(np.mean(dt_ns)) / 1e9
+
+    return float(np.median(dt_ns)) / 1e9
 
 
 
@@ -4833,7 +4861,7 @@ def resample_timeseries_estimate_gaps(df, resolution, large_gaps=5):
         
         # Make sure that you resample to a resolution that is lower than the initial df's resolution
         while init_dt > resolution * 1e-3:
-            resolution = 1.005 * resolution
+            resolution = 1.0001 * resolution
 
         # Estimate duration of interval selected in seconds
         interval_dur = (df.index[-1] - df.index[0]).total_seconds()
@@ -4848,7 +4876,7 @@ def resample_timeseries_estimate_gaps(df, resolution, large_gaps=5):
         total_gaps = 100 * (res[res > resolution * 1e-3].sum() / interval_dur)
 
         # Resample time-series to desired resolution
-        df_resampled = df.resample(f"{int(resolution)}ms").median().interpolate()
+        df_resampled = df.resample(f"{int(resolution)}ms").mean().interpolate()
 
 
     except:

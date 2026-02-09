@@ -19,6 +19,7 @@
 
 
 # Basic librariesCH
+
 import pandas 
 import numpy as np
 import sys
@@ -4385,9 +4386,262 @@ def calculate_dhtf(v, b):
 
     return dhtf
 
+##########################################
+
+import numpy as np
+from scipy.signal import stft, istft, medfilt
+
+
+def _interp_nans_1d(x: np.ndarray) -> np.ndarray:
+    x = np.asarray(x, float)
+    n = x.size
+    if n == 0:
+        return x
+    ok = np.isfinite(x)
+    if ok.all():
+        return x
+    if ok.sum() < 2:
+        return np.zeros_like(x)
+    idx = np.arange(n)
+    y = x.copy()
+    y[~ok] = np.interp(idx[~ok], idx[ok], x[ok])
+    return y
+
+
+def _find_runs(idx: np.ndarray):
+    if idx.size == 0:
+        return []
+    splits = np.where(np.diff(idx) > 1)[0] + 1
+    return np.split(idx, splits)
+
+
+def remove_wheel_noise(
+    x: np.ndarray,
+    fs: float,
+    *,
+    # ---- STFT geometry
+    freq_min: float = 8.0,
+    stft_nperseg: int = 2048,
+    stft_overlap: float = 0.5,
+
+    # ---- candidate detection (global in time)
+    percentile_q: float = 99.5,
+    kernel: int = 301,
+    thresh_db: float = 3.0,
+    merge_hz: float = 0.20,
+    max_lines: int = 2000,
+
+    # ---- OPTIONAL: slope flattening (helps “dense forest” high-f spectra)
+    whiten_exp: float = 0.0,        # try 8/3 if needed
+
+    # ---- drift tracking + removal
+    track_half_width_hz: float = 4.0,
+    remove_half_width_hz: float = 1.5,
+    atten_db: float = 100.0,
+
+    # ---- robustness
+    fallback_top_k: int = 80,       # if detection yields nCand=0, force top-k candidates
+    return_debug: bool = False,
+
+    # ---- compatibility (ignore unknown keys safely)
+    mad_mult=None,
+    **_ignored,
+):
+    """
+    Drift-safe coherent-line removal for SCM wheel/electronics tones.
+
+    Simple description:
+      1) STFT -> S(f,t)
+      2) Build a 1D candidate spectrum Sq(f) = percentile over time
+      3) Score(f) = dB above a smooth baseline (median filter)
+      4) Pick candidate line bands
+      5) For each candidate, track the ridge in time (local argmax in S)
+      6) Attenuate a frequency band around that ridge
+      7) iSTFT
+    """
+
+    x = _interp_nans_1d(np.asarray(x, float))
+    n = x.size
+    if n < 64 or not np.isfinite(fs) or fs <= 0:
+        return (x, {"candidates_hz": np.array([]), "mask_frac": 0.0}) if return_debug else x
+
+    nperseg = int(min(max(256, stft_nperseg), n))
+    noverlap = int(nperseg * float(stft_overlap))
+    noverlap = min(max(0, noverlap), nperseg - 1)
+
+    # IMPORTANT: boundary/padded -> avoids NOLA/invertibility issues
+    f, tt, Z = stft(
+        x,
+        fs=float(fs),
+        window="hann",
+        nperseg=nperseg,
+        noverlap=noverlap,
+        boundary="zeros",
+        padded=True,
+    )
+
+    if f.size < 2 or Z.size == 0:
+        return (x, {"candidates_hz": np.array([]), "mask_frac": 0.0}) if return_debug else x
+
+    df = float(f[1] - f[0])
+    nyq = 0.5 * fs
+
+    S = np.abs(Z) ** 2  # (nf, nt)
+
+    # ---------------------------
+    # (1) GLOBAL candidate spectrum Sq(f)
+    # ---------------------------
+    Sq = np.percentile(S, float(percentile_q), axis=1)
+
+    eps = 1e-30
+    logSq = np.log10(np.maximum(Sq, eps))
+
+    # Optional whitening (flatten power-law slopes)
+    if whiten_exp != 0.0:
+        ff = np.maximum(f, 1e-6)
+        logSq = logSq + float(whiten_exp) * np.log10(ff)
+
+    # Smooth baseline across frequency
+    k = int(kernel)
+    if k < 3:
+        k = 3
+    if k % 2 == 0:
+        k += 1
+    if k > logSq.size:
+        k = logSq.size if (logSq.size % 2 == 1) else max(3, logSq.size - 1)
+
+    base = medfilt(logSq, kernel_size=k)
+    score = 10.0 * (logSq - base)  # dB above baseline
+
+    valid = (f >= float(freq_min)) & (f < nyq)
+
+    if not np.any(valid):
+        return (x, {"candidates_hz": np.array([]), "mask_frac": 0.0}) if return_debug else x
+
+    score_valid = score[valid]
+    max_score_db = float(np.max(score_valid))
+
+    # Primary thresholding
+    cand = np.where(valid & (score > float(thresh_db)))[0]
+
+    # If nothing passes threshold, force candidates from the strongest bins
+    if cand.size == 0 and fallback_top_k is not None and int(fallback_top_k) > 0:
+        idx_valid = np.where(valid)[0]
+        ktop = min(int(fallback_top_k), idx_valid.size)
+        top_idx = idx_valid[np.argpartition(score[idx_valid], -ktop)[-ktop:]]
+        cand = np.sort(top_idx)
+
+    if cand.size == 0:
+        # absolutely nothing usable -> do nothing
+        dbg = {
+            "candidates_hz": np.array([]),
+            "mask_frac": 0.0,
+            "nCand": 0,
+            "fs": float(fs),
+            "df_hz": df,
+            "max_score_db": max_score_db,
+            "thresh_db": float(thresh_db),
+        }
+        return (x, dbg) if return_debug else x
+
+    # Group contiguous bins and pick max per run
+    runs = _find_runs(cand)
+
+    cand_bins = []
+    cand_heights = []
+    for run in runs:
+        j = run[np.argmax(score[run])]
+        cand_bins.append(j)
+        cand_heights.append(score[j])
+
+    cand_bins = np.array(cand_bins, dtype=int)
+    cand_heights = np.array(cand_heights, dtype=float)
+
+    order = np.argsort(cand_heights)[::-1]
+    cand_bins = cand_bins[order]
+    cand_heights = cand_heights[order]
+
+    cand_freqs = f[cand_bins]
+
+    # Merge close candidates
+    keep = []
+    for i, fi in enumerate(cand_freqs):
+        if len(keep) == 0:
+            keep.append(i)
+        else:
+            if np.min(np.abs(fi - cand_freqs[keep])) > float(merge_hz):
+                keep.append(i)
+
+    cand_bins = cand_bins[keep]
+    cand_freqs = f[cand_bins]
+
+    if cand_bins.size > int(max_lines):
+        cand_bins = cand_bins[: int(max_lines)]
+        cand_freqs = cand_freqs[: int(max_lines)]
+
+    # ---------------------------
+    # (2) TRACK ridges in time + build mask
+    # ---------------------------
+    track_bins = int(np.ceil(float(track_half_width_hz) / df))
+    rm_bins = int(np.ceil(float(remove_half_width_hz) / df))
+
+    track_bins = max(1, track_bins)
+    rm_bins = max(1, rm_bins)
+
+    nf, nt = S.shape
+    mask = np.zeros((nf, nt), dtype=bool)
+    cols = np.arange(nt)
+
+    for k0 in cand_bins:
+        a = max(0, k0 - track_bins)
+        b = min(nf - 1, k0 + track_bins)
+
+        band = S[a:b + 1, :]  # (band_nf, nt)
+        local_argmax = np.argmax(band, axis=0) + a  # (nt,)
+
+        # Vectorized band marking (no inner time-loop)
+        for off in range(-rm_bins, rm_bins + 1):
+            rr = np.clip(local_argmax + off, 0, nf - 1)
+            mask[rr, cols] = True
+
+    # Attenuate coefficients in mask
+    atten = 10.0 ** (-float(atten_db) / 20.0)
+    Zc = Z.copy()
+    Zc[mask] *= atten
+
+    # Invert STFT
+    _, y = istft(
+        Zc,
+        fs=float(fs),
+        window="hann",
+        nperseg=nperseg,
+        noverlap=noverlap,
+        boundary=True,
+    )
+
+    # Match length
+    if y.size > n:
+        y = y[:n]
+    elif y.size < n:
+        y = np.pad(y, (0, n - y.size))
+
+    if return_debug:
+        dbg = {
+            "candidates_hz": cand_freqs,
+            "mask_frac": float(mask.mean()),
+            "nCand": int(cand_freqs.size),
+            "fs": float(fs),
+            "df_hz": df,
+            "max_score_db": max_score_db,
+            "thresh_db": float(thresh_db),
+        }
+        return y, dbg
+
+    return y
+
 
 from scipy.signal import stft, istft
-def remove_wheel_noise(data,
+def remove_wheel_noise_scam_PSP(data,
                        fs, 
                        window_size      = 2**15, 
                        avg_length       = 1,
@@ -4484,192 +4738,8 @@ def remove_wheel_noise(data,
     return cleaned_data
 
 
-# def remove_wheel_noise(data, 
-#                        fs,
-#                        f_wj_start, dfw_dt, bandwidth_Hz=1.0, attenuation_db=-80):
-#     """
-#     Remove narrowband noise from data at frequencies f_wj.
-
-#     Parameters:
-#     data : numpy.ndarray
-#         Input time series data.
-#     fs : float
-#         Sampling frequency in Hz.
-#     f_wj_start : list or numpy.ndarray
-#         List of contaminated frequencies (Hz) at the start of data.
-#     dfw_dt : float
-#         Maximum rate of change of the wheel frequencies (Hz per second).
-#     bandwidth_Hz : float, optional
-#         Bandwidth around each contaminated frequency to attenuate (Hz).
-#     attenuation_db : float, optional
-#         Attenuation in decibels (-80 dB by default).
-
-#     Returns:
-#     cleaned_data : numpy.ndarray
-#         The data with narrowband noise removed.
-#     """
-#     data = np.asarray(data)
-#     data_length = len(data)
-#     attenuation_factor = 10 ** (attenuation_db / 20)  # Convert dB to amplitude attenuation factor
-
-#     # Compute N based on the given algorithm
-#     N = int(np.sqrt(fs ** 2 / abs(dfw_dt)))
-#     if N % 2 != 0:
-#         N += 1  # Ensure N is even for FFT symmetry
-#     N = min(N, data_length)  # Ensure N does not exceed data length
-
-#     # Set overlap parameters for overlap-add method
-#     overlap = N // 2
-#     step_size = N - overlap
-#     num_steps = (data_length - overlap) // step_size + 1
-
-#     # Initialize arrays for overlap-add
-#     cleaned_data = np.zeros(data_length)
-#     window_sum = np.zeros(data_length)
-
-#     # Define window function
-#     window = np.hanning(N)
-
-#     for i in range(num_steps):
-#         start_idx = i * step_size
-#         end_idx = start_idx + N
-#         if end_idx > data_length:
-#             end_idx = data_length
-#             start_idx = end_idx - N
-#             if start_idx < 0:
-#                 start_idx = 0
-#                 end_idx = data_length
-#                 N_chunk = end_idx - start_idx
-#                 window = np.hanning(N_chunk)
-#             else:
-#                 N_chunk = N
-#         else:
-#             N_chunk = N
-
-#         data_chunk = data[start_idx:end_idx] * window
-
-#         # Time at this chunk (we can take the midpoint time)
-#         t_chunk = (start_idx + N_chunk / 2) / fs
-
-#         # Compute wheel frequencies at this time
-#         f_wj_t = [f_wj0 + dfw_dt * t_chunk for f_wj0 in f_wj_start]
-
-#         # Compute FFT
-#         freqs = np.fft.rfftfreq(N_chunk, d=1/fs)
-#         fft_chunk = np.fft.rfft(data_chunk, n=N_chunk)
-
-#         # Attenuate contaminated frequencies
-#         for f_wj in f_wj_t:
-#             # Find indices where frequency is within bandwidth_Hz / 2 of f_wj
-#             indices_to_attenuate = np.where(np.abs(freqs - f_wj) <= bandwidth_Hz / 2)[0]
-#             # Attenuate the coefficients
-#             fft_chunk[indices_to_attenuate] *= attenuation_factor
-
-#         # Inverse FFT to reconstruct the cleaned chunk
-#         cleaned_chunk = np.fft.irfft(fft_chunk, n=N_chunk)
-#         cleaned_chunk *= window  # Apply window again to match overlap-add
-
-#         # Overlap-add the cleaned chunk to the output
-#         cleaned_data[start_idx:end_idx] += cleaned_chunk
-#         window_sum[start_idx:end_idx] += window ** 2
-
-#     # Normalize to account for window overlap
-#     nonzero_indices = window_sum > 1e-10  # Avoid division by zero
-#     cleaned_data[nonzero_indices] /= window_sum[nonzero_indices]
-
-#     return cleaned_data
 
 
-
-# def remove_wheel_noise(signal,
-#                    fs, 
-#                    freq_threshold         =  1.5,
-#                    windows_width_hz       = [0.1, 2],
-#                    empirical_threshold    = 1.3
-#                   ):
-#     for window_hz in func.ensure_iterable(windows_width_hz):
-#     #for window_hz in (windows_width_hz if len(windows_width_hz) > 1 else [windows_width_hz]):
-
-#         # Calculate the Fourier transform and power spectrum of the signal
-#         N = len(signal)
-#         signal_fft = np.fft.rfft(signal)
-#         power_spec = np.abs(signal_fft)**2
-#         frequencies = np.fft.rfftfreq(N, d=1/fs)
-
-#         # Filter frequencies higher than the threshold
-#         valid_indices        = frequencies > freq_threshold
-#         frequencies_filtered = frequencies[valid_indices]
-#         power_spec_filtered  = power_spec[valid_indices]
-
-#         # Calculate moving-window mean and standard deviation
-#         window_size_samples  = int(np.ceil(window_hz / (frequencies[1] - frequencies[0])))*2 + 1
-
-#         moving_mean          = np.convolve(power_spec_filtered, np.ones(window_size_samples)/window_size_samples, mode='same')
-        
-#         #_, moving_mean       = func.smoothing_function(frequencies_filtered, power_spec_filtered)
-#         moving_std           = np.sqrt(np.convolve((power_spec_filtered - moving_mean)**2, np.ones(window_size_samples)/window_size_samples, mode='same'))
-
-
-#         # Define z(f)
-#         z_f  =  moving_std / moving_mean
-
-
-#         # Calculate empirical threshold based on the mean value of z(f)
-#         z_cutoff =  empirical_threshold* np.mean(z_f)
-
-
-
-#         roling_median        = func.simple_python_rolling_median(z_f, 5*window_size_samples)
-#         quant                = empirical_threshold* roling_median
-#         #noise_mask           = (z_f > quant) | ( np.isnan(roling_median) & (frequencies_filtered > 2*freq_threshold)) | ((z_f >empirical_threshold) & (frequencies_filtered > 3*freq_threshold))
-#         noise_mask           = (z_f > quant)
-#         f_noise              = frequencies_filtered[noise_mask]
-
-
-#         # Mask for frequencies without noise
-
-#         # Calculate moving-window mean for no-noise frequencies     
-#         power_spec_no_noise = power_spec_filtered[~noise_mask]
-#         frequencies_no_noise = frequencies_filtered[~noise_mask]
-#         moving_mean_no_noise = np.convolve(power_spec_no_noise, np.ones(window_size_samples)/window_size_samples, mode='same')
-
-
-#         #frequencies_no_noise, _, moving_mean_no_noise = func.smoothing_function(frequencies_no_noise, power_spec_no_noise, 2)
-
-#         # Interpolate moving-window mean for the noise frequencies
-#         moving_mean_interpolated = np.interp(frequencies_filtered, frequencies_no_noise, moving_mean_no_noise)
-
-#         # Replace power spectrum values at noise frequencies with interpolated moving mean
-#         power_spec_noise_removed                                     = power_spec.copy()
-
-#         # First, find the indices in the full frequency array where noise is present
-#         noise_indices = np.where(frequencies > freq_threshold)[0][noise_mask]
-
-#         # Now update the power_spec_noise_removed at those indices with the interpolated values
-#         power_spec_noise_removed[noise_indices] = moving_mean_interpolated[noise_mask]
-
-#         # Recalculate magnitude for noise-removed Fourier transform
-#         magnitude_noise_removed = np.sqrt(power_spec_noise_removed)
-
-#         # Retain phases for no-noise frequencies, randomize for noise frequencies
-#         phases = np.angle(signal_fft)
-#         # Generate random phases only for the noise frequencies
-#         random_phases = np.random.uniform(-np.pi, np.pi, len(f_noise))
-
-#         # Assign random phases only to the noise frequencies
-#         phases_noise_indices = np.where(np.isin(frequencies, f_noise))[0]
-#         phases[phases_noise_indices] = random_phases
-
-
-#         # Construct the noise-removed Fourier transform
-#         noise_removed_fft = magnitude_noise_removed * np.exp(1j * phases)
-
-#         # Perform the inverse Fourier transform to get the noise-removed signal
-#         signal = np.fft.irfft(noise_removed_fft, n=N)
-
-
-
-#     return signal
 
 
 def build_V_mod_TH(
@@ -4788,129 +4858,129 @@ def build_V_mod_TH(
     return summary_df, V_rel_df
 
 
-# def build_V_mod_TH(
-#     B, V,
-#     axes: list[str] | None = None,
-#     sc: str            = "PSP",
-#     window: str        = "30min",
-#     correct_sign: bool = True,
-#     consider_Va:  bool = True,
-#     consider_Vsc: bool = True,
-#     return_addit: bool = False  # <--- This flag was present but unused
-# ):
-#     """
-#     Computes Effective Advection Speeds (MTH) and returns vector components.
-#     """
-#     import numpy as np
-#     import pandas as pd
+def build_V_mod_TH(
+    B, V,
+    axes: list[str] | None = None,
+    sc: str            = "PSP",
+    window: str        = "30min",
+    correct_sign: bool = True,
+    consider_Va:  bool = True,
+    consider_Vsc: bool = True,
+    return_addit: bool = False  # <--- This flag was present but unused
+):
+    """
+    Computes Effective Advection Speeds (MTH) and returns vector components.
+    """
+    import numpy as np
+    import pandas as pd
 
-#     # --- Constants ---
-#     _C_ALFVEN = 21.82 
+    # --- Constants ---
+    _C_ALFVEN = 21.82 
 
-#     # --- Axes Setup ---
-#     if axes is None:
-#         axes = ["r","t","n"] if "Br" in B.columns else ["x","y","z"]
-#     is_rtn        = axes[0] == "r"
-#     base_cols     = [f"V{a}" for a in axes]
-#     sc_vel_cols   = [f"sc_vel_{a}" for a in ("r","t","n")]
-#     B_cols        = [f"B{a}" for a in axes]
+    # --- Axes Setup ---
+    if axes is None:
+        axes = ["r","t","n"] if "Br" in B.columns else ["x","y","z"]
+    is_rtn        = axes[0] == "r"
+    base_cols     = [f"V{a}" for a in axes]
+    sc_vel_cols   = [f"sc_vel_{a}" for a in ("r","t","n")]
+    B_cols        = [f"B{a}" for a in axes]
 
-#     # --- 1. Background Fields Calculation ---
-#     # Rolling mean for Density and B-field to get consistent background
-#     n_p_raw = V["np"] 
-#     Np_mean = n_p_raw.rolling(window, center=True, min_periods=1).mean()
+    # --- 1. Background Fields Calculation ---
+    # Rolling mean for Density and B-field to get consistent background
+    n_p_raw = V["np"] 
+    Np_mean = n_p_raw.rolling(window, center=True, min_periods=1).mean()
 
-#     # Vector Background (Direction)
-#     B0_vec_df  = B[B_cols].rolling(window, center=True, min_periods=1).median()
-#     B0_vec_arr = B0_vec_df.values.astype(float)
+    # Vector Background (Direction)
+    B0_vec_df  = B[B_cols].rolling(window, center=True, min_periods=1).median()
+    B0_vec_arr = B0_vec_df.values.astype(float)
     
-#     # Scalar Background (Energy)
-#     B_inst_mag = np.linalg.norm(B[B_cols].values, axis=1)
-#     B0_scalar_series = pd.Series(B_inst_mag, index=B.index).rolling(window, center=True, min_periods=1).mean()
-#     B0_scalar_vals   = B0_scalar_series.values
+    # Scalar Background (Energy)
+    B_inst_mag = np.linalg.norm(B[B_cols].values, axis=1)
+    B0_scalar_series = pd.Series(B_inst_mag, index=B.index).rolling(window, center=True, min_periods=1).mean()
+    B0_scalar_vals   = B0_scalar_series.values
 
-#     # --- 2. Frame Transformation (Get V_rel) ---
-#     V_arr  = V[base_cols].values.astype(float)
+    # --- 2. Frame Transformation (Get V_rel) ---
+    V_arr  = V[base_cols].values.astype(float)
     
-#     if consider_Vsc and is_rtn and sc.upper() == "PSP":
-#         if all(c in V.columns for c in sc_vel_cols):
-#             V_sc_arr = V[sc_vel_cols].values.astype(float)
-#             V_arr    = V_arr - V_sc_arr  # V_rel = V_sw - V_sc
-#         else:
-#             print("Warning: PSP SC velocity columns missing. Using V_sw as V_rel.")
+    if consider_Vsc and is_rtn and sc.upper() == "PSP":
+        if all(c in V.columns for c in sc_vel_cols):
+            V_sc_arr = V[sc_vel_cols].values.astype(float)
+            V_arr    = V_arr - V_sc_arr  # V_rel = V_sw - V_sc
+        else:
+            print("Warning: PSP SC velocity columns missing. Using V_sw as V_rel.")
             
-#     # Save V_rel (V_sc_rem) for output
-#     V_rel_df = pd.DataFrame(V_arr, index=V.index, columns=base_cols)
+    # Save V_rel (V_sc_rem) for output
+    V_rel_df = pd.DataFrame(V_arr, index=V.index, columns=base_cols)
 
-#     # --- 3. Basis Vectors (b_hat) ---
-#     B0_vec_mag = np.linalg.norm(B0_vec_arr, axis=1)
+    # --- 3. Basis Vectors (b_hat) ---
+    B0_vec_mag = np.linalg.norm(B0_vec_arr, axis=1)
     
-#     with np.errstate(divide='ignore', invalid='ignore'):
-#         e_par = B0_vec_arr / B0_vec_mag[:, None]
-#     e_par[np.isnan(e_par)] = 0.0
+    with np.errstate(divide='ignore', invalid='ignore'):
+        e_par = B0_vec_arr / B0_vec_mag[:, None]
+    e_par[np.isnan(e_par)] = 0.0
 
-#     # Perp Basis
-#     ref = np.array([1.0, 0.0, 0.0])
-#     e_p1 = np.cross(e_par, ref)
-#     idx_deg = np.linalg.norm(e_p1, axis=1) < 1e-6
-#     if np.any(idx_deg):
-#         e_p1[idx_deg] = np.cross(e_par[idx_deg], np.array([0.0, 1.0, 0.0]))
+    # Perp Basis
+    ref = np.array([1.0, 0.0, 0.0])
+    e_p1 = np.cross(e_par, ref)
+    idx_deg = np.linalg.norm(e_p1, axis=1) < 1e-6
+    if np.any(idx_deg):
+        e_p1[idx_deg] = np.cross(e_par[idx_deg], np.array([0.0, 1.0, 0.0]))
     
-#     e_p1 /= np.linalg.norm(e_p1, axis=1)[:, None]
-#     e_p2 = np.cross(e_par, e_p1)
+    e_p1 /= np.linalg.norm(e_p1, axis=1)[:, None]
+    e_p2 = np.cross(e_par, e_p1)
 
-#     # --- 4. Projections (The Core Physics) ---
-#     v_par = np.einsum("ij,ij->i", V_arr, e_par)  # V_rel_parallel
-#     v_p1  = np.einsum("ij,ij->i", V_arr, e_p1)
-#     v_p2  = np.einsum("ij,ij->i", V_arr, e_p2)
+    # --- 4. Projections (The Core Physics) ---
+    v_par = np.einsum("ij,ij->i", V_arr, e_par)  # V_rel_parallel
+    v_p1  = np.einsum("ij,ij->i", V_arr, e_p1)
+    v_p2  = np.einsum("ij,ij->i", V_arr, e_p2)
     
-#     Vrel_perp_mag = np.sqrt(v_p1**2 + v_p2**2)   # V_rel_perp
-#     Vrel_mag      = np.sqrt(v_par**2 + Vrel_perp_mag**2) 
+    Vrel_perp_mag = np.sqrt(v_p1**2 + v_p2**2)   # V_rel_perp
+    Vrel_mag      = np.sqrt(v_par**2 + Vrel_perp_mag**2) 
 
-#     # --- 5. Alfvén Speed & Polarity ---
-#     Np_vals = Np_mean.values
-#     Np_vals[Np_vals <= 0] = np.nan
+    # --- 5. Alfvén Speed & Polarity ---
+    Np_vals = Np_mean.values
+    Np_vals[Np_vals <= 0] = np.nan
     
-#     Va_scalar_mag = _C_ALFVEN * B0_scalar_vals / np.sqrt(Np_vals)
-#     Va_scalar_mag[np.isnan(Va_scalar_mag)] = 0.0
+    Va_scalar_mag = _C_ALFVEN * B0_scalar_vals / np.sqrt(Np_vals)
+    Va_scalar_mag[np.isnan(Va_scalar_mag)] = 0.0
 
-#     # Polarity (sigma)
-#     Br_like = B0_vec_arr[:, 0] if is_rtn else -B0_vec_arr[:, 2]
-#     sigma = np.sign(Br_like)
-#     sigma[sigma == 0] = 1.0
-#     if not correct_sign: sigma = np.abs(sigma)
+    # Polarity (sigma)
+    Br_like = B0_vec_arr[:, 0] if is_rtn else -B0_vec_arr[:, 2]
+    sigma = np.sign(Br_like)
+    sigma[sigma == 0] = 1.0
+    if not correct_sign: sigma = np.abs(sigma)
 
-#     # MTH Velocity Magnitude
-#     # This accounts for the Doppler shift: V_eff = V_rel +/- V_A
-#     v_par_eff = v_par + (sigma * Va_scalar_mag if consider_Va else 0.0)
-#     V_mod_mag = np.sqrt(v_par_eff**2 + Vrel_perp_mag**2) 
+    # MTH Velocity Magnitude
+    # This accounts for the Doppler shift: V_eff = V_rel +/- V_A
+    v_par_eff = v_par + (sigma * Va_scalar_mag if consider_Va else 0.0)
+    V_mod_mag = np.sqrt(v_par_eff**2 + Vrel_perp_mag**2) 
 
-#     # --- 6. Theta_VB ---
-#     with np.errstate(divide='ignore', invalid='ignore'):
-#         cos_theta = v_par / Vrel_mag
-#     theta_VB = np.degrees(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
+    # --- 6. Theta_VB ---
+    with np.errstate(divide='ignore', invalid='ignore'):
+        cos_theta = v_par / Vrel_mag
+    theta_VB = np.degrees(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
 
-#     # --- 7. Output ---
-#     summary_df = pd.DataFrame({
-#         "θ_VB"        : theta_VB,
-#         "|Va|"        : Va_scalar_mag, 
-#         "|V_rel|"     : Vrel_mag,  
-#         "|V_mod_TH|"  : V_mod_mag,
-#         "B0_scalar"   : B0_scalar_vals,
-#         "B0_vec_mag"  : B0_vec_mag,
-#         "Np_background": Np_vals
-#     }, index=V.index)
+    # --- 7. Output ---
+    summary_df = pd.DataFrame({
+        "θ_VB"        : theta_VB,
+        "|Va|"        : Va_scalar_mag, 
+        "|V_rel|"     : Vrel_mag,  
+        "|V_mod_TH|"  : V_mod_mag,
+        "B0_scalar"   : B0_scalar_vals,
+        "B0_vec_mag"  : B0_vec_mag,
+        "Np_background": Np_vals
+    }, index=V.index)
 
-#     # [FIX] Logic to return the 3rd DataFrame containing the components
-#     if return_addit:
-#         V_MTH_extra = pd.DataFrame({
-#             "Vrel_par":  v_par,          # Use this for V_rel,||
-#             "Vrel_perp": Vrel_perp_mag,  # Use this for V_rel,perp
-#             "sigma_Va":  sigma * Va_scalar_mag # The Alfvenic term
-#         }, index=V.index)
-#         return summary_df, V_rel_df, V_MTH_extra
+    # [FIX] Logic to return the 3rd DataFrame containing the components
+    if return_addit:
+        V_MTH_extra = pd.DataFrame({
+            "Vrel_par":  v_par,          # Use this for V_rel,||
+            "Vrel_perp": Vrel_perp_mag,  # Use this for V_rel,perp
+            "sigma_Va":  sigma * Va_scalar_mag # The Alfvenic term
+        }, index=V.index)
+        return summary_df, V_rel_df, V_MTH_extra
     
-#     return summary_df, V_rel_df
+    return summary_df, V_rel_df
 
 def calculate_non_linearity_parameter(d_zp_lambda,
                                       d_zp_xi,

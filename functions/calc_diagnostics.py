@@ -73,7 +73,7 @@ def apply_rolling_mean_and_get_columns(f_df, settings):
 
 def calculate_signB(f_df, settings):
     """Calculate the sign of B based on available column."""
-    if settings['sc'] in ['PSP', 'SOLO', 'HELIOS_A', 'HELIOS_B']:
+    if settings['sc'] in ['PSP', 'SOLO', 'HELIOS_A', 'HELIOS_B', 'ACE']:
         try:
             return -np.sign(f_df['Br'].rolling('30min', center=True).mean())
         except:
@@ -337,6 +337,33 @@ def calculate_diagnostics(
     vx, vy, vz      = f_df[columns_v].to_numpy().T
     bx, by, bz      = f_df[columns_b].to_numpy().T
 
+    # For Ma
+    # vx_me, vy_me, vz_me      = f_df[columns_v].rolling('1min', center=True).median().to_numpy().T
+    # Bmod_med                 = f_df[columns_b[0]**2 + f_df[columns_b[1]**2 + f_df[columns_b[2]**2).sqrt().rolling('1min', center=True).mean().to_numpy().T
+
+    vx_me, vy_me, vz_me = (
+    f_df[columns_v]
+    .rolling("1min", center=True, min_periods=1)
+    .median()
+    .to_numpy()
+    .T
+    )
+    
+    Bmod_med = (
+        np.sqrt(f_df[columns_b].pow(2).sum(axis=1))
+        .rolling("1min", center=True, min_periods=1)
+        .mean()
+        .to_numpy()
+    )
+
+
+    if "Vr" in columns_v:
+        sc_r, sc_t, sc_n = f_df[["sc_vel_r", "sc_vel_t", "sc_vel_n"]].to_numpy().T
+        vx_sc_rem        = vx - sc_r
+        vy_sc_rem        = vy - sc_t
+        vz_sc_rem        = vz - sc_n
+
+
     # Const to normalize mag field in vel units
     f_df['np_mean'] = f_df['np'].rolling('10min', center=True).mean().interpolate()
     
@@ -346,6 +373,10 @@ def calculate_diagnostics(
         kinet_normal    = 1e-15 / np.sqrt(mu0 * f_df['np_mean'].values * m_p)
 
     # Estimate Alfvén speed and SW speed
+    Va_ts_me           = Bmod_med * kinet_normal
+    V_ts_me            = np.sqrt(vx_me**2 + vy_me**2 + vz_me**2)  # Fixed to use vy instead of repeating vx
+    
+    # Estimate Alfvén speed and SW speed background
     Va_ts           = np.vstack([bx, by, bz]) * kinet_normal
     V_ts            = np.vstack([vx, vy, vz])  # Fixed to use vy instead of repeating vx
 
@@ -376,7 +407,8 @@ def calculate_diagnostics(
 
     # Estimate beta
     from plasmapy.formulary import beta
-    
+
+    print(f_df.keys())
     beta, beta_mean, beta_median, beta_std         = plasma.estimate_beta(Bmag, Np, f_df.Tp.values )
 
     # Estimate rho_i
@@ -384,13 +416,21 @@ def calculate_diagnostics(
 
     # Calculate the Alfvén speed
     alfv_speed = np.sqrt(np.sum(Va_ts**2, axis=0))
+
+    alfv_speed_back = np.sqrt(np.sum(Va_ts**2, axis=0))
     
     # Estiamte MA
     Ma_ts      = Vsw/alfv_speed
-    Ma_r_ts    = np.abs(vx/(bx*kinet_normal))
+    Ma_r_ts    = Vsw/alfv_speed
+    Ma_ts_me   = V_ts_me/Va_ts_me
     
     # Estimate VB angle
-    vbang      = np.arccos((vx * bx +  vy * by  +  vz * bz) / (Bmag * Vsw)) * 180 / np.pi
+    if 'Vr' in columns_v:
+
+        Vsw_sc_rem = np.sqrt(vx_sc_rem**2 + vy_sc_rem**2 + vz_sc_rem**2)
+        vbang      = np.arccos((vx_sc_rem * bx +  vy_sc_rem * by  +  vz_sc_rem * bz) / (Bmag * Vsw_sc_rem)) * 180 / np.pi
+    else:
+        vbang      = np.arccos((vx * bx +  vy * by  +  vz * bz) / (Bmag * Vsw)) * 180 / np.pi
 
     #End its mean
     VBangle_mean, VBangle_std = np.nanmean(vbang), np.nanstd(vbang)
@@ -414,8 +454,8 @@ def calculate_diagnostics(
                                          'va_r'     : Va_ts[0], 'va_t'    : Va_ts[1],     'va_n'    : Va_ts[2],
                                          'v_r'      : V_ts[0],  'v_t'     : V_ts[1],      'v_n'     : V_ts[2],
                                          
-                                         'beta'     : beta,     'np'      : Np,           'Tp'      : f_df.Tp.values,
-                                         'VB'       : vbang,    'd_i'     : di,           'Ma'      : Ma_ts,   'rho_i': rho_i,
+                                         'beta'     : beta,     'np'      : Np,           'Tp'       : f_df.Tp.values,
+                                         'VB'       : vbang,    'd_i'     : di,           'Ma_inst'  : Ma_ts, 'Ma':  Ma_ts_me,  'rho_i': rho_i,
                                          'Vsw'      : Vsw,      'kin_norm': kinet_normal, 'Ma_r'    : Ma_r_ts,
                                          'Va'       : alfv_speed}).set_index('DateTime')
 
