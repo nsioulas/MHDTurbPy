@@ -67,6 +67,13 @@ import astropy.units as u
 from scipy.stats import binned_statistic
 from scipy.interpolate import interp1d
 
+from psd_estimators import (
+    FFTTracePSD,
+    HaarWaveletPSD,
+    MODWTTracePSD,
+    PyCWTWaveletPSD,
+    SSqueezepyWaveletPSD,
+)
 
 
 
@@ -547,47 +554,13 @@ def Trace_PSD_MODWT(R, T, N, dt, wname ='sym8'):
 #         print(f'Cadence is high.Switch  wname ={wname} to capture steep scalings!')
         
     
-    # Estimate MODWT coefficients and weights
-    Wr, Vj   = modwt.modwt(R, wtf=wname, nlevels='conservative', boundary='reflection', RetainVJ=True)
-    Wt, Vj   = modwt.modwt(T, wtf=wname, nlevels='conservative', boundary='reflection', RetainVJ=True)
-    Wn, Vj   = modwt.modwt(N, wtf=wname, nlevels='conservative', boundary='reflection', RetainVJ=True)
-    
-    # Return freqs and scales too
-    scale = 2**np.arange(1,np.shape(Wr)[0]+1);
-    freqs = pywt.scale2frequency('coif6', scale)/dt
-   
-    # Estimate Fsc_{ii} and PSD = Σ Fsc_{ii}
-    PSD_R = modwt.wspec(Wr, dt)
-    PSD_T = modwt.wspec(Wt, dt)
-    PSD_N = modwt.wspec(Wn, dt)
-    
-    return freqs, 2*(PSD_R[0] + PSD_T[0] + PSD_N[0]), scale
+    estimator = MODWTTracePSD(wname=wname)
+    return estimator.estimate(R, T, N, dt)
 
 
 def Trace_haar_wavelet_psd(x, y, z, dt, wavelet='haar'):
-
-    # Perform the wavelet decomposition on the padded data
-    x = pywt.wavedec(x, wavelet)
-    y = pywt.wavedec(y, wavelet)
-    z = pywt.wavedec(z, wavelet)
-    
-    px = []
-    py = []
-    pz = []
-    for i in range(1, len(x)):
-
-        px.append(np.nanmean(x[i]**2))
-        py.append(np.nanmean(y[i]**2))
-        pz.append(np.nanmean(z[i]**2))
-        
-    px       = dt*(np.array(px[::-1]))/np.log2(2)
-    py       = dt*(np.array(py[::-1]))/np.log2(2)
-    pz       = dt*(np.array(pz[::-1]))/np.log2(2)
-    p_trace  = px + py + pz
-    
-    freqs = 2.0**(-np.arange(1, len(px)+1))/dt
-
-    return x, y, z, freqs, p_trace, px, py, pz
+    estimator = HaarWaveletPSD(wavelet=wavelet)
+    return estimator.estimate(x, y, z, dt)
 
 
 def trace_PSD_wavelet(x,
@@ -625,32 +598,8 @@ def trace_PSD_wavelet(x,
         The scales at which wavelet was estimated
     """
     
-    mother_wave_dict = {
-    'gaussian': pycwt.DOG(),
-    'paul': pycwt.Paul(),
-    'mexican_hat': pycwt.MexicanHat()}
-    
-
-    if mother_wave in mother_wave_dict.keys():
-        mother_morlet = mother_wave_dict[mother_wave]
-    else:
-        mother_morlet = pycwt.Morlet()
-        
-    N                                       = len(x)
-
-
-    db_x, sj, freqs, coi, signal_ft, ftfreqs = pycwt.cwt(x, dt, dj, wavelet=mother_morlet)
-    db_y, _, freqs, _, _, _                  = pycwt.cwt(y, dt, dj, wavelet=mother_morlet)
-    db_z, _, freqs, _, _, _                  = pycwt.cwt(z, dt, dj, wavelet=mother_morlet)
-     
-    # Estimate trace powerspectral density
-    PSD = (np.nanmean(np.abs(db_x)**2, axis=1) + np.nanmean(np.abs(db_y)**2, axis=1) + np.nanmean(np.abs(db_z)**2, axis=1)   )*( 2*dt)
-    
-    # Remember!
-    scales = (1/(freqs))/dt
-    
-    
-    return db_x, db_y, db_z, freqs, PSD, scales
+    estimator = PyCWTWaveletPSD(dj=dj, mother_wave=mother_wave)
+    return estimator.estimate(x, y, z, dt)
 
 
 
@@ -694,49 +643,17 @@ def trace_PSD_cwt_ssqueezepy(x,
         The scales at which wavelet was estimated
     """
     
-    if wavelet is None:
-        wavelet    = ssqueezepy.Wavelet(('morlet', {'mu': 13.4}))
-    else:
-        wavelet    = ssqueezepy.Wavelet((wname, {'mu': 13.4}))  
-        
-    if  scales_type  is  None:
-        scales_type  = 'log'
-
-    # Estimate sampling frequency
-    fs          = 1/dt
-    
-    # Estimate wavelet coefficients
-    Wx, scales  = ssqueezepy.cwt(x, wavelet,  scales_type , fs, l1_norm=l1_norm, nv=nv)
-    Wy, _       = ssqueezepy.cwt(y, wavelet,  scales_type , fs, l1_norm=l1_norm, nv=nv)
-    Wz, _       = ssqueezepy.cwt(z, wavelet,  scales_type , fs, l1_norm=l1_norm, nv=nv)
-    
-    
-     
-    if est_mod:
-        Wmod , _  = ssqueezepy.cwt(np.sqrt(x**2 + y**2 + z**2), wavelet,  scales_type , fs, l1_norm=l1_norm, nv=nv)
-    else:
-        Wmod      = None
-    
-    # Estimate corresponding frequencies
-    freqs       = ssqueezepy.experimental.scale_to_freq(scales, wavelet, len(x), fs)
-    
-    # This is the correct one!
-    scales     = (omega0)/(2*np.pi*freqs)*(1  + 1/(2*omega0**2))*fs
-    
-    if est_PSD:
-        # Estimate trace powers pectral density
-        PSD        = (np.nanmean(np.abs(Wx)**2, axis=1) + np.nanmean(np.abs(Wy)**2, axis=1) + np.nanmean(np.abs(Wz)**2, axis=1)   )*( 2*dt)
-        
-        if est_mod:
-            PSD_mod = (np.nanmean(np.abs(Wmod)**2, axis=1)  )*( 2*dt)
-        else:
-            PSD_mod     = None
-    else:
-        PSD        = None
-        PSD_mod     = None
-    
-
-    return Wx, Wy, Wz, Wmod,  freqs, PSD, PSD_mod, scales 
+    estimator = SSqueezepyWaveletPSD(
+        nv=nv,
+        scales_type=scales_type,
+        wavelet=wavelet,
+        wname=wname,
+        l1_norm=l1_norm,
+        est_psd=est_PSD,
+        est_mod=est_mod,
+        omega0=omega0,
+    )
+    return estimator.estimate(x, y, z, dt)
 
 
 
@@ -1135,38 +1052,55 @@ def TracePSD(x, y, z, dt,
                - freqs (np.ndarray): Array of frequencies.
                - B_pow (np.ndarray): Power spectral density estimates of the trace or individual components and/or modulus.
     """
-    if not isinstance(x, np.ndarray):
-        x = x.values
-        y = y.values
-        z = z.values
+    estimator = FFTTracePSD(
+        remove_mean=remove_mean,
+        return_components=return_components,
+        return_mod=return_mod,
+    )
+    return estimator.estimate(x, y, z, dt)
 
-    if remove_mean:
-        x -= np.nanmean(x)
-        y -= np.nanmean(y)
-        z -= np.nanmean(z)
 
-    N = len(x)
+def estimate_trace_psd(
+    x,
+    y,
+    z,
+    dt,
+    method="traceFFT",
+    **kwargs,
+):
+    """
+    Dispatch trace PSD estimation across supported methods.
 
-    xf = np.fft.rfft(x)
-    yf = np.fft.rfft(y)
-    zf = np.fft.rfft(z)
+    Parameters
+    ----------
+    x, y, z : array-like
+        Components of the field.
+    dt : float
+        Sampling time step.
+    method : str, optional
+        PSD estimation method. Default is "traceFFT".
+        Supported: "traceFFT", "modwt", "haar", "pycwt", "ssqueezepy".
+    **kwargs
+        Method-specific keyword arguments forwarded to the underlying estimator.
 
-    p_X     = 2 * (np.abs(xf) ** 2) / N * dt
-    p_Y     = 2 * (np.abs(yf) ** 2) / N * dt
-    p_Z     = 2 * (np.abs(zf) ** 2) / N * dt
-    p_Trace = p_X + p_Y + p_Z
+    Returns
+    -------
+    tuple
+        Method-specific outputs from the selected PSD estimator.
+    """
 
-    freqs = np.fft.rfftfreq(N, dt)
-
-    if return_mod:
-        mod = np.sqrt(x**2 + y**2 + z**2)
-        p_Mod = 2 * (np.abs(np.fft.rfft(mod)) ** 2) / N * dt
-        return freqs, p_Trace, p_X, p_Y, p_Z, p_Mod
-
-    if return_components:
-        return freqs, p_Trace, p_X, p_Y, p_Z
-
-    return freqs, p_Trace
+    method_key = method.lower()
+    dispatch = {
+        "tracefft": TracePSD,
+        "modwt": Trace_PSD_MODWT,
+        "haar": Trace_haar_wavelet_psd,
+        "pycwt": trace_PSD_wavelet,
+        "ssqueezepy": trace_PSD_cwt_ssqueezepy,
+    }
+    estimator = dispatch.get(method_key)
+    if estimator is None:
+        raise ValueError(f"Unknown PSD method: {method}")
+    return estimator(x, y, z, dt, **kwargs)
 
 def Trace_psd_Hann(B,  dt, nperseg=2**14, noverlap=2**13):
     from scipy.signal import welch
