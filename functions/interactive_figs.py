@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 import contextlib
 import io
+import re
 
 import numpy as np
 import pandas as pd
@@ -56,6 +57,7 @@ DEFAULT_PLOT_PARAMS: Dict[str, Any] = {
 }
 
 VALID_SNAP_INDEX_MODES = {"first_sc", "union"}
+VALID_NORMALIZE_METHODS = {"zscore", "minmax", "median", "first", "none"}
 
 
 # ============================================================
@@ -119,6 +121,59 @@ def _normalize_snap_index_mode(snap_index_mode: str) -> str:
         valid = ", ".join(sorted(VALID_SNAP_INDEX_MODES))
         raise ValueError(f"snap_index_mode must be one of {{{valid}}}, got {snap_index_mode!r}")
     return mode
+
+
+def _normalize_timeseries_mode(normalize_timeseries: Optional[str]) -> Optional[str]:
+    if normalize_timeseries is None:
+        return None
+    mode = str(normalize_timeseries).lower().strip()
+    if mode in ("", "none"):
+        return None
+    if mode not in VALID_NORMALIZE_METHODS:
+        valid = ", ".join(sorted(VALID_NORMALIZE_METHODS))
+        raise ValueError(f"normalize_timeseries must be one of {{{valid}}} or None, got {normalize_timeseries!r}")
+    return mode
+
+
+def _series_has_units(label: Any) -> bool:
+    if label is None:
+        return False
+    return re.search(r"\[[^\]]+\]", str(label)) is not None
+
+
+def _normalize_series_values(y: np.ndarray, mode: Optional[str]) -> np.ndarray:
+    if mode is None:
+        return y
+    out = np.asarray(y, dtype=float).copy()
+    finite = np.isfinite(out)
+    if not np.any(finite):
+        return out
+
+    vals = out[finite]
+    if mode == "zscore":
+        mu = float(np.nanmean(vals))
+        sigma = float(np.nanstd(vals))
+        if sigma == 0 or not np.isfinite(sigma):
+            return out
+        out[finite] = (vals - mu) / sigma
+    elif mode == "minmax":
+        vmin = float(np.nanmin(vals))
+        vmax = float(np.nanmax(vals))
+        span = vmax - vmin
+        if span == 0 or not np.isfinite(span):
+            return out
+        out[finite] = (vals - vmin) / span
+    elif mode == "median":
+        med = float(np.nanmedian(vals))
+        if med == 0 or not np.isfinite(med):
+            return out
+        out[finite] = vals / med
+    elif mode == "first":
+        base = float(vals[0])
+        if base == 0 or not np.isfinite(base):
+            return out
+        out[finite] = vals / base
+    return out
 
 
 def _ensure_dtindex(df: Union[pd.DataFrame, pd.Series]) -> Union[pd.DataFrame, pd.Series]:
@@ -521,6 +576,8 @@ def _plot_from_panel_config(
     auto_ylims: bool,
     warn_missing: bool,
     plot_defaults: Dict[str, Any],
+    normalize_timeseries: Optional[str],
+    enforce_sc_linestyle: bool,
 ) -> AxesRegistry:
     panels = panel_config.get("panels", None)
     if not isinstance(panels, list) or len(panels) == 0:
@@ -620,10 +677,12 @@ def _plot_from_panel_config(
                         label = f"{label} ({sc})"
                     user_style = s.get("style", {})
                     style = _merge_style(user_style, plot_defaults["series_style_defaults"])
-                    if len(sc_list) > 1 and "ls" not in user_style:
+                    if len(sc_list) > 1 and enforce_sc_linestyle:
                         style["ls"] = sc_ls_map.get(sc, style.get("ls", "-"))
 
                     yarr = np.asarray(y, dtype=float)
+                    if _series_has_units(label):
+                        yarr = _normalize_series_values(yarr, normalize_timeseries)
                     yplot = yarr.copy()
                     yplot[~np.isfinite(yplot)] = np.nan
                     if scale == "log":
@@ -1475,11 +1534,14 @@ def interactive_visualize_downloaded_intervals(
     span_alpha: float = 0.35,
     enable_multicursor: bool = True,
     snap_index_mode: str = "first_sc",
+    normalize_timeseries: Optional[str] = None,
+    enforce_sc_linestyle: bool = True,
 ) -> Tuple[plt.Figure, pd.DataFrame]:
     plot_defaults = DEFAULT_PLOT_PARAMS if plot_defaults is None else plot_defaults
 
     sc_list = _as_sc_list(sc)
     snap_index_mode_norm = _normalize_snap_index_mode(snap_index_mode)
+    normalize_timeseries_mode = _normalize_timeseries_mode(normalize_timeseries)
 
     par_by_sc = _normalize_sc_df_input(final_Par, sc_list, "final_Par")
     mag_by_sc = _normalize_sc_df_input(final_Mag, sc_list, "final_Mag")
@@ -1561,6 +1623,8 @@ def interactive_visualize_downloaded_intervals(
         auto_ylims=bool(auto_ylims),
         warn_missing=bool(warn_missing),
         plot_defaults=plot_defaults,
+        normalize_timeseries=normalize_timeseries_mode,
+        enforce_sc_linestyle=bool(enforce_sc_linestyle),
     )
 
     for ax in axs:
@@ -1626,6 +1690,33 @@ def interactive_visualize_downloaded_intervals(
     return fig, events
 
 
+def _extract_interval_bounds_from_final(final_path: str) -> Tuple[pd.Timestamp, pd.Timestamp]:
+    fin = pd.read_pickle(final_path)
+    if not isinstance(fin, dict) or ("Par" not in fin) or ("V_resampled" not in fin["Par"]):
+        raise TypeError(f"final.pkl at {final_path} did not match expected Par/V_resampled structure")
+    par = _ensure_dtindex(fin["Par"]["V_resampled"])
+    if not isinstance(par, pd.DataFrame) or len(par.index) == 0:
+        raise ValueError(f"Par/V_resampled in {final_path} is empty or invalid")
+    return pd.Timestamp(par.index[0]), pd.Timestamp(par.index[-1])
+
+
+def _choose_closest_interval_index(final_paths: List[str], target_start: pd.Timestamp, target_end: pd.Timestamp) -> int:
+    if len(final_paths) == 0:
+        raise FileNotFoundError("No candidate final.pkl files were provided")
+    best_idx = 0
+    best_score = None
+    for i, fp in enumerate(final_paths):
+        try:
+            st, en = _extract_interval_bounds_from_final(fp)
+        except Exception:
+            continue
+        score = abs((st - target_start).total_seconds()) + abs((en - target_end).total_seconds())
+        if best_score is None or score < best_score:
+            best_score = score
+            best_idx = i
+    return best_idx
+
+
 # ============================================================
 # Wrapper: EXACT loading semantics
 # ============================================================
@@ -1657,12 +1748,16 @@ def interactive_mhdturbpy_interval(
     span_alpha: float = 0.35,
     enable_multicursor: bool = True,
     snap_index_mode: str = "first_sc",
+    normalize_timeseries: Optional[str] = None,
+    enforce_sc_linestyle: bool = True,
+    align_intervals_to_first_sc: bool = True,
 ) -> Tuple[plt.Figure, pd.DataFrame]:
     if load_files_func is None:
         load_files_func = func.load_files if (func is not None and hasattr(func, "load_files")) else load_files
 
     sc_list = _as_sc_list(sc)
     snap_index_mode_norm = _normalize_snap_index_mode(snap_index_mode)
+    normalize_timeseries_mode = _normalize_timeseries_mode(normalize_timeseries)
     gap_thresholds = gap_thresholds or {}
 
     if isinstance(load_path, dict):
@@ -1674,6 +1769,7 @@ def interactive_mhdturbpy_interval(
     final_mag_by_sc: Dict[str, pd.DataFrame] = {}
     nn_by_sc: Dict[str, pd.DataFrame] = {}
 
+    files_by_sc: Dict[str, Dict[str, List[str]]] = {}
     for sc_name in sc_list:
         if sc_name not in load_path_by_sc:
             raise KeyError(f"load_path missing key for spacecraft '{sc_name}'")
@@ -1682,28 +1778,56 @@ def interactive_mhdturbpy_interval(
         _buf_out = io.StringIO()
         _buf_err = io.StringIO()
         with contextlib.redirect_stdout(_buf_out), contextlib.redirect_stderr(_buf_err):
-            finnames = load_files_func(lp, "final.pkl")
-            gennames = load_files_func(lp, "general.pkl")
-            signames = load_files_func(lp, "sig_c_sig_r.pkl")
-            maggaps = load_files_func(lp, "mag_gaps.pkl")
-            qtngaps = load_files_func(lp, "qtn_gaps.pkl")
-            pargaps = load_files_func(lp, "par_gaps.pkl")
-            scpotgaps = load_files_func(lp, "sc_pot_gaps.pkl")
+            files_by_sc[sc_name] = {
+                "fin": load_files_func(lp, "final.pkl"),
+                "gen": load_files_func(lp, "general.pkl"),
+                "sig": load_files_func(lp, "sig_c_sig_r.pkl"),
+                "mag": load_files_func(lp, "mag_gaps.pkl"),
+                "qtn": load_files_func(lp, "qtn_gaps.pkl"),
+                "par": load_files_func(lp, "par_gaps.pkl"),
+                "sc_pot": load_files_func(lp, "sc_pot_gaps.pkl"),
+            }
 
+    first_sc = sc_list[0]
+    first_n = len(files_by_sc[first_sc]["fin"])
+    if first_n == 0:
+        raise FileNotFoundError(f"No final.pkl found under {load_path_by_sc[first_sc]}")
+    if not (0 <= which_int < first_n):
+        raise IndexError(f"which_int={which_int} out of range for sc={first_sc} (found {first_n} intervals)")
+
+    selected_idx_by_sc: Dict[str, int] = {first_sc: int(which_int)}
+    target_start, target_end = _extract_interval_bounds_from_final(files_by_sc[first_sc]["fin"][int(which_int)])
+
+    for sc_name in sc_list[1:]:
+        finnames = files_by_sc[sc_name]["fin"]
         n = len(finnames)
         if n == 0:
-            raise FileNotFoundError(f"No final.pkl found under {lp}")
-        if not (0 <= which_int < n):
-            raise IndexError(f"which_int={which_int} out of range for sc={sc_name} (found {n} intervals)")
+            raise FileNotFoundError(f"No final.pkl found under {load_path_by_sc[sc_name]}")
+        if align_intervals_to_first_sc:
+            selected_idx_by_sc[sc_name] = _choose_closest_interval_index(finnames, target_start, target_end)
+        else:
+            if not (0 <= which_int < n):
+                raise IndexError(f"which_int={which_int} out of range for sc={sc_name} (found {n} intervals)")
+            selected_idx_by_sc[sc_name] = int(which_int)
 
-        fin_path = finnames[which_int]
-        gen_path = gennames[which_int] if which_int < len(gennames) else None
-        sig_path = signames[which_int] if which_int < len(signames) else None
+    for sc_name in sc_list:
+        idx = selected_idx_by_sc[sc_name]
+        finnames = files_by_sc[sc_name]["fin"]
+        gennames = files_by_sc[sc_name]["gen"]
+        signames = files_by_sc[sc_name]["sig"]
+        maggaps = files_by_sc[sc_name]["mag"]
+        qtngaps = files_by_sc[sc_name]["qtn"]
+        pargaps = files_by_sc[sc_name]["par"]
+        scpotgaps = files_by_sc[sc_name]["sc_pot"]
 
-        mag_gaps_path = maggaps[which_int] if which_int < len(maggaps) else None
-        qtn_gaps_path = qtngaps[which_int] if which_int < len(qtngaps) else None
-        par_gaps_path = pargaps[which_int] if which_int < len(pargaps) else None
-        sc_pot_gaps_path = scpotgaps[which_int] if which_int < len(scpotgaps) else None
+        fin_path = finnames[idx]
+        gen_path = gennames[idx] if idx < len(gennames) else None
+        sig_path = signames[idx] if idx < len(signames) else None
+
+        mag_gaps_path = maggaps[idx] if idx < len(maggaps) else None
+        qtn_gaps_path = qtngaps[idx] if idx < len(qtngaps) else None
+        par_gaps_path = pargaps[idx] if idx < len(pargaps) else None
+        sc_pot_gaps_path = scpotgaps[idx] if idx < len(scpotgaps) else None
 
         fin = pd.read_pickle(fin_path)
         _ = pd.read_pickle(gen_path) if gen_path is not None else None
@@ -1774,5 +1898,7 @@ def interactive_mhdturbpy_interval(
         span_alpha=span_alpha,
         enable_multicursor=enable_multicursor,
         snap_index_mode=snap_index_mode_norm,
+        normalize_timeseries=normalize_timeseries_mode,
+        enforce_sc_linestyle=enforce_sc_linestyle,
     )
     return fig, events
