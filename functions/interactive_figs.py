@@ -55,6 +55,8 @@ DEFAULT_PLOT_PARAMS: Dict[str, Any] = {
     },
 }
 
+VALID_SNAP_INDEX_MODES = {"first_sc", "union"}
+
 
 # ============================================================
 # Utilities
@@ -92,7 +94,7 @@ def _normalize_sc_df_input(
     name: str,
 ) -> Dict[str, pd.DataFrame]:
     if isinstance(value, pd.DataFrame):
-        return {sc_list[0]: value}
+        return {sc_name: value for sc_name in sc_list}
     if isinstance(value, dict):
         out: Dict[str, pd.DataFrame] = {}
         missing = [s for s in sc_list if s not in value]
@@ -109,6 +111,14 @@ def _normalize_sc_df_input(
 
 def _sc_tag(sc_list: List[str]) -> str:
     return "-".join(sc_list)
+
+
+def _normalize_snap_index_mode(snap_index_mode: str) -> str:
+    mode = str(snap_index_mode).lower().strip()
+    if mode not in VALID_SNAP_INDEX_MODES:
+        valid = ", ".join(sorted(VALID_SNAP_INDEX_MODES))
+        raise ValueError(f"snap_index_mode must be one of {{{valid}}}, got {snap_index_mode!r}")
+    return mode
 
 
 def _ensure_dtindex(df: Union[pd.DataFrame, pd.Series]) -> Union[pd.DataFrame, pd.Series]:
@@ -541,9 +551,14 @@ def _plot_from_panel_config(
             if isinstance(only_if, dict) and only_if.get("sc_equals", None) is not None:
                 sc_iter = [sc for sc in sc_list if str(sc) == str(only_if["sc_equals"])]
 
-            for sc in sc_iter:
-                if src not in data_sources_by_sc.get(sc, {}):
-                    raise KeyError(f"unknown source '{src}' for sc='{sc}'. Known: {list(data_sources_by_sc.get(sc, {}).keys())}")
+            sc_data: List[Tuple[str, pd.DataFrame]] = []
+            for sc_name in sc_iter:
+                if src not in data_sources_by_sc.get(sc_name, {}):
+                    raise KeyError(
+                        f"unknown source '{src}' for sc='{sc_name}'. "
+                        f"Known: {list(data_sources_by_sc.get(sc_name, {}).keys())}"
+                    )
+                sc_data.append((sc_name, data_sources_by_sc[sc_name][src]))
 
             axis_id = str(axspec.get("axis_id", "left"))
             scale = str(axspec.get("scale", "linear")).lower()
@@ -558,8 +573,7 @@ def _plot_from_panel_config(
             if not isinstance(series_list, list):
                 series_list = []
 
-            for sc in sc_iter:
-                df = data_sources_by_sc[sc][src]
+            for sc, df in sc_data:
                 for s in series_list:
                     if not isinstance(s, dict):
                         continue
@@ -1465,6 +1479,7 @@ def interactive_visualize_downloaded_intervals(
     plot_defaults = DEFAULT_PLOT_PARAMS if plot_defaults is None else plot_defaults
 
     sc_list = _as_sc_list(sc)
+    snap_index_mode_norm = _normalize_snap_index_mode(snap_index_mode)
 
     par_by_sc = _normalize_sc_df_input(final_Par, sc_list, "final_Par")
     mag_by_sc = _normalize_sc_df_input(final_Mag, sc_list, "final_Mag")
@@ -1596,7 +1611,7 @@ def interactive_visualize_downloaded_intervals(
         span_alpha=span_alpha,
         snap_index=(
             par_by_sc[sc_list[0]].index
-            if str(snap_index_mode).lower() == "first_sc"
+            if snap_index_mode_norm == "first_sc"
             else pd.DatetimeIndex(
                 np.unique(np.concatenate([par_by_sc[sc_name].index.view("int64") for sc_name in sc_list]))
             )
@@ -1647,6 +1662,7 @@ def interactive_mhdturbpy_interval(
         load_files_func = func.load_files if (func is not None and hasattr(func, "load_files")) else load_files
 
     sc_list = _as_sc_list(sc)
+    snap_index_mode_norm = _normalize_snap_index_mode(snap_index_mode)
     gap_thresholds = gap_thresholds or {}
 
     if isinstance(load_path, dict):
@@ -1757,6 +1773,6 @@ def interactive_mhdturbpy_interval(
         span_color=span_color,
         span_alpha=span_alpha,
         enable_multicursor=enable_multicursor,
-        snap_index_mode=snap_index_mode,
+        snap_index_mode=snap_index_mode_norm,
     )
     return fig, events
