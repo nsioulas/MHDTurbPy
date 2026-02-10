@@ -537,7 +537,11 @@ def _plot_from_panel_config(
             only_if = axspec.get("only_if", None)
 
             src = axspec.get("source", None)
-            for sc in sc_list:
+            sc_iter = sc_list
+            if isinstance(only_if, dict) and only_if.get("sc_equals", None) is not None:
+                sc_iter = [sc for sc in sc_list if str(sc) == str(only_if["sc_equals"])]
+
+            for sc in sc_iter:
                 if src not in data_sources_by_sc.get(sc, {}):
                     raise KeyError(f"unknown source '{src}' for sc='{sc}'. Known: {list(data_sources_by_sc.get(sc, {}).keys())}")
 
@@ -554,10 +558,7 @@ def _plot_from_panel_config(
             if not isinstance(series_list, list):
                 series_list = []
 
-            for sc in sc_list:
-                if isinstance(only_if, dict) and only_if.get("sc_equals", None) is not None:
-                    if str(sc) != str(only_if["sc_equals"]):
-                        continue
+            for sc in sc_iter:
                 df = data_sources_by_sc[sc][src]
                 for s in series_list:
                     if not isinstance(s, dict):
@@ -603,8 +604,10 @@ def _plot_from_panel_config(
                     label = s.get("label", str(s.get("col", s.get("name", "series"))))
                     if len(sc_list) > 1:
                         label = f"{label} ({sc})"
-                    style = _merge_style(s.get("style", {}), plot_defaults["series_style_defaults"])
-                    style["ls"] = sc_ls_map.get(sc, style.get("ls", "-"))
+                    user_style = s.get("style", {})
+                    style = _merge_style(user_style, plot_defaults["series_style_defaults"])
+                    if len(sc_list) > 1 and "ls" not in user_style:
+                        style["ls"] = sc_ls_map.get(sc, style.get("ls", "-"))
 
                     yarr = np.asarray(y, dtype=float)
                     yplot = yarr.copy()
@@ -1457,6 +1460,7 @@ def interactive_visualize_downloaded_intervals(
     span_color: str = "0.85",
     span_alpha: float = 0.35,
     enable_multicursor: bool = True,
+    snap_index_mode: str = "first_sc",
 ) -> Tuple[plt.Figure, pd.DataFrame]:
     plot_defaults = DEFAULT_PLOT_PARAMS if plot_defaults is None else plot_defaults
 
@@ -1471,20 +1475,32 @@ def interactive_visualize_downloaded_intervals(
         mag_by_sc[sc_name] = _ensure_dtindex(mag_by_sc[sc_name])
         sig_by_sc[sc_name] = _ensure_dtindex(sig_by_sc[sc_name])
 
-    rtn_flag = 0
+    first_sc = sc_list[0]
+    rtn_flag_by_sc: Dict[str, Optional[int]] = {}
     for sc_name in sc_list:
         mag_df = mag_by_sc[sc_name]
         if all(c in mag_df.columns for c in ("Br", "Bt", "Bn")):
             mag_df["B_RTN"] = np.sqrt(mag_df.Br**2 + mag_df.Bt**2 + mag_df.Bn**2)
-            rtn_flag = 1
+            rtn_flag_by_sc[sc_name] = 1
         elif all(c in mag_df.columns for c in ("Bx", "By", "Bz")):
             mag_df["B_RTN"] = np.sqrt(mag_df.Bx**2 + mag_df.By**2 + mag_df.Bz**2)
+            rtn_flag_by_sc[sc_name] = 0
         else:
+            rtn_flag_by_sc[sc_name] = None
             if warn_missing:
                 print(f"[plot:missing] sc={sc_name} cannot compute B_RTN (need Br/Bt/Bn or Bx/By/Bz)")
 
+    rtn_flag = rtn_flag_by_sc.get(first_sc, 0)
+    if rtn_flag is None:
+        rtn_flag = 0
+    if len(sc_list) > 1:
+        ref = rtn_flag_by_sc.get(first_sc, None)
+        for sc_name in sc_list[1:]:
+            if rtn_flag_by_sc.get(sc_name, None) != ref and warn_missing:
+                print(f"[plot:missing] sc component frame mismatch: {first_sc}={ref}, {sc_name}={rtn_flag_by_sc.get(sc_name, None)}. Using {first_sc} to build default panel config.")
+
     if panel_config is None:
-        panel_config = default_panel_config(sc=str(sc_list[0]), rtn_flag=rtn_flag)
+        panel_config = default_panel_config(sc=str(first_sc), rtn_flag=rtn_flag)
     panel_config = apply_panel_edits(panel_config, panel_edits)
 
     panels = panel_config.get("panels", [])
@@ -1578,7 +1594,13 @@ def interactive_visualize_downloaded_intervals(
         export_csv=export_csv,
         span_color=span_color,
         span_alpha=span_alpha,
-        snap_index=par_by_sc[sc_list[0]].index,
+        snap_index=(
+            par_by_sc[sc_list[0]].index
+            if str(snap_index_mode).lower() == "first_sc"
+            else pd.DatetimeIndex(
+                np.unique(np.concatenate([par_by_sc[sc_name].index.view("int64") for sc_name in sc_list]))
+            )
+        ),
         snap_to_data=snap_to_data,
         enable_comments=enable_comments,
         debug_interaction=debug_interaction,
@@ -1619,6 +1641,7 @@ def interactive_mhdturbpy_interval(
     span_color: str = "0.85",
     span_alpha: float = 0.35,
     enable_multicursor: bool = True,
+    snap_index_mode: str = "first_sc",
 ) -> Tuple[plt.Figure, pd.DataFrame]:
     if load_files_func is None:
         load_files_func = func.load_files if (func is not None and hasattr(func, "load_files")) else load_files
@@ -1734,5 +1757,6 @@ def interactive_mhdturbpy_interval(
         span_color=span_color,
         span_alpha=span_alpha,
         enable_multicursor=enable_multicursor,
+        snap_index_mode=snap_index_mode,
     )
     return fig, events
