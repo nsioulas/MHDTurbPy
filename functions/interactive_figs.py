@@ -75,6 +75,42 @@ def load_files(load_path: Union[str, Path], pattern: str) -> List[str]:
     return sorted(hits)
 
 
+def _as_sc_list(sc: Union[str, List[str], Tuple[str, ...]]) -> List[str]:
+    if isinstance(sc, (list, tuple)):
+        out = [str(s) for s in sc]
+    else:
+        out = [str(sc)]
+    out = [s for s in out if len(s) > 0]
+    if len(out) == 0:
+        raise ValueError("at least one spacecraft name must be provided")
+    return out
+
+
+def _normalize_sc_df_input(
+    value: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
+    sc_list: List[str],
+    name: str,
+) -> Dict[str, pd.DataFrame]:
+    if isinstance(value, pd.DataFrame):
+        return {sc_list[0]: value}
+    if isinstance(value, dict):
+        out: Dict[str, pd.DataFrame] = {}
+        missing = [s for s in sc_list if s not in value]
+        if missing:
+            raise KeyError(f"{name}: missing spacecraft keys: {missing}")
+        for s in sc_list:
+            v = value[s]
+            if not isinstance(v, pd.DataFrame):
+                raise TypeError(f"{name}[{s!r}] expected DataFrame, got {type(v)}")
+            out[s] = v
+        return out
+    raise TypeError(f"{name} must be DataFrame or dict[str, DataFrame], got {type(value)}")
+
+
+def _sc_tag(sc_list: List[str]) -> str:
+    return "-".join(sc_list)
+
+
 def _ensure_dtindex(df: Union[pd.DataFrame, pd.Series]) -> Union[pd.DataFrame, pd.Series]:
     if df is None:
         return df
@@ -467,8 +503,9 @@ def _plot_from_panel_config(
     axs,
     *,
     panel_config: Dict[str, Any],
-    data_sources: Dict[str, pd.DataFrame],
-    sc: str,
+    data_sources_by_sc: Dict[str, Dict[str, pd.DataFrame]],
+    sc_list: List[str],
+    sc_ls_map: Dict[str, str],
     start_lim: pd.Timestamp,
     end_lim: pd.Timestamp,
     auto_ylims: bool,
@@ -498,14 +535,11 @@ def _plot_from_panel_config(
 
         for axspec in axes_specs:
             only_if = axspec.get("only_if", None)
-            if isinstance(only_if, dict) and only_if.get("sc_equals", None) is not None:
-                if str(sc) != str(only_if["sc_equals"]):
-                    continue
 
             src = axspec.get("source", None)
-            if src not in data_sources:
-                raise KeyError(f"unknown source '{src}'. Known: {list(data_sources.keys())}")
-            df = data_sources[src]
+            for sc in sc_list:
+                if src not in data_sources_by_sc.get(sc, {}):
+                    raise KeyError(f"unknown source '{src}' for sc='{sc}'. Known: {list(data_sources_by_sc.get(sc, {}).keys())}")
 
             axis_id = str(axspec.get("axis_id", "left"))
             scale = str(axspec.get("scale", "linear")).lower()
@@ -520,60 +554,68 @@ def _plot_from_panel_config(
             if not isinstance(series_list, list):
                 series_list = []
 
-            for s in series_list:
-                if not isinstance(s, dict):
-                    continue
-
-                kind = s.get("kind", None)
-
-                if kind == "col":
-                    col = s.get("col", None)
-                    if col not in df.columns:
-                        _miss(f"panel={i} axis={axis_id} source={src} col={col} is missing -> omitted")
+            for sc in sc_list:
+                if isinstance(only_if, dict) and only_if.get("sc_equals", None) is not None:
+                    if str(sc) != str(only_if["sc_equals"]):
                         continue
-                    x = df.index
-                    y = df[col].to_numpy()
-
-                elif kind == "func":
-                    fn = s.get("func", None)
-                    try:
-                        fnc = _resolve_named_func(fn) if isinstance(fn, str) else fn
-                        if not callable(fnc):
-                            raise TypeError("func is not callable")
-                        y_ser = fnc(df)
-                        if isinstance(y_ser, pd.Series):
-                            x = y_ser.index
-                            y = y_ser.to_numpy()
-                        else:
-                            y = np.asarray(y_ser)
-                            x = df.index
-                            if y.shape[0] != len(x):
-                                raise ValueError("func length mismatch")
-                    except Exception as e:
-                        _miss(f"panel={i} axis={axis_id} source={src} func={fn} failed ({type(e).__name__}: {e}) -> omitted")
+                df = data_sources_by_sc[sc][src]
+                for s in series_list:
+                    if not isinstance(s, dict):
                         continue
-                else:
-                    _miss(f"panel={i} axis={axis_id} source={src} kind={kind} unsupported -> omitted")
-                    continue
 
-                if ax is None:
-                    ax = _get_or_create_axis(base_ax, axis_id, created_axes)
+                    kind = s.get("kind", None)
+
+                    if kind == "col":
+                        col = s.get("col", None)
+                        if col not in df.columns:
+                            _miss(f"panel={i} sc={sc} axis={axis_id} source={src} col={col} is missing -> omitted")
+                            continue
+                        x = df.index
+                        y = df[col].to_numpy()
+
+                    elif kind == "func":
+                        fn = s.get("func", None)
+                        try:
+                            fnc = _resolve_named_func(fn) if isinstance(fn, str) else fn
+                            if not callable(fnc):
+                                raise TypeError("func is not callable")
+                            y_ser = fnc(df)
+                            if isinstance(y_ser, pd.Series):
+                                x = y_ser.index
+                                y = y_ser.to_numpy()
+                            else:
+                                y = np.asarray(y_ser)
+                                x = df.index
+                                if y.shape[0] != len(x):
+                                    raise ValueError("func length mismatch")
+                        except Exception as e:
+                            _miss(f"panel={i} sc={sc} axis={axis_id} source={src} func={fn} failed ({type(e).__name__}: {e}) -> omitted")
+                            continue
+                    else:
+                        _miss(f"panel={i} sc={sc} axis={axis_id} source={src} kind={kind} unsupported -> omitted")
+                        continue
+
+                    if ax is None:
+                        ax = _get_or_create_axis(base_ax, axis_id, created_axes)
+                        if scale == "log":
+                            ax.set_yscale("log")
+
+                    label = s.get("label", str(s.get("col", s.get("name", "series"))))
+                    if len(sc_list) > 1:
+                        label = f"{label} ({sc})"
+                    style = _merge_style(s.get("style", {}), plot_defaults["series_style_defaults"])
+                    style["ls"] = sc_ls_map.get(sc, style.get("ls", "-"))
+
+                    yarr = np.asarray(y, dtype=float)
+                    yplot = yarr.copy()
+                    yplot[~np.isfinite(yplot)] = np.nan
                     if scale == "log":
-                        ax.set_yscale("log")
+                        yplot[yplot <= 0] = np.nan
 
-                label = s.get("label", str(s.get("col", s.get("name", "series"))))
-                style = _merge_style(s.get("style", {}), plot_defaults["series_style_defaults"])
-
-                yarr = np.asarray(y, dtype=float)
-                yplot = yarr.copy()
-                yplot[~np.isfinite(yplot)] = np.nan
-                if scale == "log":
-                    yplot[yplot <= 0] = np.nan
-
-                ax.plot(x, yplot, **style)
-                labels.append(label)
-                y_collector.append(yarr)
-                any_plotted = True
+                    ax.plot(x, yplot, **style)
+                    labels.append(label)
+                    y_collector.append(yarr)
+                    any_plotted = True
 
             if not any_plotted:
                 continue
@@ -1391,10 +1433,10 @@ def _install_interval_selector(
 # Main plotting entry
 # ============================================================
 def interactive_visualize_downloaded_intervals(
-    sc: str,
-    final_Par: pd.DataFrame,
-    final_Mag: pd.DataFrame,
-    nn_df: pd.DataFrame,
+    sc: Union[str, List[str], Tuple[str, ...]],
+    final_Par: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
+    final_Mag: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
+    nn_df: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
     my_dir: Union[str, Path],
     format_2_return: str = "%Y_%m_%d",
     join_path_figs: bool = True,
@@ -1418,23 +1460,31 @@ def interactive_visualize_downloaded_intervals(
 ) -> Tuple[plt.Figure, pd.DataFrame]:
     plot_defaults = DEFAULT_PLOT_PARAMS if plot_defaults is None else plot_defaults
 
-    final_Par = _ensure_dtindex(final_Par)
-    final_Mag = _ensure_dtindex(final_Mag)
-    nn_df = _ensure_dtindex(nn_df)
+    sc_list = _as_sc_list(sc)
+
+    par_by_sc = _normalize_sc_df_input(final_Par, sc_list, "final_Par")
+    mag_by_sc = _normalize_sc_df_input(final_Mag, sc_list, "final_Mag")
+    sig_by_sc = _normalize_sc_df_input(nn_df, sc_list, "nn_df")
+
+    for sc_name in sc_list:
+        par_by_sc[sc_name] = _ensure_dtindex(par_by_sc[sc_name])
+        mag_by_sc[sc_name] = _ensure_dtindex(mag_by_sc[sc_name])
+        sig_by_sc[sc_name] = _ensure_dtindex(sig_by_sc[sc_name])
 
     rtn_flag = 0
-    if all(c in final_Mag.columns for c in ("Br", "Bt", "Bn")):
-        final_Mag["B_RTN"] = np.sqrt(final_Mag.Br**2 + final_Mag.Bt**2 + final_Mag.Bn**2)
-        rtn_flag = 1
-    elif all(c in final_Mag.columns for c in ("Bx", "By", "Bz")):
-        final_Mag["B_RTN"] = np.sqrt(final_Mag.Bx**2 + final_Mag.By**2 + final_Mag.Bz**2)
-        rtn_flag = 0
-    else:
-        if warn_missing:
-            print("[plot:missing] cannot compute B_RTN (need Br/Bt/Bn or Bx/By/Bz)")
+    for sc_name in sc_list:
+        mag_df = mag_by_sc[sc_name]
+        if all(c in mag_df.columns for c in ("Br", "Bt", "Bn")):
+            mag_df["B_RTN"] = np.sqrt(mag_df.Br**2 + mag_df.Bt**2 + mag_df.Bn**2)
+            rtn_flag = 1
+        elif all(c in mag_df.columns for c in ("Bx", "By", "Bz")):
+            mag_df["B_RTN"] = np.sqrt(mag_df.Bx**2 + mag_df.By**2 + mag_df.Bz**2)
+        else:
+            if warn_missing:
+                print(f"[plot:missing] sc={sc_name} cannot compute B_RTN (need Br/Bt/Bn or Bx/By/Bz)")
 
     if panel_config is None:
-        panel_config = default_panel_config(sc=str(sc), rtn_flag=rtn_flag)
+        panel_config = default_panel_config(sc=str(sc_list[0]), rtn_flag=rtn_flag)
     panel_config = apply_panel_edits(panel_config, panel_edits)
 
     panels = panel_config.get("panels", [])
@@ -1445,8 +1495,8 @@ def interactive_visualize_downloaded_intervals(
     if debug_plot_config:
         print(f"[plot] n_panels={n_panels}")
 
-    start_lim = final_Par.index[0]
-    end_lim = final_Par.index[-1]
+    start_lim = min(par_by_sc[sc_name].index[0] for sc_name in sc_list)
+    end_lim = max(par_by_sc[sc_name].index[-1] for sc_name in sc_list)
 
     base_w = float(plot_defaults["figure"]["base_width"])
     base_h7 = float(plot_defaults["figure"]["base_height_7pan"])
@@ -1462,13 +1512,19 @@ def interactive_visualize_downloaded_intervals(
 
     minor_tick_params, major_tick_params = inset_axis_params(size=str(plot_defaults["ticks"]["size"]))
 
-    data_sources = {"Par": final_Par, "Mag": final_Mag, "Sig": nn_df}
+    ls_cycle = ["-", "--", ":", "-."]
+    sc_ls_map = {sc_name: ls_cycle[i % len(ls_cycle)] for i, sc_name in enumerate(sc_list)}
+    data_sources_by_sc = {
+        sc_name: {"Par": par_by_sc[sc_name], "Mag": mag_by_sc[sc_name], "Sig": sig_by_sc[sc_name]}
+        for sc_name in sc_list
+    }
     axes_registry = _plot_from_panel_config(
         fig,
         axs,
         panel_config=panel_config,
-        data_sources=data_sources,
-        sc=str(sc),
+        data_sources_by_sc=data_sources_by_sc,
+        sc_list=sc_list,
+        sc_ls_map=sc_ls_map,
         start_lim=pd.Timestamp(start_lim),
         end_lim=pd.Timestamp(end_lim),
         auto_ylims=bool(auto_ylims),
@@ -1485,10 +1541,11 @@ def interactive_visualize_downloaded_intervals(
         ax.tick_params(**major_tick_params)
         ax.set_xlim([start_lim, end_lim])
 
-    f1 = format_timestamp(final_Mag.index[0], format_2_return)
-    f2 = format_timestamp(final_Mag.index[-1], format_2_return)
+    f1 = format_timestamp(min(mag_by_sc[sc_name].index[0] for sc_name in sc_list), format_2_return)
+    f2 = format_timestamp(max(mag_by_sc[sc_name].index[-1] for sc_name in sc_list), format_2_return)
     tag = f"_{str(fname_tag).strip().replace(' ', '')}" if str(fname_tag).strip() else ""
-    figure_name = f"{f1}_{f2}{tag}_{str(sc)}.png"
+    sc_tag = _sc_tag(sc_list)
+    figure_name = f"{f1}_{f2}{tag}_{sc_tag}.png"
 
     my_dir = Path(my_dir)
     final_save_path = my_dir / "figures" if join_path_figs else my_dir
@@ -1511,7 +1568,7 @@ def interactive_visualize_downloaded_intervals(
     if save_path is not None:
         save_path = Path(save_path)
         save_path.mkdir(parents=True, exist_ok=True)
-        events_file = save_path / f"selected_intervals_{f1}_{f2}{tag}_{str(sc)}.pkl"
+        events_file = save_path / f"selected_intervals_{f1}_{f2}{tag}_{sc_tag}.pkl"
 
     events = _install_interval_selector(
         fig,
@@ -1521,7 +1578,7 @@ def interactive_visualize_downloaded_intervals(
         export_csv=export_csv,
         span_color=span_color,
         span_alpha=span_alpha,
-        snap_index=final_Par.index,
+        snap_index=par_by_sc[sc_list[0]].index,
         snap_to_data=snap_to_data,
         enable_comments=enable_comments,
         debug_interaction=debug_interaction,
@@ -1536,9 +1593,9 @@ def interactive_visualize_downloaded_intervals(
 # Wrapper: EXACT loading semantics
 # ============================================================
 def interactive_mhdturbpy_interval(
-    sc: str,
+    sc: Union[str, List[str], Tuple[str, ...]],
     which_int: int,
-    load_path: Union[str, Path],
+    load_path: Union[str, Path, Dict[str, Union[str, Path]]],
     save_path: Union[str, Path],
     my_dir: Union[str, Path],
     rolling: Optional[str] = None,
@@ -1566,84 +1623,101 @@ def interactive_mhdturbpy_interval(
     if load_files_func is None:
         load_files_func = func.load_files if (func is not None and hasattr(func, "load_files")) else load_files
 
-    load_path = str(load_path)
+    sc_list = _as_sc_list(sc)
     gap_thresholds = gap_thresholds or {}
 
-    # Silence noisy prints from some MHDTurbPy loaders without changing semantics.
-    _buf_out = io.StringIO()
-    _buf_err = io.StringIO()
-    with contextlib.redirect_stdout(_buf_out), contextlib.redirect_stderr(_buf_err):
-        finnames = load_files_func(load_path, "final.pkl")
-        gennames = load_files_func(load_path, "general.pkl")
-        signames = load_files_func(load_path, "sig_c_sig_r.pkl")
-        maggaps = load_files_func(load_path, "mag_gaps.pkl")
-        qtngaps = load_files_func(load_path, "qtn_gaps.pkl")
-        pargaps = load_files_func(load_path, "par_gaps.pkl")
-        scpotgaps = load_files_func(load_path, "sc_pot_gaps.pkl")
+    if isinstance(load_path, dict):
+        load_path_by_sc = {str(k): str(v) for k, v in load_path.items()}
+    else:
+        load_path_by_sc = {sc_name: str(load_path) for sc_name in sc_list}
 
-    n = len(finnames)
-    if n == 0:
-        raise FileNotFoundError(f"No final.pkl found under {load_path}")
-    if not (0 <= which_int < n):
-        raise IndexError(f"which_int={which_int} out of range (found {n} intervals)")
+    final_par_by_sc: Dict[str, pd.DataFrame] = {}
+    final_mag_by_sc: Dict[str, pd.DataFrame] = {}
+    nn_by_sc: Dict[str, pd.DataFrame] = {}
 
-    fin_path = finnames[which_int]
-    gen_path = gennames[which_int] if which_int < len(gennames) else None
-    sig_path = signames[which_int] if which_int < len(signames) else None
+    for sc_name in sc_list:
+        if sc_name not in load_path_by_sc:
+            raise KeyError(f"load_path missing key for spacecraft '{sc_name}'")
+        lp = load_path_by_sc[sc_name]
 
-    mag_gaps_path = maggaps[which_int] if which_int < len(maggaps) else None
-    qtn_gaps_path = qtngaps[which_int] if which_int < len(qtngaps) else None
-    par_gaps_path = pargaps[which_int] if which_int < len(pargaps) else None
-    sc_pot_gaps_path = scpotgaps[which_int] if which_int < len(scpotgaps) else None
+        _buf_out = io.StringIO()
+        _buf_err = io.StringIO()
+        with contextlib.redirect_stdout(_buf_out), contextlib.redirect_stderr(_buf_err):
+            finnames = load_files_func(lp, "final.pkl")
+            gennames = load_files_func(lp, "general.pkl")
+            signames = load_files_func(lp, "sig_c_sig_r.pkl")
+            maggaps = load_files_func(lp, "mag_gaps.pkl")
+            qtngaps = load_files_func(lp, "qtn_gaps.pkl")
+            pargaps = load_files_func(lp, "par_gaps.pkl")
+            scpotgaps = load_files_func(lp, "sc_pot_gaps.pkl")
 
-    fin = pd.read_pickle(fin_path)
-    _ = pd.read_pickle(gen_path) if gen_path is not None else None
-    sig = pd.read_pickle(sig_path) if sig_path is not None else None
+        n = len(finnames)
+        if n == 0:
+            raise FileNotFoundError(f"No final.pkl found under {lp}")
+        if not (0 <= which_int < n):
+            raise IndexError(f"which_int={which_int} out of range for sc={sc_name} (found {n} intervals)")
 
-    mag_gaps = pd.read_pickle(mag_gaps_path) if mag_gaps_path is not None else pd.DataFrame(columns=["Start", "End"])
-    qtn_gaps = pd.read_pickle(qtn_gaps_path) if qtn_gaps_path is not None else pd.DataFrame(columns=["Start", "End"])
-    par_gaps = pd.read_pickle(par_gaps_path) if par_gaps_path is not None else pd.DataFrame(columns=["Start", "End"])
-    sc_pot_gaps = pd.read_pickle(sc_pot_gaps_path) if sc_pot_gaps_path is not None else pd.DataFrame(columns=["Start", "End"])
+        fin_path = finnames[which_int]
+        gen_path = gennames[which_int] if which_int < len(gennames) else None
+        sig_path = signames[which_int] if which_int < len(signames) else None
 
-    if not isinstance(fin, dict) or ("Par" not in fin) or ("Mag" not in fin):
-        raise TypeError(
-            "final.pkl did not match expected dict structure with keys Par/Mag. "
-            f"Got: {list(fin.keys()) if isinstance(fin, dict) else type(fin)}"
-        )
+        mag_gaps_path = maggaps[which_int] if which_int < len(maggaps) else None
+        qtn_gaps_path = qtngaps[which_int] if which_int < len(qtngaps) else None
+        par_gaps_path = pargaps[which_int] if which_int < len(pargaps) else None
+        sc_pot_gaps_path = scpotgaps[which_int] if which_int < len(scpotgaps) else None
 
-    final_Par = fin["Par"]["V_resampled"]
-    final_Mag = fin["Mag"]["B_resampled"]
-    nn_df = sig
+        fin = pd.read_pickle(fin_path)
+        _ = pd.read_pickle(gen_path) if gen_path is not None else None
+        sig = pd.read_pickle(sig_path) if sig_path is not None else None
 
-    if not isinstance(final_Par, pd.DataFrame):
-        raise TypeError(f"fin['Par']['V_resampled'] expected DataFrame, got {type(final_Par)}")
-    if not isinstance(final_Mag, pd.DataFrame):
-        raise TypeError(f"fin['Mag']['B_resampled'] expected DataFrame, got {type(final_Mag)}")
-    if not isinstance(nn_df, pd.DataFrame):
-        raise TypeError(f"sig_c_sig_r.pkl expected DataFrame, got {type(nn_df)}")
+        mag_gaps = pd.read_pickle(mag_gaps_path) if mag_gaps_path is not None else pd.DataFrame(columns=["Start", "End"])
+        qtn_gaps = pd.read_pickle(qtn_gaps_path) if qtn_gaps_path is not None else pd.DataFrame(columns=["Start", "End"])
+        par_gaps = pd.read_pickle(par_gaps_path) if par_gaps_path is not None else pd.DataFrame(columns=["Start", "End"])
+        sc_pot_gaps = pd.read_pickle(sc_pot_gaps_path) if sc_pot_gaps_path is not None else pd.DataFrame(columns=["Start", "End"])
 
-    if len(gap_thresholds) > 0:
-        masks = build_large_gap_masks(
-            mag_gaps=mag_gaps,
-            qtn_gaps=qtn_gaps,
-            par_gaps=par_gaps,
-            sc_pot_gaps=sc_pot_gaps,
-            gap_thresholds=gap_thresholds,
-            merge_tol=merge_tol,
-        )
-        final_Mag = mask_df_with_gaps(final_Mag, masks.get("mag"))
-        final_Par = mask_df_with_gaps(final_Par, masks.get("par"))
-        nn_df = mask_df_with_gaps(nn_df, masks.get("par"))
+        if not isinstance(fin, dict) or ("Par" not in fin) or ("Mag" not in fin):
+            raise TypeError(
+                "final.pkl did not match expected dict structure with keys Par/Mag. "
+                f"Got: {list(fin.keys()) if isinstance(fin, dict) else type(fin)}"
+            )
 
-    final_Mag = _resample_fill_roll(final_Mag, resample_rule=resample_rule, fill_method=fill_method, rolling=rolling)
-    final_Par = _resample_fill_roll(final_Par, resample_rule=resample_rule, fill_method=fill_method, rolling=rolling)
-    nn_df = _resample_fill_roll(nn_df, resample_rule=resample_rule, fill_method=fill_method, rolling=rolling)
+        final_Par = fin["Par"]["V_resampled"]
+        final_Mag = fin["Mag"]["B_resampled"]
+        nn_df = sig
+
+        if not isinstance(final_Par, pd.DataFrame):
+            raise TypeError(f"fin['Par']['V_resampled'] expected DataFrame, got {type(final_Par)}")
+        if not isinstance(final_Mag, pd.DataFrame):
+            raise TypeError(f"fin['Mag']['B_resampled'] expected DataFrame, got {type(final_Mag)}")
+        if not isinstance(nn_df, pd.DataFrame):
+            raise TypeError(f"sig_c_sig_r.pkl expected DataFrame, got {type(nn_df)}")
+
+        if len(gap_thresholds) > 0:
+            masks = build_large_gap_masks(
+                mag_gaps=mag_gaps,
+                qtn_gaps=qtn_gaps,
+                par_gaps=par_gaps,
+                sc_pot_gaps=sc_pot_gaps,
+                gap_thresholds=gap_thresholds,
+                merge_tol=merge_tol,
+            )
+            final_Mag = mask_df_with_gaps(final_Mag, masks.get("mag"))
+            final_Par = mask_df_with_gaps(final_Par, masks.get("par"))
+            nn_df = mask_df_with_gaps(nn_df, masks.get("par"))
+
+        final_Mag = _resample_fill_roll(final_Mag, resample_rule=resample_rule, fill_method=fill_method, rolling=rolling)
+        final_Par = _resample_fill_roll(final_Par, resample_rule=resample_rule, fill_method=fill_method, rolling=rolling)
+        nn_df = _resample_fill_roll(nn_df, resample_rule=resample_rule, fill_method=fill_method, rolling=rolling)
+
+        final_par_by_sc[sc_name] = final_Par
+        final_mag_by_sc[sc_name] = final_Mag
+        nn_by_sc[sc_name] = nn_df
 
     fig, events = interactive_visualize_downloaded_intervals(
-        sc=sc,
-        final_Par=final_Par,
-        final_Mag=final_Mag,
-        nn_df=nn_df,
+        sc=sc_list,
+        final_Par=final_par_by_sc if len(sc_list) > 1 else final_par_by_sc[sc_list[0]],
+        final_Mag=final_mag_by_sc if len(sc_list) > 1 else final_mag_by_sc[sc_list[0]],
+        nn_df=nn_by_sc if len(sc_list) > 1 else nn_by_sc[sc_list[0]],
         my_dir=my_dir,
         save_path=save_path,
         autosave=autosave,
