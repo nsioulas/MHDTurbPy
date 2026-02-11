@@ -1,534 +1,363 @@
-# Basic libraries
-import pandas as pd
-import numpy as np
-import sys
+"""WIND mission download helpers.
+
+This module provides the WIND-specific loaders consumed by ``download_data.py``.
+The public API intentionally keeps the historical function names/signatures used by
+the pipeline:
+
+- ``LoadTimeSeriesWind_electrons``
+- ``LoadTimeSeriesWind_particles``
+- ``LoadHighResMagWind``
+- ``LoadTimeSeriesWIND``
+"""
+
+from __future__ import annotations
+
 import traceback
-import time
-import datetime
+from typing import Any, Dict, Tuple
+
+import numpy as np
+import pandas as pd
 import pytz
-
-# Locate files
-import os
-from pathlib import Path
-from glob import glob
-
-
-# SPDF API
 from cdasws import CdasWs
-cdas = CdasWs()
+from scipy import constants
 
-# SPEDAS API
-# make sure to use the local spedas
-sys.path.insert(0,"../pyspedas")
-import pyspedas
-from pyspedas.utilities import time_string
-from pytplot import get_data
-
-
-""" Import manual functions """
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
 import general_functions as func
 
+cdas = CdasWs()
 
-# Some constants
-from scipy import constants
-au_to_km        = 1.496e8  # Conversion factor
-rsun            = 696340   # Sun radius in units of  [km]
-mu0             =  constants.mu_0  # Vacuum magnetic permeability [N A^-2]
-mu_0            =  constants.mu_0  # Vacuum magnetic permeability [N A^-2]
-m_p             =  constants.m_p   # Proton mass [kg]
-k               = constants.k                  # Boltzman's constant     [j/K]
-au_to_rsun      = 215.032
-T_to_Gauss      = 1e4
-import scipy.constants as const
+# Kelvin per eV, used for eV -> K conversion.
+_EV_TO_K = 1.0 / constants.physical_constants["Boltzmann constant in eV/K"][0]
 
-# Retrieve Boltzmann constant in eV/K
-k_B_ev_per_K = const.physical_constants['Boltzmann constant in eV/K'][0]
 
-# Calculate the conversion factor from eV to Kelvin
-ev_2_K = 1 / k_B_ev_per_K
+def _to_utc_datetime(value: Any) -> pd.Timestamp:
+    """Convert input to timezone-aware UTC timestamp."""
+    ts = pd.to_datetime(value)
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    else:
+        ts = ts.tz_convert("UTC")
+    return ts
 
-def LoadTimeSeriesWind_electrons(start_time,
-                                 end_time,
-                                 settings):
-    """
-    Load Wind Plasma Data.
-    start_time: str | datetime | pd.Timestamp
-    end_time:   str | datetime | pd.Timestamp
-    Returns: DataFrame with Te, Te_core in eV.
-    """
-    import pandas as pd
-    from cdasws import CdasWs
-    from astropy import units as u
 
-    def _to_utc_pyDT(t):
-        t = pd.to_datetime(t)
-        if t.tzinfo is None:
-            t = t.tz_localize("UTC")
-        else:
-            t = t.tz_convert("UTC")
-        return t.to_pydatetime()
+def _empty_diag() -> Dict[str, float]:
+    return {"Frac_miss": 100.0, "Large_gaps": 100.0, "Tot_gaps": 100.0, "resol": 100.0}
 
-    cdas = CdasWs()
-    vars = ['T_elec', 'TcElec']
 
-    t0 = _to_utc_pyDT(start_time)
-    t1 = _to_utc_pyDT(end_time)
+def _subset_interval(df: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+    """Subset using pipeline utility, with fallback for index-type mismatches."""
+    try:
+        return func.use_dates_return_elements_of_df_inbetween(start, end, df)
+    except Exception:
+        tmp = df.copy()
+        tmp.index = pd.to_datetime(tmp.index)
+        return func.use_dates_return_elements_of_df_inbetween(pd.to_numeric(start), pd.to_numeric(end), tmp)
 
-    status, data = cdas.get_data('WI_H5_SWE', vars, t0, t1)
 
-    # Kelvin -> eV using temperature-energy equivalency
-    Te_eV      = u.Quantity(data['T_elec'],  u.K).to(u.eV, equivalencies=u.temperature_energy())
-    Te_core_eV = u.Quantity(data['TcElec'], u.K).to(u.eV, equivalencies=u.temperature_energy())
-
-    dfpar = pd.DataFrame(
-        index = pd.to_datetime(data['Epoch']),
-        data = {
-            'Te'      : Te_eV.value,
-            'Te_core' : Te_core_eV.value
-        }
+def _build_wind_distance_df(index: pd.Index) -> pd.DataFrame:
+    """WIND ephemeris placeholder used by legacy diagnostics pipeline."""
+    n = len(index)
+    return pd.DataFrame(
+        index=index,
+        data={
+            "Dist_au": np.ones(n),
+            "lon": np.ones(n),
+            "lat": np.ones(n),
+            "RAD_AU": np.ones(n),
+        },
     )
 
-    return dfpar
+
+def _clean_fill_values(df: pd.DataFrame, cols: Tuple[str, ...], threshold: float = -1e30) -> pd.DataFrame:
+    """Replace common CDAWeb fill values with NaN for selected columns."""
+    out = df.copy()
+    for col in cols:
+        if col in out.columns:
+            out.loc[out[col] < threshold, col] = np.nan
+    return out
 
 
 
-# def LoadTimeSeriesWind_electrons(start_time,
-#                                  end_time,
-#                                  settings):
-#     """ 
-#     Load Wind Plasma Data 
-#     start_time: pd.Timestamp
-#     end_time: pd.Timestamp
-#     """
 
-    
-#     from cdasws import CdasWs
-#     cdas = CdasWs()
-#     vars = ['AVGTEMP']
-#     time = [start_time.to_pydatetime( ).replace(tzinfo=pytz.UTC), end_time.to_pydatetime( ).replace(tzinfo=pytz.UTC)]
-#     status, data         = cdas.get_data('WI_ELM2_3DP', vars, time[0], time[1])
+def _pick_first_key(data: Any, *candidates: str):
+    """Return the first present key from a CDAWeb/SpaceData payload."""
+    for key in candidates:
+        try:
+            if key in data:
+                return data[key]
+        except Exception:
+            pass
+    for key in candidates:
+        try:
+            return data[key]
+        except Exception:
+            continue
+    raise KeyError(f"None of the candidate keys were found: {candidates}")
 
-#     dfpar = pd.DataFrame(
-#             index = data['Epoch'],
-#             data = {
+def describe_wind_source_selection(settings: Dict[str, Any]) -> Dict[str, str]:
+    """Return dataset names selected by current WIND cadence settings."""
+    mag_res = float(settings["MAG_resol"])
+    part_res = float(settings["part_resol"])
 
-#                 'Te'     : data['AVGTEMP']
-#             }
-#         )
-    
-#     return dfpar
+    if mag_res < 3:
+        mag_source = "WI_H2_MFI"
+    elif mag_res == 3:
+        mag_source = "WI_H0_MFI"
+    else:
+        mag_source = "WI_PLSP_3DP"
 
-# def LoadTimeSeriesWind_electrons(start_time,
-#                                  end_time,
-#                                  settings):
-#     """ 
-#     Load Wind Plasma Data 
-#     start_time: pd.Timestamp
-#     end_time: pd.Timestamp
-#     """
+    part_source = "WI_PM_3DP" if part_res <= 3 else "WI_PLSP_3DP"
+    elec_source = "WI_H5_SWE" if settings.get("Down_electrons", False) else "disabled"
 
-    
-#     from cdasws import CdasWs
-#     cdas = CdasWs()
-#     vars = ['elect_temp']
-#     time = [start_time.to_pydatetime( ).replace(tzinfo=pytz.UTC), end_time.to_pydatetime( ).replace(tzinfo=pytz.UTC)]
-#     status, data         = cdas.get_data('WI_K0_3DP', vars, time[0], time[1])
-
-#     dfpar = pd.DataFrame(
-#             index = data['Epoch'],
-#             data = {
-
-#                 'Te'     : data['elect_temp']
-#             }
-#         )
-    
-#     return dfpar
+    return {"mag": mag_source, "par": part_source, "elec": elec_source}
 
 
+def LoadTimeSeriesWind_electrons(start_time, end_time, settings):
+    """Load WIND electron moments from SWE H5 and return Te, Te_core in eV."""
+    from astropy import units as u
 
-def LoadTimeSeriesWind_particles(start_time,
-                                 end_time,
-                                 settings):
-    """ 
-    Load Wind Plasma Data 
-    start_time: pd.Timestamp
-    end_time: pd.Timestamp
-    """
+    t0 = _to_utc_datetime(start_time).to_pydatetime()
+    t1 = _to_utc_datetime(end_time).to_pydatetime()
 
-    if settings['part_resol'] <=3:
-        from cdasws import CdasWs
-        cdas = CdasWs()
-        vars = ['P_DENS','P_VELS','P_TEMP','TIME']
-        time = [start_time.to_pydatetime( ).replace(tzinfo=pytz.UTC), end_time.to_pydatetime( ).replace(tzinfo=pytz.UTC)]
-        status, data         = cdas.get_data('WI_PM_3DP', vars, time[0], time[1])
-        
-        
+    status, data = cdas.get_data("WI_H5_SWE", ["T_elec", "TcElec"], t0, t1)
+    if not status:
+        raise RuntimeError("Failed to download WI_H5_SWE electron data.")
+
+    te_ev = u.Quantity(data["T_elec"], u.K).to(u.eV, equivalencies=u.temperature_energy()).value
+    te_core_ev = u.Quantity(data["TcElec"], u.K).to(u.eV, equivalencies=u.temperature_energy()).value
+
+    df = pd.DataFrame(index=pd.to_datetime(data["Epoch"]), data={"Te": te_ev, "Te_core": te_core_ev})
+    return _clean_fill_values(df, ("Te", "Te_core"))
+
+
+def LoadTimeSeriesWind_particles(start_time, end_time, settings):
+    """Load WIND proton moments; source depends on requested ``part_resol``."""
+    part_resol = float(settings["part_resol"])
+
+    if part_resol <= 3:
+        t0 = _to_utc_datetime(start_time).to_pydatetime().replace(tzinfo=pytz.UTC)
+        t1 = _to_utc_datetime(end_time).to_pydatetime().replace(tzinfo=pytz.UTC)
+
+        status, data = cdas.get_data("WI_PM_3DP", ["P_DENS", "P_VELS", "P_TEMP", "TIME"], t0, t1)
+        if not status:
+            raise RuntimeError("Failed to download WI_PM_3DP particle data.")
+
         dfpar = pd.DataFrame(
-            index = data['Epoch'],
-            data = {
-                'Vr'     : data['P_VELS'][:,0],
-                'Vt'     : data['P_VELS'][:,1],
-                'Vn'     : data['P_VELS'][:,2],
-                #'np_3DP' : data['P_DENS'],
-                'np'     : data['P_DENS'],
-                'Tp'     : data['P_TEMP'],
-                'Tp_K'   : ev_2_K*data['P_TEMP']
-            }
+            index=pd.to_datetime(data["Epoch"]),
+            data={
+                "Vr": data["P_VELS"][:, 0],
+                "Vt": data["P_VELS"][:, 1],
+                "Vn": data["P_VELS"][:, 2],
+                "np": data["P_DENS"],
+                "Tp": data["P_TEMP"],
+            },
         )
-        
-#         # Also use qtn data to remove offset
-#         try:
-#             vars_qtn                 = ['Ne','Ne_peak','Ne_Quality']
-#             status_qtn, data_qtn = cdas.get_data('WI_H0_WAV', vars_qtn, time[0], time[1])
-#             dfqtn     = pd.DataFrame(
-#                 index = data_qtn['Epoch'],
-#                 data = {
+        dfpar["Tp_K"] = _EV_TO_K * dfpar["Tp"]
+        dfpar["Vth"] = 0.128487 * np.sqrt(dfpar["Tp_K"].clip(lower=0))
+        qtn_flag = "No_QTN"
+    else:
+        status, data = cdas.get_data(
+            "WI_PLSP_3DP",
+            ["MOM.P.DENSITY", "MOM.P.VELOCITY", "MOM.P.VTHERMAL", "TIME"],
+            str(pd.Timestamp(start_time)),
+            str(pd.Timestamp(end_time)),
+        )
+        if not status:
+            raise RuntimeError("Failed to download WI_PLSP_3DP particle data.")
 
-#                     'np': data_qtn['NE$']*0.96,
+        vel = _pick_first_key(data, "MOM$P$VELOCITY", "MOM.P.VELOCITY")
+        dens = _pick_first_key(data, "MOM$P$DENSITY", "MOM.P.DENSITY")
+        vth = _pick_first_key(data, "MOM$P$VTHERMAL", "MOM.P.VTHERMAL")
 
-#                 }
-#             )
-        
-        
-#             # Estimate offset between the timeseries
-#             dnp         = np.nanmedian(dfqtn.values) - np.nanmedian(dfpar['np_3DP'].values)
-            
-            
-#             dfqtn           = func.newindex(dfqtn, dfpar.index)
-#             dfpar['np']     = dfpar['np_3DP'] + dnp
-#             dfpar['np_qtn'] = dfqtn.values
-            
-            
-#             qtn_flag = 'QTN'
-        
-#         except:
-#             dfpar['np']     = dfpar['np_3DP'].values
-            
-#             del dfpar['np_3DP']
-            
-#             qtn_flag = 'No_QTN'
-            
-        
-        qtn_flag                   = 'No_QTN'
-        dfpar[dfpar['Vr'] < -1e30] = np.nan
-        dfpar['Vth']               = 0.128487*np.sqrt(dfpar['Tp_K']) # vth[km/s] = 0.128487 * √Tp[K]
-        
-        
-        length = len(data['P_VELS'][:,0][::2])
-
-    elif settings['part_resol'] >3:
-        
-        qtn_flag = None
-        
-        print('Loading very low resolution particle data!!')
-        
-        from cdasws import CdasWs
-        cdas = CdasWs()
-        vars         = ['MOM.P.DENSITY','MOM.P.VELOCITY', 'MOM.P.VTHERMAL','TIME']
-        time         = [start_time, end_time]
-        status, data = cdas.get_data('WI_PLSP_3DP', vars, str(time[0]), str(time[1]))
-        
         dfpar = pd.DataFrame(
-            index = data['Epoch'],
-            data = {
-                'Vr' : data['MOM$P$VELOCITY'].T[0],
-                'Vt' : data['MOM$P$VELOCITY'].T[1],
-                'Vn' : data['MOM$P$VELOCITY'].T[2],
-                'np' : data['MOM$P$DENSITY'],
-                'Vth': data['MOM$P$VTHERMAL'],
-            }
+            index=pd.to_datetime(data["Epoch"]),
+            data={
+                "Vr": vel.T[0],
+                "Vt": vel.T[1],
+                "Vn": vel.T[2],
+                "np": dens,
+                "Vth": vth,
+            },
         )
-        
-        dfpar[dfpar['Vr'] < -1e30] = np.nan
 
-        # Estimate Tp[eV]
-        from astropy.constants import m_p, k_B 
-        from astropy import units as u
-        dfpar['Tp'] = np.array(((m_p * ((dfpar['Vth'].values * u.km/u.s).to(u.m/u.s)**2)) / (2 * k_B)).to(u.eV, equivalencies=u.temperature_energy()))
+        # Legacy formula used in this pipeline branch: kT = (m_p * v_th^2) / 2
+        vth_mps = np.asarray(dfpar["Vth"], dtype=float) * 1e3
+        tp_k = (constants.m_p * (vth_mps**2)) / (2 * constants.k)
+        dfpar["Tp"] = tp_k / _EV_TO_K
+        qtn_flag = "No_QTN"
 
-        length = len(data['MOM$P$VELOCITY'].T[0][::2])
-        
-
-    dfdis = pd.DataFrame(
-        index = data['Epoch'][::2],
-        data = {
-            'Dist_au': np.ones(length), 
-            'lon'    : np.ones(length), 
-            'lat'    : np.ones(length), 
-            'RAD_AU' : np.ones(length)
-        })
-
-
-
+    dfpar = _clean_fill_values(dfpar, ("Vr", "Vt", "Vn", "np", "Tp", "Vth"))
+    dfdis = _build_wind_distance_df(dfpar.index)
     return dfpar, dfdis, qtn_flag
 
 
+def LoadHighResMagWind(start_time, end_time, settings, verbose=True):
+    """Load WIND magnetic field; source depends on requested ``MAG_resol``."""
+    mag_resol = float(settings["MAG_resol"])
+    t0 = _to_utc_datetime(start_time).to_pydatetime().replace(tzinfo=pytz.UTC)
+    t1 = _to_utc_datetime(end_time).to_pydatetime().replace(tzinfo=pytz.UTC)
 
-def LoadHighResMagWind(start_time,
-                       end_time,
-                       settings,
-                       verbose         = True):
-    """ 
-    Load Wind Plasma Data 
-    start_time: pd.Timestamp
-    end_time: pd.Timestamp
-    """
+    if mag_resol == 3:
+        status, data = cdas.get_data("WI_H0_MFI", ["B3GSE", "B3F1"], t0, t1)
+        if not status:
+            raise RuntimeError("Failed to download WI_H0_MFI magnetic data.")
 
-    if settings['MAG_resol'] == 3:
+        dfmag = pd.DataFrame(
+            index=pd.to_datetime(data["Epoch3"]),
+            data={
+                "Br": data["B3GSE"][:, 0],
+                "Bt": data["B3GSE"][:, 1],
+                "Bn": data["B3GSE"][:, 2],
+                "Btot": data["B3F1"],
+            },
+        )
+    elif mag_resol < 3:
+        status, data = cdas.get_data("WI_H2_MFI", ["BGSE", "BF1"], t0, t1)
+        if not status:
+            raise RuntimeError("Failed to download WI_H2_MFI magnetic data.")
 
-        vars = ['B3GSE','B3F1']
-        time = [start_time.to_pydatetime( ).replace(tzinfo=pytz.UTC), end_time.to_pydatetime( ).replace(tzinfo=pytz.UTC)]
-        status, data = cdas.get_data('WI_H0_MFI', vars, time[0], time[1])
-
-        if verbose:
-            print("Done.")
-
-        dfmag = pd.DataFrame({'Epoch'  : data['Epoch3'],
-                                'Br'   : data['B3GSE'][:,0],
-                                'Bt'   : data['B3GSE'][:,1],
-                                'Bn'   : data['B3GSE'][:,2],
-                                'Btot' : data['B3F1']
-            }
-        ).set_index('Epoch')
-        
-        dfmag[(np.abs(dfmag['Btot']) > 1e3)] = np.nan
-
-
-        if verbose:
-            print("Input tstart = %s, tend = %s" %(time[0], time[1]))
-            print("Returned tstart = %s, tend = %s" %(data['Epoch3'][0], data['Epoch3'][-1]))
-
-
-    elif settings['MAG_resol'] < 3:
-        
-        
-        vars = ['BGSE','BF1']
-        time = [start_time.to_pydatetime( ).replace(tzinfo=pytz.UTC), end_time.to_pydatetime( ).replace(tzinfo=pytz.UTC)]
-        status, data = cdas.get_data('WI_H2_MFI', vars, time[0], time[1])
-
-        if verbose:
-            print("Done.")
-
-        dfmag = pd.DataFrame({'Epoch'  : data['Epoch'],
-                                 'Br'  : data['BGSE'][:,0],
-                                 'Bt'  : data['BGSE'][:,1],
-                                 'Bn'  : data['BGSE'][:,2],
-                                 'Btot': data['BF1']
-            }
-        ).set_index('Epoch')
-        
-        
-        dfmag[(np.abs(dfmag['Btot']) > 1e3)] = np.nan
-
-
-        if verbose:
-            print("Input tstart = %s, tend = %s" %(time[0], time[1]))
-            print("Returned tstart = %s, tend = %s" %(data['Epoch'][0], data['Epoch'][-1]))
-
+        dfmag = pd.DataFrame(
+            index=pd.to_datetime(data["Epoch"]),
+            data={
+                "Br": data["BGSE"][:, 0],
+                "Bt": data["BGSE"][:, 1],
+                "Bn": data["BGSE"][:, 2],
+                "Btot": data["BF1"],
+            },
+        )
     else:
-        print('Loading very low resolution magnetic field data!!')
-        
-        try:
+        status, data = cdas.get_data("WI_PLSP_3DP", ["MOM.P.MAGF"], str(start_time), str(end_time))
+        if not status:
+            raise RuntimeError("Failed to download WI_PLSP_3DP magnetic fallback data.")
 
-            vars         = ['MOM.P.MAGF']
-            time         = [start_time, end_time]
-            status, data = cdas.get_data('WI_PLSP_3DP', vars, str(time[0]), str(time[1]))
+        magf = _pick_first_key(data, "MOM$P$MAGF", "MOM.P.MAGF")
 
-            if verbose:
-                print("Done.")
+        dfmag = pd.DataFrame(
+            index=pd.to_datetime(data["Epoch"]),
+            data={
+                "Br": magf.T[0],
+                "Bt": magf.T[1],
+                "Bn": magf.T[2],
+            },
+        ).interpolate()
+        dfmag["Btot"] = np.sqrt(dfmag["Br"] ** 2 + dfmag["Bt"] ** 2 + dfmag["Bn"] ** 2)
 
-            # Create dataframes for B, V, and N
-            dfmag = pd.DataFrame({'Epoch': data['Epoch'],
-                                     'Br': data['MOM$P$MAGF'].T[0],
-                                     'Bt': data['MOM$P$MAGF'].T[1],
-                                     'Bn': data['MOM$P$MAGF'].T[2],
-                                 }).set_index('Epoch').interpolate()
+    dfmag = _clean_fill_values(dfmag, ("Br", "Bt", "Bn", "Btot"), threshold=-1e30)
+    dfmag.loc[np.abs(dfmag["Btot"]) > 1e3, ["Br", "Bt", "Bn", "Btot"]] = np.nan
 
-
-            dfmag[(np.abs(dfmag['Br']) > 1e3)] = np.nan
-
-            if verbose:
-                print("Input tstart = %s, tend = %s" %(time[0], time[1]))
-                print("Returned tstart = %s, tend = %s" %(data['Epoch'][0], data['Epoch'][-1]))
-
-
-        except:
-            print('Something wrong')
-            traceback.print_exc()
-
+    if verbose and not dfmag.empty:
+        print("Done.")
+        print(f"Input tstart = {t0}, tend = {t1}")
+        print(f"Returned tstart = {dfmag.index[0]}, tend = {dfmag.index[-1]}")
 
     return dfmag
 
 
-def LoadTimeSeriesWIND(start_time, 
-                      end_time, 
-                      settings, 
-                      gap_time_threshold  =  10,
-                      time_amount         =  4,
-                      time_unit           =  'h'
-                     ):
-    """" 
-    Load Time Series from WIND sc
-    settings if not None, should be a dictionary, necessary settings:
+def LoadTimeSeriesWIND(
+    start_time,
+    end_time,
+    settings,
+    gap_time_threshold=10,
+    time_amount=4,
+    time_unit="h",
+):
+    """Load WIND MAG/particle/electron timeseries for the pipeline.
 
-    spc: boolean
-    span: boolean
-    mix_spc_span: dict:
-        {'priority': 'spc' or 'span'}
-    keep_spc_and_span: boolean
-
-    keep_keys: ['np','Vth','Vx','Vy','Vz','Vr','Vt','Vn']
-    
-    Note that the priority is using SPAN
+    Returns
+    -------
+    tuple
+        ``(dfmag, dfpar, df_elec, dfdis, big_gaps_mag, big_gaps_qtn,
+        big_gaps_par, big_gaps_elec, misc, qtn_flag)``
     """
+    del gap_time_threshold  # kept in signature for backward compatibility
 
-
-    
-    # Ensure the dates have appropriate format
     t0i, t1i = func.ensure_time_format(start_time, end_time)
-    
-    
-    # Since pyspedas does not always return what tou ask for we have to enforce it
     t0 = func.add_time_to_datetime_string(t0i, -time_amount, time_unit)
-    t1 = func.add_time_to_datetime_string(t1i,  time_amount, time_unit)
+    t1 = func.add_time_to_datetime_string(t1i, time_amount, time_unit)
 
-    # In order to return the originaly requested interval
-    ind1  = func.string_to_datetime_index(t0i)
-    ind2  = func.string_to_datetime_index(t1i)
-    
+    ind1 = func.string_to_datetime_index(t0i)
+    ind2 = func.string_to_datetime_index(t1i)
 
+    big_gaps_qtn = None
+    qtn_flag = "No_QTN"
+
+    # --- Magnetic field ---
     try:
-        # Download Magnetic field data
-
-        dfmag                = LoadHighResMagWind(pd.Timestamp(t0),
-                                                  pd.Timestamp(t1),
-                                                  settings,
-                                                  verbose          = True)
-
-        
-        # Return the originaly requested interval
-        try:
-            dfmag                 = func.use_dates_return_elements_of_df_inbetween(ind1,
-                                                                                   ind2,
-                                                                                   dfmag)
-            
-        except:
-            dfmag.index           = pd.to_datetime(dfmag.index, format='%Y-%m-%d %H:%M:%S.%f')
-            dfmag                 = func.use_dates_return_elements_of_df_inbetween(pd.to_numeric(ind1),
-                                                                                   pd.to_numeric(ind2),
-                                                                                   dfmag)
-
-        # Identify big gaps in timeseries
-        big_gaps = func.find_big_gaps(dfmag, settings['Big_Gaps']['Mag_big_gaps'], str(ind1), str(ind2))
-        
-        # Resample the input dataframes
-        diagnostics_MAG       = func.resample_timeseries_estimate_gaps(dfmag , settings['MAG_resol']  , large_gaps=10)      
-        
-        print('Mag fraction missing', diagnostics_MAG['Frac_miss'])
-    except:
-        
+        dfmag_raw = LoadHighResMagWind(pd.Timestamp(t0), pd.Timestamp(t1), settings, verbose=True)
+        dfmag = _subset_interval(dfmag_raw, ind1, ind2)
+        big_gaps_mag = func.find_big_gaps(dfmag, settings["Big_Gaps"]["Mag_big_gaps"], str(ind1), str(ind2))
+        diagnostics_mag = func.resample_timeseries_estimate_gaps(dfmag, settings["MAG_resol"], large_gaps=10)
+        print("Mag fraction missing", diagnostics_mag["Frac_miss"])
+    except Exception:
         traceback.print_exc()
-        dfmag                 = None
-        big_gaps              = None
-        diagnostics_MAG       = {'Frac_miss':100, 'Large_gaps':100, 'Tot_gaps':100, 'resol':100}
-        
-        
-    if 'Down_electrons' not in settings:
-        settings['Down_electrons'] = False
-            
-    if settings['Down_electrons']:
+        dfmag = None
+        big_gaps_mag = None
+        diagnostics_mag = _empty_diag()
+
+    # --- Electrons ---
+    download_electrons = bool(settings.get("Down_electrons", False))
+    if download_electrons:
         try:
-            
-            # Download particle data
-            df_ELE                    = LoadTimeSeriesWind_electrons(pd.Timestamp(t0),
-                                                                     pd.Timestamp(t1),
-                                                                     settings)
-
-            # Return the originaly requested interval
-            df_ELE                 = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, df_ELE) 
-
-
-            # Identify big gaps in timeseries
-            big_gaps_ELE = func.find_big_gaps(df_ELE, settings['Big_Gaps']['Par_big_gaps'], str(ind1), str(ind2))
-
-            # Resample the input dataframes
-            diagnostics_ELE = func.resample_timeseries_estimate_gaps(df_ELE, settings['part_resol'] , large_gaps=10)
-
-            print('Elec fraction missing', diagnostics_ELE['Frac_miss'])
-
-        except:
+            df_elec_raw = LoadTimeSeriesWind_electrons(pd.Timestamp(t0), pd.Timestamp(t1), settings)
+            df_elec = _subset_interval(df_elec_raw, ind1, ind2)
+            big_gaps_elec = func.find_big_gaps(df_elec, settings["Big_Gaps"]["E_big_gaps"], str(ind1), str(ind2))
+            diagnostics_elec = func.resample_timeseries_estimate_gaps(df_elec, settings["part_resol"], large_gaps=10)
+            print("Elec fraction missing", diagnostics_elec["Frac_miss"])
+        except Exception:
             traceback.print_exc()
-            df_ELE                = None
-            big_gaps_ELE          = None
-            diagnostics_ELE       = {'Frac_miss':100, 'Large_gaps':100, 'Tot_gaps':100, 'resol':100}
+            df_elec = None
+            big_gaps_elec = None
+            diagnostics_elec = _empty_diag()
     else:
+        df_elec = None
+        big_gaps_elec = None
+        diagnostics_elec = _empty_diag()
 
-            df_ELE                = None
-            big_gaps_ELE          = None
-            diagnostics_ELE       = {'Frac_miss':100, 'Large_gaps':100, 'Tot_gaps':100, 'resol':100}       
-
-            
-
-    try:    
-            
-        # Download particle data
-        dfpar, dfdis,qtn_flag     = LoadTimeSeriesWind_particles(pd.Timestamp(t0),
-                                                        pd.Timestamp(t1),
-                                                        settings)
-
-        
-        # Return the originaly requested interval
-        dfpar                 = func.use_dates_return_elements_of_df_inbetween(ind1, ind2, dfpar) 
-        
-        
-        # Identify big gaps in timeseries
-        big_gaps_par = func.find_big_gaps(dfpar, settings['Big_Gaps']['Par_big_gaps'], str(ind1), str(ind2))
-        
-        # Resample the input dataframes
-        diagnostics_PAR = func.resample_timeseries_estimate_gaps(dfpar, settings['part_resol'] , large_gaps=10)
-        
-        print('Par fraction missing', diagnostics_PAR['Frac_miss'])
-    except:
-        traceback.print_exc()
-        dfpar                 = None
-        diagnostics_PAR       = {'Frac_miss':100, 'Large_gaps':100, 'Tot_gaps':100, 'resol':100}
-    
-
+    # --- Particles ---
     try:
+        dfpar_raw, dfdis_raw, qtn_flag = LoadTimeSeriesWind_particles(pd.Timestamp(t0), pd.Timestamp(t1), settings)
+        dfpar = _subset_interval(dfpar_raw, ind1, ind2)
+        dfdis = _subset_interval(dfdis_raw, ind1, ind2)
 
-        #Create final particle dataframe
-        
-                    
-        if settings['apply_hampel']:
-            print('Applying hampel filter to particle data!')
-            if 'Vr' in dfpar.keys():
-                list_2_hampel = ['Vr','Vt','Vn','np','Vth']
-            else:
-                list_2_hampel = ['Vx','Vy','Vz','np','Vth']
-                
-            ws_hampel  = settings['hampel_params']['w']
-            n_hampel   = settings['hampel_params']['std']
-
-            dfpar      = diagnostics_PAR["resampled_df"]
-                
-            for k in list_2_hampel:
-                try:
-                    outliers_indices = func.hampel(dfpar[k], window_size = ws_hampel, n = n_hampel)
-                    # print(outliers_indices)
-                    dfpar.loc[dfpar.index[outliers_indices], k] = np.nan
-                except:
-                     traceback.print_exc()
-            print('Applied hampel filter to SPAN columns :', list_2_hampel, 'Windows size', ws_hampel)
-
-        keys_to_keep           = ['Frac_miss', 'Large_gaps', 'Tot_gaps', 'resol']
-        misc = {
-            'Par'              : func.filter_dict(diagnostics_PAR,  keys_to_keep),
-            'Mag'              : func.filter_dict(diagnostics_MAG,  keys_to_keep),
-            'Elec'             : func.filter_dict(diagnostics_ELE,  keys_to_keep),
-
-        }
-
-        return diagnostics_MAG["resampled_df"],  dfpar, df_ELE,  dfdis, big_gaps, None, big_gaps_par, big_gaps_ELE,  misc, qtn_flag
-    except:
+        big_gaps_par = func.find_big_gaps(dfpar, settings["Big_Gaps"]["Par_big_gaps"], str(ind1), str(ind2))
+        diagnostics_par = func.resample_timeseries_estimate_gaps(dfpar, settings["part_resol"], large_gaps=10)
+        print("Par fraction missing", diagnostics_par["Frac_miss"])
+    except Exception:
         traceback.print_exc()
+        dfpar = None
+        dfdis = None
+        big_gaps_par = None
+        diagnostics_par = _empty_diag()
+
+    # Optional despiking on resampled particle moments
+    if settings.get("apply_hampel", False) and isinstance(diagnostics_par, dict) and "resampled_df" in diagnostics_par:
+        try:
+            print("Applying hampel filter to particle data!")
+            dfpar_filt = diagnostics_par["resampled_df"].copy()
+            list_2_hampel = ["Vr", "Vt", "Vn", "np", "Vth"]
+            ws_hampel = settings.get("hampel_params", {}).get("w", 200)
+            n_hampel = settings.get("hampel_params", {}).get("std", 3)
+
+            for col in list_2_hampel:
+                if col in dfpar_filt.columns:
+                    outliers = func.hampel(dfpar_filt[col], window_size=ws_hampel, n=n_hampel)
+                    dfpar_filt.loc[dfpar_filt.index[outliers], col] = np.nan
+
+            dfpar = dfpar_filt
+            print("Applied hampel filter to WIND particle columns:", list_2_hampel, "Window size", ws_hampel)
+        except Exception:
+            traceback.print_exc()
+
+    keys_to_keep = ["Frac_miss", "Large_gaps", "Tot_gaps", "resol"]
+    misc = {
+        "Par": func.filter_dict(diagnostics_par, keys_to_keep),
+        "Mag": func.filter_dict(diagnostics_mag, keys_to_keep),
+        "Elec": func.filter_dict(diagnostics_elec, keys_to_keep),
+    }
+
+    # Use resampled MAG dataframe when available (matches pipeline expectation)
+    if isinstance(diagnostics_mag, dict) and "resampled_df" in diagnostics_mag:
+        dfmag_out = diagnostics_mag["resampled_df"]
+    else:
+        dfmag_out = dfmag
+
+    return dfmag_out, dfpar, df_elec, dfdis, big_gaps_mag, big_gaps_qtn, big_gaps_par, big_gaps_elec, misc, qtn_flag
