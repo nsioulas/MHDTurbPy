@@ -16,7 +16,7 @@ import matplotlib.dates as mdates
 from scipy import interpolate
 import gc
 from scipy.interpolate import interp1d
-from project_config import merge_user_paths_into_settings
+from functions.project_config import merge_user_paths_into_settings
 
 # Make sure to use the local spedas
 REPO_ROOT = Path(__file__).resolve().parents[1]

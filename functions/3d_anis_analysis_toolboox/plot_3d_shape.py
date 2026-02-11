@@ -1,7 +1,7 @@
 from joblib import Parallel, delayed
 import numpy as np
 import pandas as pd
-from project_config import repo_data_file
+from functions.project_config import repo_data_file
 import sys
 import scipy.io
 import os

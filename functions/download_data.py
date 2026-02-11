@@ -5,7 +5,7 @@ download_data.py
 from __future__ import annotations
 
 from functions.downloading_helpers.shared_utils import normalize_settings
-from project_config import merge_user_paths_into_settings
+from functions.project_config import merge_user_paths_into_settings
 
 import os
 import sys

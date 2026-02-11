@@ -76,7 +76,7 @@ from psd_estimators import (
     SSqueezepyWaveletPSD,
     get_psd_estimator,
 )
-from project_config import load_user_paths
+from functions.project_config import load_user_paths
 
 
 

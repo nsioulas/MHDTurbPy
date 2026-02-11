@@ -34,7 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "pyspedas"))
 import pyspedas
 from pytplot import get_data
-from project_config import repo_data_file
+from functions.project_config import repo_data_file
 
 # ------------------------------------------------------------
 # Your repo utilities (must exist)
