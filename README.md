@@ -79,6 +79,16 @@ python scripts/path_audit.py --root .
 
 This checks `.py` files and notebook code cells for unresolved repo/base path references.
 
+Useful stricter modes:
+
+```bash
+# include startup/maintenance scripts and tests
+python scripts/path_audit.py --root . --include-scripts --include-tests
+
+# also scan notebook outputs for stale absolute paths from old machines
+python scripts/path_audit.py --root . --include-notebook-outputs
+```
+
 # Troubleshooting (IPython/Jupyter on Windows)
 
 If you see logs like:
@@ -100,7 +110,7 @@ set PYTHONUTF8=1
 2. In IPython/Jupyter, use the built-in extension:
 
 ```python
-%load_ext autoreload
+%load_ext IPython.extensions.autoreload
 %autoreload 2
 ```
 
@@ -112,12 +122,15 @@ set PYTHONUTF8=1
 
 ```bash
 python scripts/fix_ipython_windows.py
+# optional: custom target config path
+# python scripts/fix_ipython_windows.py --config C:\Users\<you>\.ipython\profile_default\ipython_config.py
 ```
 
 This writes/updates `~/.ipython/profile_default/ipython_config.py` to:
 - remove `deduperreload` from auto-loaded extensions,
 - add `IPython.extensions.autoreload`,
-- set `PYTHONUTF8=1` for session startup.
+- set `PYTHONUTF8=1` for session startup,
+- patch startup files under `~/.ipython/profile_default/startup` to disable `deduperreload` loads and normalize `%load_ext autoreload` to `%load_ext IPython.extensions.autoreload`.
 
 If your tracebacks mention stdlib files like `functools.py`, `urllib/parse.py`, `shlex.py`, `re/_casefix.py`, or `pydoc_data/topics.py`, that confirms the decode failure is happening inside extension scanning of the Python installation, not inside MHDTurbPy project files.
 

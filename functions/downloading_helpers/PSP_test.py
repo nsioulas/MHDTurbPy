@@ -2434,15 +2434,15 @@ sys.path.insert(1, str(REPO_ROOT / "functions"))
 #     # Hardcoded fallback pickles (kept)
 #     if dfqtn is None:
 #         try:
-#             dfqtn = pd.read_pickle("/Users/turbulator/work/MHDTurbPy/psp_data/PSP_QTN_Monc/E22.pkl")
+#             dfqtn = pd.read_pickle(Path(settings["Data_path"]) / "psp_data" / "PSP_QTN_Monc" / "E22.pkl")
 #             if "Te_qtn" in dfqtn.columns:
 #                 del dfqtn["Te_qtn"]
 
-#             dfqtn2 = pd.read_pickle("/Users/turbulator/work/MHDTurbPy/psp_data/PSP_QTN_Monc/E23.pkl")
+#             dfqtn2 = pd.read_pickle(Path(settings["Data_path"]) / "psp_data" / "PSP_QTN_Monc" / "E23.pkl")
 #             if "Te_qtn" in dfqtn2.columns:
 #                 del dfqtn2["Te_qtn"]
 
-#             dfqtn3 = pd.read_pickle("/Users/turbulator/work/MHDTurbPy/psp_data/PSP_QTN_Romeo/save_pickled_dfs/e24.pkl")
+#             dfqtn3 = pd.read_pickle(Path(settings["Data_path"]) / "psp_data" / "PSP_QTN_Romeo" / "save_pickled_dfs" / "e24.pkl")
 #             if "ne_qtn" in dfqtn3.columns:
 #                 del dfqtn3["ne_qtn"]
 
