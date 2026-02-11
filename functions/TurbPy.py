@@ -61,7 +61,7 @@ from general_functions import *
 from three_D_funcs import *
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(1, str(REPO_ROOT / 'functions' / 'modwt' / 'wmtsa'))
+sys.path.insert(1, str(REPO_ROOT / 'functions'))
 import  modwt
 
 import astropy.units as u

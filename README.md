@@ -56,6 +56,29 @@ Create a single `user_paths.json` file in the repository root (copy from `user_p
 
 All updated Python modules and example notebooks now read from this shared config, so you do not need to edit paths in multiple places. Optional keys (for notebook-specific datasets) can also be kept here to avoid ad-hoc edits.
 
+### Where to input base paths (important)
+Use **exactly one** of the following methods:
+
+1. **Preferred:** create `user_paths.json` in the repository root (same directory as `README.md`).
+2. **Alternative:** set environment variables before running notebooks/scripts:
+   - `MHDTURBPY_DATA_PATH`
+   - `MHDTURBPY_SAVE_DESTINATION`
+   - `MHDTURBPY_CDF_LIB_PATH`
+
+`user_paths.json` keys:
+- `Data_path`: base directory where raw downloaded mission folders (e.g. `psp_data`, `solar_orbiter_data`) are created.
+- `save_destination`: base directory for processed interval outputs (`final.pkl`, `general.pkl`, etc.).
+- `cdf_lib_path`: local CDF library location (optional unless CDF-dependent loaders are used).
+- `analysis_data_path` (optional): override input location used by analysis notebooks.
+
+To validate path references after setup, run:
+
+```bash
+python scripts/path_audit.py --root .
+```
+
+This checks `.py` files and notebook code cells for unresolved repo/base path references.
+
 # Usage
 
 Example notebooks that demonstrate how to download and visualize data are available in `examples/notebooks`.
