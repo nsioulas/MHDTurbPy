@@ -238,7 +238,7 @@ def create_gap_mask(master_index: pd.DatetimeIndex,
 
     mask = pd.Series(mask_arr, index=master_index, name='data_valid')
 
-    # 2) Heal tiny gaps: any zero-run < min_gap → set back to 1
+    # 2) Heal tiny gaps: any zero-run < min_gap -> set back to 1
     df = pd.DataFrame({'mask': mask})
     # group number increments on mask-change
     df['grp'] = (df['mask'] != df['mask'].shift()).cumsum()
@@ -287,7 +287,7 @@ from joblib import Parallel, delayed
 #     if x.shape != y.shape:
 #         raise ValueError("x and y must have the same length")
 #     if not (0 <= low_pct < high_pct <= 100):
-#         raise ValueError("0 ≤ low_pct < high_pct ≤ 100")
+#         raise ValueError("0 <= low_pct < high_pct <= 100")
 
 #     lo, hi = np.percentile(y, [low_pct, high_pct])
 #     keep   = (y >= lo) & (y <= hi)
@@ -484,7 +484,7 @@ def compute_quantile_edges_function(
     if x.shape != y.shape:
         raise ValueError("x and y must have the same length")
     if not (0 <= low_pct < high_pct <= 100):
-        raise ValueError("0 ≤ low_pct < high_pct ≤ 100")
+        raise ValueError("0 <= low_pct < high_pct <= 100")
     if model not in {"poly", "parker", "empirical"}:
         raise ValueError("model must be 'poly', 'parker' or 'empirical'")
 
@@ -492,7 +492,7 @@ def compute_quantile_edges_function(
     keep   = (y >= lo) & (y <= hi)
     x, y   = x[keep], y[keep]
 
-    # --- x‑bin edges --------------------------------------------
+    # --- x-bin edges --------------------------------------------
     x_edges = (np.logspace(np.log10(x.min()), np.log10(x.max()), Nx_bins + 1)
                if log_x else
                np.linspace(x.min(), x.max(), Nx_bins + 1))
@@ -502,7 +502,7 @@ def compute_quantile_edges_function(
     bin_idx              = np.searchsorted(x_sorted, x_edges)
     q_levels             = np.linspace(0.0, 1.0, Ny_bins + 1)
 
-    # --- quantiles per x‑bin ------------------------------------
+    # --- quantiles per x-bin ------------------------------------
     def _bin_q(i):
         s, e = bin_idx[i], bin_idx[i + 1]
         if e - s < 2:
@@ -535,7 +535,7 @@ def compute_quantile_edges_function(
         if return_counts: counts = np.vstack([t[0] for t in tmp])
         if return_avg_y: av_y  = np.vstack([t[1] for t in tmp])
 
-    # ========== MODEL‑SPECIFIC EDGE FUNCTIONS ======================
+    # ========== MODEL-SPECIFIC EDGE FUNCTIONS ======================
     edge_functions      = []
     fit_parameters      = []
     selected_poly_order = None
@@ -570,7 +570,7 @@ def compute_quantile_edges_function(
             selection_table     = {"degree": list(degrees), "score": bic_score}
 
         if not isinstance(poly_order, int) or poly_order < 0:
-            raise ValueError("poly_order must be a non‑negative integer")
+            raise ValueError("poly_order must be a non-negative integer")
 
         for j in range(Ny_bins + 1):
             ok = (~np.isnan(y_edges_per_bin[:, j])) & (bin_sizes > 0)
@@ -691,7 +691,7 @@ def compute_quantile_edges_function(
 
 from scipy.special import lambertw
 
-# Synthetic demonstration of full vs. surrogate Parker‐wind curves.
+# Synthetic demonstration of full vs. surrogate Parker-wind curves.
 # Replace fit_params, d_all, and v_all with your own quantile_functions and data_dict.
 
 # --- Define helper functions ---
@@ -742,7 +742,7 @@ def compute_optimal_y_bins(x,
       4. Optionally returns:
          - counts: a (Nx_bins, Ny_bins) counts matrix (number of points per x bin for each global y bin).
          - avg_y: overall average y per x bin.
-         - av_y_values: a (Nx_bins, Ny_bins) matrix of the cell‐averaged y values.
+         - av_y_values: a (Nx_bins, Ny_bins) matrix of the cell-averaged y values.
     
     Returns a dictionary with keys:
         'x_edges': x bin edges,
@@ -1742,13 +1742,13 @@ def plaw_fit_est_plot(
     var_symbol: str = "R",
     **plot_kwargs,
 ):
-    """
+    r"""
     Fit and (optionally) plot a power law :math:`y = A\,x^{m}` on
     the interval :math:`[x_0,\,x_f]`.
 
     Parameters
     ----------
-    x, y : array‑like
+    x, y : array-like
         Data vectors.
     x0, xf : float
         Lower and upper bounds of the fitting window.
@@ -1757,7 +1757,7 @@ def plaw_fit_est_plot(
     n_plot : int, default = 200
         Number of points in the smooth curve plotted for visualisation.
     var_symbol : str, default = ``"R"``
-        LaTeX variable to display as the base of the power‑law in the legend.
+        LaTeX variable to display as the base of the power-law in the legend.
         For example, ``var_symbol="k"`` will label the fit as
         :math:`k^{m\\,\\pm\\,\\Delta m}`.
     **plot_kwargs
@@ -1768,11 +1768,11 @@ def plaw_fit_est_plot(
     x_fit : ndarray
         Geometric grid spanning :math:`[x_0,\,x_f]` (length = *n_plot*).
     y_fit : ndarray
-        Best‑fit curve :math:`A\,x^{m}`.
+        Best-fit curve :math:`A\,x^{m}`.
     plaw_exp : float
         Slope :math:`m` of the power law.
     err_plaw_exp : float
-        1‑σ uncertainty on :math:`m` (from covariance of the log–log fit).
+        1-sigma uncertainty on :math:`m` (from covariance of the log–log fit).
     """
     # --- 1. clean & select data ------------------------------------------
     x = np.asarray(x, dtype=float)
@@ -1808,7 +1808,7 @@ def plaw_fit_est_plot(
 
 def find_fit(x, y, x0, xf, return_fit_values=False):
     """
-    Perform a log–log (power‐law) fit of y(x) over [x0, xf], using natural logs.
+    Perform a log–log (power-law) fit of y(x) over [x0, xf], using natural logs.
 
     Returns fit parameters and, optionally, the fit curve values.
     """
@@ -2283,7 +2283,7 @@ def smoothing_function(x, y, mean=True, window=2):
 
 def calculate_parker_spiral(B):
     """
-    This function estimates φ_{rB} = arctan(Bt / Br) for arrays of Br and Bt.
+    This function estimates phi_{rB} = arctan(Bt / Br) for arrays of Br and Bt.
     It also returns the rolling mean of the computed angles over a 24-hour window.
     
     Parameters:
@@ -2295,7 +2295,7 @@ def calculate_parker_spiral(B):
     
     Returns:
     pd.DataFrame:
-        A DataFrame with the rolling mean of φ_{rB} (in degrees) over 24-hour windows.
+        A DataFrame with the rolling mean of phi_{rB} (in degrees) over 24-hour windows.
     """
     # Extract Br and Bt using positional indexing (0 for Br, 1 for Bt)
     Br = B.iloc[:, 0].to_numpy()
@@ -2899,7 +2899,7 @@ def binned_quantity(
     """
     Identical call signature; two improvements:
 
-    • For log-bins the centre x_b is now the geometric mean √(x_L x_R).
+    • For log-bins the centre x_b is now the geometric mean sqrt(x_L x_R).
     • Set return_edges=True to also receive (x_lo, x_hi).
     """
     # 1 · sanitise
@@ -2972,7 +2972,7 @@ def binned_quantity(
 # def binned_quantity(x, y, what='mean', std_or_error_of_mean=True, bins=100, loglog=True, return_counts=False, return_percentiles=False, lower_percentile =25, higher_percentile = 75):
 #     """
 #     Vectorised alternative to `binned_quantity` that avoids multiple passes
-#     through the data.  Median and percentile estimates are ∼10‑100× faster
+#     through the data.  Median and percentile estimates are ~10-100× faster
 #     (depending on sample size) because the data are sorted only once.
 #     """
 #     # 1. sanitise & mask
@@ -2992,7 +2992,7 @@ def binned_quantity(
 #     bins = np.asarray(bins, dtype=float)
 #     n_bins = bins.size - 1
 
-#     # 3. assign each point to a bin (−1 for out‑of‑range)
+#     # 3. assign each point to a bin (-1 for out-of-range)
 #     bin_idx = np.digitize(x, bins) - 1
 #     valid = (bin_idx >= 0) & (bin_idx < n_bins)
 #     bin_idx = bin_idx[valid]
@@ -3018,7 +3018,7 @@ def binned_quantity(
 #         # cumulative counts to split
 #         split_idx = np.cumsum(np.bincount(sorted_bins, minlength=n_bins))[:-1]
 #         groups = np.split(sorted_y, split_idx)
-#         # list comprehension is fine: n_bins is small (∼10‑100)
+#         # list comprehension is fine: n_bins is small (~10-100)
 #         if what == 'median':
 #             y_median = np.array([np.median(g) if g.size else np.nan for g in groups])
 #         if return_percentiles:
@@ -4775,7 +4775,7 @@ def find_cadence(df, method="mode", round_ns=1000, max_gap_factor=10.0):
 #                 fraction_missing_raw = 100.0 * n_missing_raw / n_vals_raw
 #             else:
 #                 fraction_missing_raw = 0.0
-#             # print("Fraction missing (pre‐interpolation):", fraction_missing_raw, "%")
+#             # print("Fraction missing (pre-interpolation):", fraction_missing_raw, "%")
 
 #             # 8) Interpolate if requested
 #             if do_interpolation:

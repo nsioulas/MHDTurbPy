@@ -229,8 +229,8 @@ def structure_functions_parallel(B,
         keep_sdk (bool):                  (Currently unused) Option to store or skip certain diagnostics.
         return_components (bool):         If True, also return separate components of the SF.
         return_Bmod (bool):               If True, also compute magnitude increments dBmod and return the 
-                                          corresponding structure functions in parallel to the “trace.”
-        return_compress (bool):           If True, also compute a “compressibility” measure from the fluctuations.
+                                          corresponding structure functions in parallel to the "trace."
+        return_compress (bool):           If True, also compute a "compressibility" measure from the fluctuations.
         return_flucts (bool):             If True, return the raw increments dB and dBmod for each scale, 
                                           rather than the structure functions.
         n_jobs (int):                     Number of parallel jobs. Defaults to -1 (all cores).
@@ -246,7 +246,7 @@ def structure_functions_parallel(B,
             sfn_cmp (np.ndarray): shape (len(scales), max_qorder, n_components) of each component's SF
             SF_dBmod(np.ndarray): shape (len(scales), max_qorder) of the modulus SF (if return_Bmod=True)
             compress(np.ndarray): shape (len(scales),) compressibility measure (if return_compress=True)
-            counts  (np.ndarray): shape (len(scales),) number of non‐NaN points in dBmod
+            counts  (np.ndarray): shape (len(scales),) number of non-NaN points in dBmod
 
         Else:
             sfn (np.ndarray): shape (len(scales), max_qorder)
@@ -744,7 +744,7 @@ def anisotropy_coherence(
                            do_coherence_analysis = False
                           ):
     """
-    Method to calculate the 1) wavelet coefficients in RTN 2) The scale dependent angle between Vsw and Β.
+    Method to calculate the 1) wavelet coefficients in RTN 2) The scale dependent angle between Vsw and B.
 
     Parameters:
         B_df (pandas.DataFrame): Magnetic field timeseries dataframe.
@@ -1351,7 +1351,7 @@ def structure_functions_wavelets(db_x, db_y, db_z,   scales, dt, max_moment):
 
 
 # -*- coding: utf-8 -*-
-"""
+r"""
 Cr09_cascade_rate — end-to-end revision (binning decoupled, raw/fit product control, LaTeX)
 ==========================================================================================
 
@@ -1361,9 +1361,9 @@ This version addresses your three concrete requirements:
     ----------------------------------------------------------------
     • New argument `product_value_source` controls what VALUES are used in the
       product terms of Qp/Qe/Qe_qpar independently of how derivatives are fit.
-        - "fit"       → products use fitted profiles
-        - "raw"       → products use raw measurements (NaNs kept as NaNs)
-        - "raw_fill"  → products use raw, but NaNs are replaced by fitted values
+        - "fit"       -> products use fitted profiles
+        - "raw"       -> products use raw measurements (NaNs kept as NaNs)
+        - "raw_fill"  -> products use raw, but NaNs are replaced by fitted values
                          only for r < R_nan_fill_max (same behavior you wanted)
     • Backward compatibility: if `use_raw_in_products=True` is passed, we map it
       to `product_value_source="raw_fill"` unless you explicitly set the new arg.
@@ -1589,7 +1589,7 @@ def _bin_mean_and_count(
     y : array-like
         Values to average.
     bins : int
-        Number of bin edges (→ bins-1 bins).
+        Number of bin edges (-> bins-1 bins).
     require_pos : bool
         If True, discard non-positive \(y\) before averaging (needed for log fits).
 
@@ -2394,9 +2394,9 @@ def Cr09_cascade_rate(
 
     # ---------------- (2) product values policy -----------------------------
     # What VALUES go into Q-terms (independent of how derivatives are fit):
-    #   "fit"      → use fitted profiles
-    #   "raw"      → use raw measurements (NaNs remain)
-    #   "raw_fill" → use raw, but replace NaNs with fitted values for r < fill_R_max
+    #   "fit"      -> use fitted profiles
+    #   "raw"      -> use raw measurements (NaNs remain)
+    #   "raw_fill" -> use raw, but replace NaNs with fitted values for r < fill_R_max
     product_values: str = "fit",
     fill_R_max: u.Quantity = 200*u.R_sun,  # only used if product_values == "raw_fill"
 
@@ -2411,13 +2411,13 @@ def Cr09_cascade_rate(
     **Contract enforced here (only change vs. your previous version):**
     - All **derivatives** are computed from **fitted** profiles only.
     - All **non-derivative factors** in products follow `product_values`:
-        'fit'      → use fitted values (error if fit missing),
-        'raw'      → use raw values (unit matched),
-        'raw_fill' → elementwise: raw if finite; else (fit & r<fill_R_max) else NaN.
+        'fit'      -> use fitted values (error if fit missing),
+        'raw'      -> use raw values (unit matched),
+        'raw_fill' -> elementwise: raw if finite; else (fit & r<fill_R_max) else NaN.
 
-    Conduction derivative is constructed consistently from fitted φ:
-      (d/dr) cos^2 φ |_fit = -sin(2 φ_fit) * (dφ/dr)_fit
-    while the multiplicative non-derivative factors (q_∥, cos^2 φ) follow `product_values`.
+    Conduction derivative is constructed consistently from fitted phi:
+      (d/dr) cos^2 phi |_fit = -sin(2 phi_fit) * (dphi/dr)_fit
+    while the multiplicative non-derivative factors (q_||, cos^2 phi) follow `product_values`.
     """
     # ---- validate simple product-values policy ----
     pv = str(product_values).lower()
@@ -2441,7 +2441,7 @@ def Cr09_cascade_rate(
         if return_raw_values:
             for c in ['Tp_raw','Te_raw','Np_raw','Ne_raw','qpar_raw','Phi_raw']:
                 out[c] = np.nan
-        return out, {"Fail": "≤2 valid rows"}
+        return out, {"Fail": "<=2 valid rows"}
 
     dfc = df_in.loc[mask].copy()
 
@@ -2545,7 +2545,7 @@ def Cr09_cascade_rate(
         q_fit_vals, slope_q = _eval_log_model(mod_q, ln_r)
         have_q_fit = True
     else:
-        # keep structure: derivative from fit only → set slope to 0; values handled by policy below
+        # keep structure: derivative from fit only -> set slope to 0; values handled by policy below
         q_fit_vals = np.full_like(r.value, np.nan)
         slope_q    = np.zeros_like(r.value)
         have_q_fit = False
@@ -2582,9 +2582,9 @@ def Cr09_cascade_rate(
     def _apply_product_values(policy: str, raw_q: u.Quantity, fit_q: Optional[u.Quantity], *, fit_ok: bool) -> u.Quantity:
         """
         Implement EXACT policy for non-derivative values:
-          'fit'      → return fit_q (error if not provided/valid)
-          'raw'      → return raw_q (unit coerced to fit unit if given)
-          'raw_fill' → out[i] = raw[i] if finite; else if (fit_ok and r[i] < fill_R_max and fit[i] finite) then fit[i]; else NaN
+          'fit'      -> return fit_q (error if not provided/valid)
+          'raw'      -> return raw_q (unit coerced to fit unit if given)
+          'raw_fill' -> out[i] = raw[i] if finite; else if (fit_ok and r[i] < fill_R_max and fit[i] finite) then fit[i]; else NaN
         """
         p = policy.lower()
         if p not in {"fit", "raw", "raw_fill"}:
@@ -2640,7 +2640,7 @@ def Cr09_cascade_rate(
                - U*const.k_B*Te_use*dne_dr
                - 1.5*ne_use*const.k_B*nu_ep*dT).to(u.W/u.m**3)
 
-    # Conduction: (1/A) d/dr (A q_∥ cos^2 φ), A ∝ r^2
+    # Conduction: (1/A) d/dr (A q_|| cos^2 phi), A propto r^2
     A         = r**2
     dA_dr     = (2*r).to(u.m)
     cos2_use  = np.cos(phi_use.to_value(u.rad))**2               # VALUE term: policy
@@ -2768,7 +2768,7 @@ def Cr09_cascade_rate(
 #       • *_raw SI columns optionally returned.
 #     """
 
-#     # --- tight helpers (handle NaN/±∞ robustly) ---
+#     # --- tight helpers (handle NaN/±inf robustly) ---
 #     def _fill_under_cap(raw_q, fit_q, r_q, cap_q):
 #         unit = u.Quantity(fit_q).unit
 #         raw = u.Quantity(raw_q).to_value(unit)
@@ -2803,7 +2803,7 @@ def Cr09_cascade_rate(
 #         if return_raw_values:
 #             for c in ['Tp_raw','Te_raw','Np_raw','Ne_raw','qpar_raw','Phi_raw']:
 #                 out[c] = np.nan
-#         return out, {"Fail": "≤2 valid rows"}
+#         return out, {"Fail": "<=2 valid rows"}
 
 #     dfc = df_in.loc[mask].copy()
 
@@ -3281,7 +3281,7 @@ def Cr09_cascade_rate(
 # ):
 #     """
 #     Step-up selection from baseline degree in [1..min_deg] to at most max_deg.
-#     Accept d+1 only if ΔBIC >= bic_threshold and ΔCV >= cv_gain_frac.
+#     Accept d+1 only if DeltaBIC >= bic_threshold and DeltaCV >= cv_gain_frac.
 #     """
 #     max_deg = int(min(max_deg, cap))
 #     min_deg = int(max(1, min_deg))
@@ -3372,7 +3372,7 @@ def Cr09_cascade_rate(
 #         out = df_in.copy()
 #         for col in ['Qp', 'Qe', 'Qe_qpar', 'dQp', 'dQe', 'dQe_qpar', 'Phi']:
 #             out[col] = np.nan
-#         return out, {"Fail": "≤2 valid rows"}
+#         return out, {"Fail": "<=2 valid rows"}
 
 #     dfc = df_in.loc[mask].copy()
 
@@ -3582,7 +3582,7 @@ def CH_09_cascade_rate(
     hetero_fit: str = "fgls",   # 'ols'|'fgls' (used only if use_binning=False)
     quant_is_squared: bool = True,
 ):
-    # ── map columns (keep your names/logic) ───────────────────────────────────
+    # -- map columns (keep your names/logic) -----------------------------------
     keep_Ma  = df[col_Ma].values
     keep_d   = df[col_r_au].values
     keep_V0  = df[col_V0].values
@@ -3593,7 +3593,7 @@ def CH_09_cascade_rate(
     else:
         keep_quant = (df[col_Zp2].values)**2
 
-    # ── units (preserve legacy rho unless Quantity given) ─────────────────────
+    # -- units (preserve legacy rho unless Quantity given) ---------------------
     if not isinstance(keep_d, u.Quantity):
         keep_d = keep_d * u.au
     if not isinstance(keep_V0, u.Quantity):
@@ -3614,7 +3614,7 @@ def CH_09_cascade_rate(
     Zp_si   = np.sqrt(keep_quant).to_value(u.m / u.s)
     rho_si  = keep_rho.to_value(u.kg / u.m ** 3)
 
-    # ── physics transforms ────────────────────────────────────────────────────
+    # -- physics transforms ----------------------------------------------------
     with np.errstate(divide="ignore", invalid="ignore"):
         eta  = (Va0_si / V0_si) ** 2
     gp2 = (Zp_si * (1.0 + np.sqrt(eta)) / np.power(eta, 0.25)) ** 2
@@ -3649,14 +3649,14 @@ def CH_09_cascade_rate(
     ln_Va_fit = ln_Va_all[fit_sel]
     deg_eff   = int(np.clip(poly_deg, 1, max(1, len(ln_r_fit) - 1)))
 
-    # ── ALWAYS build log-binned diagnostics via func.binned_quantity ──────────
+    # -- ALWAYS build log-binned diagnostics via func.binned_quantity ----------
     # (do not replace this with any custom binning)
     avg_r, avg_Va, _, avg_counts = func.binned_quantity(
         r_sorted, Va_sorted, bins=n_bins + 1, return_counts=True
     )
     avg_d = avg_r / AU_SI
 
-    # ── fit ln(Va) vs ln(r) ───────────────────────────────────────────────────
+    # -- fit ln(Va) vs ln(r) ---------------------------------------------------
     cov_desc = None
     if use_binning:
         bin_sel = (avg_counts > 0) & np.isfinite(avg_Va) & np.isfinite(avg_r)
@@ -3716,7 +3716,7 @@ def CH_09_cascade_rate(
         H_full_m = keep_VA0.to_value(u.m/u.s) / deriv_all
     H_Rsun_full = H_full_m / R_SUN_SI
 
-    # ── output units ──────────────────────────────────────────────────────────
+    # -- output units ----------------------------------------------------------
     units_l = units.lower()
     if units_l == "si":
         Q_out, out_unit = Q_full, "W / m^3"
@@ -3805,7 +3805,7 @@ def CH_09_cascade_rate(
 #     keep_rho = (df[col_rho].values * (u.kg/u.cm**3)).to(u.kg/u.m**3)
 
 #     AU_m    = u.au.to(u.m)              # [m per AU]
-#     R_sun_m = (1.0 * u.au / 215.032).to(u.m)  # ← FIX: Rsun from AU (no import)
+#     R_sun_m = (1.0 * u.au / 215.032).to(u.m)  # <- FIX: Rsun from AU (no import)
 
 #     r_si   = keep_d.to(u.m).value
 #     V_si   = keep_V0.to(u.m/u.s).value
@@ -3940,9 +3940,9 @@ def CH_09_cascade_rate(
 #     else:
 #         keep_quant = (df[col_Zp2].values)**2
 
-#     # ─────────────────────────────────────────────────────────────────────────────
+#     # -----------------------------------------------------------------------------
 #     # ORIGINAL BODY (unchanged)
-#     # ─────────────────────────────────────────────────────────────────────────────
+#     # -----------------------------------------------------------------------------
 #     if not isinstance(keep_d, u.Quantity):
 #         keep_d = keep_d * u.AU
 #     if not isinstance(keep_V0, u.Quantity):
@@ -3958,7 +3958,7 @@ def CH_09_cascade_rate(
 #     # R_SUN_SI = R_sun.to_value(u.m)
 
 #     AU_SI    = u.au.to(u.m)              # [m per AU]
-#     R_SUN_SI = (1.0 * u.au / 215.032).to(u.m)  # ← FIX: Rsun from AU (no import)
+#     R_SUN_SI = (1.0 * u.au / 215.032).to(u.m)  # <- FIX: Rsun from AU (no import)
 
 
 #     r_si    = keep_d.to_value(u.m)
@@ -4087,10 +4087,10 @@ def CH_09_cascade_rate(
 #     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # 2) f_w_gradient — same math/outputs, now reads directly from a DataFrame
 #    No writes to the DataFrame; arrays only.
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 def f_w_gradient(
     df,
     *,
@@ -4114,7 +4114,7 @@ def f_w_gradient(
     """
     CH09-style evaluation of the wave-pressure-gradient force density:
 
-        f_w = ρ/r·(⟨δu²⟩−⟨δv_A²⟩) − d/dr[½ρ⟨δv_A²⟩] .
+        f_w = rho/r·(<deltau²>-<deltav_A²>) - d/dr[½rho<deltav_A²>] .
 
     Returns structure identical to the original `f_w_gradient`.
     """
@@ -4370,7 +4370,7 @@ def remove_wheel_noise(
     merge_hz: float = 0.20,
     max_lines: int = 2000,
 
-    # ---- OPTIONAL: slope flattening (helps “dense forest” high-f spectra)
+    # ---- OPTIONAL: slope flattening (helps "dense forest" high-f spectra)
     whiten_exp: float = 0.0,        # try 8/3 if needed
 
     # ---- drift tracking + removal
@@ -4772,7 +4772,7 @@ def build_V_mod_TH(
 
     summary_df = pd.DataFrame(
         {
-            "θ_VB": theta_VB,
+            "theta_VB": theta_VB,
             "|Va|": Va_bulk,
             "|V_rel|": Vrel_mag,
             "|V_mod_TH|": V_mod_mag,
@@ -4901,7 +4901,7 @@ def build_V_mod_TH(
 
     # --- 7. Output ---
     summary_df = pd.DataFrame({
-        "θ_VB"        : theta_VB,
+        "theta_VB"        : theta_VB,
         "|Va|"        : Va_scalar_mag, 
         "|V_rel|"     : Vrel_mag,  
         "|V_mod_TH|"  : V_mod_mag,
