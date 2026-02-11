@@ -36,57 +36,73 @@ cm2m            = 1e-2
 
 
 
+def _coord_columns(coord_type='RTN'):
+    """Return magnetic/velocity component names for a coordinate frame."""
+    coord = str(coord_type).upper()
+    if coord == 'RTN':
+        return ["Br", "Bt", "Bn"], ["Vr", "Vt", "Vn"]
+    return ["Bx", "By", "Bz"], ["Vx", "Vy", "Vz"]
+
+
 def apply_rolling_mean(f_df, settings, coord_type='RTN'):
-    """
-    Apply rolling mean to specified columns based on coordinate type.
-    
-    Parameters:
-    - f_df: DataFrame to process.
-    - settings: Dictionary containing settings like 'rol_window'.
-    - coord_type: Type of coordinates, 'RTN' for R,T,N and 'XYZ' for x,y,z.
-    """
-    # Define columns based on coordinate type
-    if coord_type == 'RTN':
-        columns = [['Br', 'Bt', 'Bn'], ['Vr', 'Vt', 'Vn']]
-    else:  # Assume 'XYZ' if not 'RTN'
-        columns = [['Bx', 'By', 'Bz'], ['Vx', 'Vy', 'Vz']]
-    
-    # Apply rolling mean and interpolate
-    for c in columns:
-        f_df[[f"{col}_mean" for col in c]] = f_df[c].rolling(
-            settings['rol_window'], center=True).mean().interpolate()
-    
+    """Apply rolling mean columns for magnetic and velocity vectors."""
+    columns_b, columns_v = _coord_columns(coord_type)
+
+    for cols in (columns_b, columns_v):
+        f_df[[f"{col}_mean" for col in cols]] = (
+            f_df[cols]
+            .rolling(settings['rol_window'], center=True)
+            .mean()
+            .interpolate()
+        )
+
     return f_df
 
+
 def apply_rolling_mean_and_get_columns(f_df, settings):
-    """Attempt to apply rolling mean with RTN coordinates, fallback to XYZ if fails."""
-    try:
-        f_df      = apply_rolling_mean(f_df, settings, 'RTN')
-        columns_b = ["Br", "Bt", "Bn"]
-        columns_v = ["Vr", "Vt", "Vn"]
-    except KeyError:  # Assuming KeyError is the relevant exception if columns are missing
-        f_df      = apply_rolling_mean(f_df, settings, 'XYZ')
-        columns_b = ["Bx", "By", "Bz"]
-        columns_v = ["Vx", "Vy", "Vz"]
-    return f_df, columns_b, columns_v
+    """Apply rolling means using preferred frame with fallback."""
+    prefer_rtn = bool(settings.get('in_rtn', True))
+    tries = ('RTN', 'XYZ') if prefer_rtn else ('XYZ', 'RTN')
+
+    last_err = None
+    for coord in tries:
+        try:
+            f_df = apply_rolling_mean(f_df, settings, coord)
+            columns_b, columns_v = _coord_columns(coord)
+            return f_df, columns_b, columns_v
+        except KeyError as err:
+            last_err = err
+
+    raise KeyError(f"Could not find valid magnetic/velocity component columns. Last error: {last_err}")
+
+
+def _rolling_sign(series: pd.Series, window='30min', negate=False):
+    sign = np.sign(series.rolling(window, center=True).mean())
+    return -sign if negate else sign
 
 
 def calculate_signB(f_df, settings):
-    """Calculate the sign of B based on available column."""
-    if settings['sc'] in ['PSP', 'SOLO', 'HELIOS_A', 'HELIOS_B', 'ACE']:
-        try:
-            return -np.sign(f_df['Br'].rolling('30min', center=True).mean())
-        except:
-            if settings['sc'] in ['PSP']:
-                return np.sign(f_df['Bz'].rolling('30min', center=True).mean())
-                
-            else:
-                return np.sign(f_df['Bx'].rolling('30min', center=True).mean())
-        
-    elif settings['sc'] in ['WIND']:
-        return np.sign(f_df['Br'].rolling('30min', center=True).mean())
-    else:
-        raise ValueError("Required column is missing in DataFrame.")
+    """Calculate sign(B_r) proxy used in Elsasser definitions."""
+    sc = settings['sc']
+
+    if sc in ['PSP', 'SOLO', 'HELIOS_A', 'HELIOS_B', 'ACE']:
+        if 'Br' in f_df.columns:
+            return _rolling_sign(f_df['Br'], negate=True)
+        if sc == 'PSP' and 'Bz' in f_df.columns:
+            return _rolling_sign(f_df['Bz'])
+        if 'Bx' in f_df.columns:
+            return _rolling_sign(f_df['Bx'])
+        raise ValueError(f"{sc} requires Br/Bx (or Bz for PSP) to estimate signB.")
+
+    if sc == 'WIND':
+        if 'Br' in f_df.columns:
+            return _rolling_sign(f_df['Br'])
+        if 'Bx' in f_df.columns:
+            return _rolling_sign(f_df['Bx'], negate=True)
+        raise ValueError("WIND requires Br or Bx column to estimate signB.")
+
+    raise ValueError("Required column is missing in DataFrame.")
+
 
 def calculate_components(dv, dva, signB):
     """Calculate Zp and Zm components."""
