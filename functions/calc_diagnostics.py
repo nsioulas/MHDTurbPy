@@ -95,10 +95,13 @@ def calculate_signB(f_df, settings):
         raise ValueError(f"{sc} requires Br/Bx (or Bz for PSP) to estimate signB.")
 
     if sc == 'WIND':
+        # Keep WIND sign convention consistent with other missions:
+        # use -sign(Br) in RTN, which is equivalent to +sign(Bx) in GSE
+        # when Br ~= -Bx after the L1-approx conversion.
         if 'Br' in f_df.columns:
-            return _rolling_sign(f_df['Br'])
+            return _rolling_sign(f_df['Br'], negate=True)
         if 'Bx' in f_df.columns:
-            return _rolling_sign(f_df['Bx'], negate=True)
+            return _rolling_sign(f_df['Bx'])
         raise ValueError("WIND requires Br or Bx column to estimate signB.")
 
     raise ValueError("Required column is missing in DataFrame.")

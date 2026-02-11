@@ -134,6 +134,37 @@ def _safe_ms(settings: Dict[str, Any], key: str, default_ms: int, floor_ms: int)
     return v
 
 
+
+
+def _ensure_tp_eV(series: pd.Series, source_hint: str = "") -> pd.Series:
+    """Normalize proton temperature to eV.
+
+    Strategy:
+    1) Use source hints when we know the unit convention.
+    2) Fallback to magnitude heuristic only when unit is ambiguous.
+    """
+    out = series.astype(float).copy()
+    finite = out[np.isfinite(out)]
+    if len(finite) == 0:
+        return out
+
+    hint = str(source_hint).upper()
+    k_B_ev_per_K = constants.physical_constants["Boltzmann constant in eV/K"][0]
+
+    # Explicit unit hints
+    if "EV" in hint:
+        return out
+    if "K" in hint or "KELVIN" in hint or "OMNI" in hint:
+        return out * k_B_ev_per_K
+
+    # Ambiguous temperature channels: infer from realistic scale.
+    med = float(np.nanmedian(finite))
+    if med > 1e3:
+        out = out * k_B_ev_per_K
+
+    return out
+
+
 def _normalize_tp_column(df: pd.DataFrame) -> pd.DataFrame:
     """
     Enforce the pipeline contract: temperature must be in column 'Tp'.
@@ -324,7 +355,9 @@ def _load_omni_plasma_cdasws(
     # Query data
     t0s = t0.strftime("%Y-%m-%dT%H:%M:%SZ")
     t1s = t1.strftime("%Y-%m-%dT%H:%M:%SZ")
-    data = cdas.get_data(dataset, req_vars, t0s, t1s)
+    status, data = cdas.get_data(dataset, req_vars, t0s, t1s)
+    if not status:
+        raise RuntimeError("OMNI fallback: CDAWeb request failed.")
 
     if not isinstance(data, dict) or len(data) == 0:
         raise RuntimeError("OMNI fallback: CDAWeb returned no data (empty payload).")
@@ -363,13 +396,15 @@ def _load_omni_plasma_cdasws(
     Tp_ = np.asarray(data[tp], dtype=float).ravel()
 
     # Build DF in requested frame
+    Tp_eV = _ensure_tp_eV(pd.Series(Tp_, index=idx), source_hint="OMNI")
+
     if in_rtn:
         V_out = _approx_gse_to_l1_rtn(V_gse)
-        df = pd.DataFrame({"Vr": V_out[:, 0], "Vt": V_out[:, 1], "Vn": V_out[:, 2], "np": np_, "Tp": Tp_}, index=idx)
+        df = pd.DataFrame({"Vr": V_out[:, 0], "Vt": V_out[:, 1], "Vn": V_out[:, 2], "np": np_, "Tp": Tp_eV.values}, index=idx)
         meta["coord_in"] = "GSE"
         meta["coord_out"] = "RTN(L1-approx)"
     else:
-        df = pd.DataFrame({"Vx": V_gse[:, 0], "Vy": V_gse[:, 1], "Vz": V_gse[:, 2], "np": np_, "Tp": Tp_}, index=idx)
+        df = pd.DataFrame({"Vx": V_gse[:, 0], "Vy": V_gse[:, 1], "Vz": V_gse[:, 2], "np": np_, "Tp": Tp_eV.values}, index=idx)
         meta["coord_in"] = "GSE"
         meta["coord_out"] = "GSE"
 
@@ -565,7 +600,7 @@ def LoadTimeSeriesACE(
                 dfV.columns = ["Vx", "Vy", "Vz"]
 
         dfn = pd.DataFrame({"np": np_}, index=dens_idx).sort_index()
-        dfT = pd.DataFrame({"Tp": Tp_}, index=temp_idx).sort_index()
+        dfT = pd.DataFrame({"Tp": _ensure_tp_eV(pd.Series(Tp_, index=temp_idx), source_hint=temp_var).values}, index=temp_idx).sort_index()
 
         tol_ms = _safe_ms(settings, "part_resol", default_ms=64000, floor_ms=1000)
         tol = pd.Timedelta(milliseconds=tol_ms)
@@ -605,11 +640,15 @@ def LoadTimeSeriesACE(
             else:
                 raise
         dfpar = _normalize_tp_column(dfpar)
+        if "Tp" in dfpar.columns:
+            dfpar["Tp"] = _ensure_tp_eV(dfpar["Tp"], source_hint=par_meta.get("temp_var", ""))
     except Exception as e_swe:
         # Fallback to OMNI for recent years where SWEPAM vec3 isn't available
         try:
             dfpar, omni_meta = _load_omni_plasma_cdasws(t0_req_dt, t1_req_dt, in_rtn, settings)
             dfpar = _normalize_tp_column(dfpar)
+            if "Tp" in dfpar.columns:
+                dfpar["Tp"] = _ensure_tp_eV(dfpar["Tp"], source_hint="OMNI")
             par_meta["source"] = "OMNI (CDAWeb) fallback"
             par_meta["omni"] = omni_meta
         except Exception as e_omni:
@@ -658,6 +697,8 @@ def LoadTimeSeriesACE(
         dfpar = diag_par["resampled_df"]
         if dfpar is not None:
             dfpar = _normalize_tp_column(dfpar)
+        if "Tp" in dfpar.columns:
+            dfpar["Tp"] = _ensure_tp_eV(dfpar["Tp"], source_hint=par_meta.get("temp_var", ""))
 
     diagnostics["Mag"] = diag_mag
     diagnostics["Par"] = diag_par
