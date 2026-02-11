@@ -4,7 +4,9 @@ from numba import jit,njit, prange
 import os
 import sys
 from joblib import Parallel, delayed
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+from pathlib import Path
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(1, str(REPO_ROOT / 'functions'))
 import general_functions as func
 import TurbPy as turb
 import traceback

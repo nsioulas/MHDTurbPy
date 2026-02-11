@@ -1,3 +1,4 @@
+from pathlib import Path
 """Module providing Multirate signal processing functionality.
 Largely based on MATLAB's Multirate signal processing toolbox with consultation 
 of Octave m-file source code.
@@ -17,7 +18,8 @@ from scipy.interpolate import interp1d
 
 
 """ Import manual functions """
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(1, str(REPO_ROOT / 'functions'))
 import general_functions as func
 
 

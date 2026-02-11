@@ -60,7 +60,8 @@ from distutils.log import warn
 from general_functions import *
 from three_D_funcs import *
 
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions/modwt/wmtsa'))
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(1, str(REPO_ROOT / 'functions' / 'modwt' / 'wmtsa'))
 import  modwt
 
 import astropy.units as u
@@ -5787,7 +5788,8 @@ def calculate_angle(which_perihelion,
                     use_span   =True):
     # Function to calculate the angle
     
-    sys.path.insert(1, os.path.join(os.getcwd(), 'functions/downloading_helpers'))
+    REPO_ROOT = Path(__file__).resolve().parents[1]
+    sys.path.insert(1, str(REPO_ROOT / 'functions' / 'downloading_helpers'))
     import   PSP #$import  LoadTimeSeriesPSP
     au_to_km       = 1.496e8  # Conversion factor
     
@@ -5797,7 +5799,8 @@ def calculate_angle(which_perihelion,
 
 
     # Make sure to use the local spedas
-    sys.path.insert(0, os.path.join(os.getcwd(), 'pyspedas'))
+    REPO_ROOT = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(REPO_ROOT / 'pyspedas'))
 
 
     
