@@ -79,6 +79,32 @@ def _clean_fill_values(df: pd.DataFrame, cols: Tuple[str, ...], threshold: float
 
 
 
+def _pick_first_key(data: Any, *candidates: str):
+    """Return the first present key from a CDAWeb/SpaceData payload."""
+    for key in candidates:
+        try:
+            if key in data:
+                return data[key]
+        except Exception:
+            pass
+    for key in candidates:
+        try:
+            return data[key]
+        except Exception:
+            continue
+    raise KeyError(f"None of the candidate keys were found: {candidates}")
+
+def describe_wind_source_selection(settings: Dict[str, Any]) -> Dict[str, str]:
+    """Return dataset names selected by current WIND cadence settings."""
+    mag_res = float(settings["MAG_resol"])
+    part_res = float(settings["part_resol"])
+
+    if mag_res < 3:
+        mag_source = "WI_H2_MFI"
+    elif mag_res == 3:
+        mag_source = "WI_H0_MFI"
+    else:
+        mag_source = "WI_PLSP_3DP"
 
 def _approx_gse_to_l1_rtn(vec_gse: np.ndarray) -> np.ndarray:
     """Approximate GSE -> RTN transform for near-Earth/L1 spacecraft.
