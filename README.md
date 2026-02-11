@@ -79,6 +79,49 @@ python scripts/path_audit.py --root .
 
 This checks `.py` files and notebook code cells for unresolved repo/base path references.
 
+# Troubleshooting (IPython/Jupyter on Windows)
+
+If you see logs like:
+- `ModuleNotFoundError: No module named 'autoreload'`
+- `IPython.extensions.deduperreload ... UnicodeDecodeError ... cp1252`
+
+this is usually an **IPython extension/config issue**, not a MHDTurbPy runtime bug.
+
+Recommended fixes:
+
+1. Ensure UTF-8 mode is enabled before launching Python/Jupyter:
+
+```bash
+set PYTHONUTF8=1
+```
+
+(Or persist this in your shell/environment settings.)
+
+2. In IPython/Jupyter, use the built-in extension:
+
+```python
+%load_ext autoreload
+%autoreload 2
+```
+
+3. If your environment tries to auto-load `deduperreload` and fails, disable that startup hook or update/remove the extension in the environment.
+
+4. If extension behavior remains inconsistent, recreate the conda env from `environment.yml` and test a clean IPython session with no custom startup scripts.
+
+5. Apply the repo-provided automatic patch for IPython config (recommended on Windows):
+
+```bash
+python scripts/fix_ipython_windows.py
+```
+
+This writes/updates `~/.ipython/profile_default/ipython_config.py` to:
+- remove `deduperreload` from auto-loaded extensions,
+- add `IPython.extensions.autoreload`,
+- set `PYTHONUTF8=1` for session startup.
+
+If your tracebacks mention stdlib files like `functools.py`, `urllib/parse.py`, `shlex.py`, `re/_casefix.py`, or `pydoc_data/topics.py`, that confirms the decode failure is happening inside extension scanning of the Python installation, not inside MHDTurbPy project files.
+
+
 # Usage
 
 Example notebooks that demonstrate how to download and visualize data are available in `examples/notebooks`.

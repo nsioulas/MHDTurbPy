@@ -1742,7 +1742,7 @@ def plaw_fit_est_plot(
     var_symbol: str = "R",
     **plot_kwargs,
 ):
-    """
+    r"""
     Fit and (optionally) plot a power law :math:`y = A\,x^{m}` on
     the interval :math:`[x_0,\,x_f]`.
 

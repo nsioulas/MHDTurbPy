@@ -1351,7 +1351,7 @@ def structure_functions_wavelets(db_x, db_y, db_z,   scales, dt, max_moment):
 
 
 # -*- coding: utf-8 -*-
-"""
+r"""
 Cr09_cascade_rate — end-to-end revision (binning decoupled, raw/fit product control, LaTeX)
 ==========================================================================================
 
