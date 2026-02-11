@@ -1,4 +1,4 @@
-![MHDTurbPy](logo/final.png "turb")
+![MHDTurbPy](assets/logo/final.png "turb")
 
 # MHDTurbPy
 MHDTurbPy is a Python toolkit for downloading, cleaning, and analyzing heliophysics spacecraft data from:
@@ -58,8 +58,8 @@ All updated Python modules and example notebooks now read from this shared confi
 
 # Usage
 
-Example notebooks that demonstrate how to download and visualize data are available in `Notebooks_Examples`.
-Start with the notebooks in `Notebooks_Examples/` if you want end-to-end data download and analysis examples.
+Example notebooks that demonstrate how to download and visualize data are available in `examples/notebooks`.
+Start with the notebooks in `examples/notebooks/` if you want end-to-end data download and analysis examples.
 
 # Contact
 If you have any questions, please don't hesitate to reach out to nsioulas@g.ucla.edu.
