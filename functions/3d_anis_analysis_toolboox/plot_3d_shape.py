@@ -1,6 +1,7 @@
 from joblib import Parallel, delayed
 import numpy as np
 import pandas as pd
+from project_config import repo_data_file
 import sys
 import scipy.io
 import os
@@ -151,9 +152,9 @@ def bin_data(total_df,
 
     # First load the data:
     if normalize_with_B2:
-        total_df = pd.read_pickle('/Users/nokni/work/3d_anisotropy/structure_functions_E1/data/3d_shape/normalized_initial_SFs.pkl')
+        total_df = pd.read_pickle(repo_data_file('data', '3d_shape', 'normalized_initial_SFs.pkl'))
     else:
-        total_df = pd.read_pickle('/Users/nokni/work/3d_anisotropy/structure_functions_E1/data/3d_shape/initial_SFs.pkl')
+        total_df = pd.read_pickle(repo_data_file('data', '3d_shape', 'initial_SFs.pkl'))
 
     keys = list(total_df.keys())[1:]
     df = pd.DataFrame()

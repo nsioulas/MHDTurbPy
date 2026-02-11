@@ -16,9 +16,11 @@ import matplotlib.dates as mdates
 from scipy import interpolate
 import gc
 from scipy.interpolate import interp1d
+from project_config import merge_user_paths_into_settings
 
 # Make sure to use the local spedas
-sys.path.insert(0, os.path.join(os.getcwd(), 'pyspedas'))
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / 'pyspedas'))
 import pyspedas
 from pyspedas.utilities import time_string
 from pytplot import get_data
@@ -38,7 +40,7 @@ logging.basicConfig(
 
 """ Import manual functions """
 
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+sys.path.insert(1, str(REPO_ROOT / 'functions'))
 import calc_diagnostics as calc
 import general_functions as func
 import TurbPy as turb
@@ -46,7 +48,7 @@ import polarization_analysis
 import calibrate_efield as efield
 from  calibrate_sc_potential import *
 
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions/downloading_helpers'))
+sys.path.insert(1, str(REPO_ROOT / 'functions' / 'downloading_helpers'))
 from  PSP import  LoadTimeSeriesPSP, download_ephemeris_PSP
 from  SOLO import LoadTimeSeriesSOLO
 from  WIND import LoadTimeSeriesWIND
@@ -70,6 +72,9 @@ def download_files( ok,
                     save_path):
     
     try:
+
+        settings = merge_user_paths_into_settings(settings)
+        cdf_lib_path = cdf_lib_path or settings.get("cdf_lib_path")
 
         t0 = df['Start'][ok]
         t1 = df['End'][ok]

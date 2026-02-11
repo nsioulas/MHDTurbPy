@@ -20,6 +20,12 @@ from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+try:
+    from project_config import merge_user_paths_into_settings
+except Exception:  # optional when used outside repo layout
+    def merge_user_paths_into_settings(settings):
+        return dict(settings or {})
+
 
 # ============================================================
 # Diagnostics defaults
@@ -316,7 +322,7 @@ def normalize_settings(settings: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(settings, dict):
         raise TypeError("settings must be a dict")
 
-    out = dict(settings)
+    out = merge_user_paths_into_settings(settings)
 
     group_keys = (
         "Paths",

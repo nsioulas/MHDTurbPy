@@ -5,6 +5,7 @@ download_data.py
 from __future__ import annotations
 
 from functions.downloading_helpers.shared_utils import normalize_settings
+from project_config import merge_user_paths_into_settings
 
 import os
 import sys
@@ -24,13 +25,14 @@ from scipy import constants
 # ============================================================
 # Local SPEDAS (repo-local)
 # ============================================================
-sys.path.insert(0, os.path.join(os.getcwd(), "pyspedas"))
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "pyspedas"))
 import pyspedas  # noqa: F401
 
 # ============================================================
 # Repo utilities
 # ============================================================
-sys.path.insert(1, os.path.join(os.getcwd(), "functions"))
+sys.path.insert(1, str(REPO_ROOT / "functions"))
 import calc_diagnostics as calc
 import general_functions as func
 import TurbPy as turb
@@ -41,7 +43,7 @@ from calibrate_sc_potential import *  # noqa: F401,F403
 # ============================================================
 # Spacecraft download helpers
 # ============================================================
-sys.path.insert(1, os.path.join(os.getcwd(), "functions/downloading_helpers"))
+sys.path.insert(1, str(REPO_ROOT / "functions" / "downloading_helpers"))
 from PSP import LoadTimeSeriesPSP, download_ephemeris_PSP  # noqa: F401
 from SOLO import LoadTimeSeriesSOLO
 from WIND import LoadTimeSeriesWIND
@@ -512,7 +514,9 @@ def small_sub_intervals_parallel_process(
 def main_function(start_time, end_time, settings, vars_2_downnload, cdf_lib_path, credentials):
     import traceback
 
+    settings = merge_user_paths_into_settings(settings)
     settings = normalize_settings(settings)
+    cdf_lib_path = cdf_lib_path or settings.get("cdf_lib_path")
 
 
     settings = _fill_default_settings(settings)
