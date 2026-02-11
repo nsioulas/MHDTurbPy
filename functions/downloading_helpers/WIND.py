@@ -34,6 +34,11 @@ cdas = CdasWs()
 # Kelvin per eV, used for eV -> K conversion.
 _EV_TO_K = 1.0 / constants.physical_constants["Boltzmann constant in eV/K"][0]
 
+import numpy as np
+import pandas as pd
+import pytz
+from cdasws import CdasWs
+from scipy import constants
 
 def _to_utc_datetime(value: Any) -> pd.Timestamp:
     """Convert input to timezone-aware UTC timestamp."""
@@ -44,6 +49,7 @@ def _to_utc_datetime(value: Any) -> pd.Timestamp:
         ts = ts.tz_convert("UTC")
     return ts
 
+cdas = CdasWs()
 
 def _empty_diag() -> Dict[str, float]:
     return {"Frac_miss": 100.0, "Large_gaps": 100.0, "Tot_gaps": 100.0, "resol": 100.0}
@@ -116,6 +122,32 @@ def _ensure_nx3(vec: Any, n_expected: int | None = None) -> np.ndarray:
         raise ValueError(f"Vec3 length mismatch: expected {n_expected}, got {out.shape[0]}")
     return out
 
+def _pick_first_key(data: Any, *candidates: str):
+    """Return the first present key from a CDAWeb/SpaceData payload."""
+    for key in candidates:
+        try:
+            if key in data:
+                return data[key]
+        except Exception:
+            pass
+    for key in candidates:
+        try:
+            return data[key]
+        except Exception:
+            continue
+    raise KeyError(f"None of the candidate keys were found: {candidates}")
+
+def describe_wind_source_selection(settings: Dict[str, Any]) -> Dict[str, str]:
+    """Return dataset names selected by current WIND cadence settings."""
+    mag_res = float(settings["MAG_resol"])
+    part_res = float(settings["part_resol"])
+
+    if mag_res < 3:
+        mag_source = "WI_H2_MFI"
+    elif mag_res == 3:
+        mag_source = "WI_H0_MFI"
+    else:
+        mag_source = "WI_PLSP_3DP"
 
 def _rename_vec_by_frame(df: pd.DataFrame, frame: str, prefix: str) -> pd.DataFrame:
     """Rename vector columns to either RTN (r,t,n) or XYZ (x,y,z)."""
@@ -127,6 +159,13 @@ def _rename_vec_by_frame(df: pd.DataFrame, frame: str, prefix: str) -> pd.DataFr
         out = out.rename(columns={"c1": "Vr", "c2": "Vt", "c3": "Vn"} if frame == "RTN" else {"c1": "Vx", "c2": "Vy", "c3": "Vz"})
     return out
 
+    Convention used across this repository (same as ACE helper):
+    R ~ -X_GSE, T ~ Y_GSE, N ~ Z_GSE.
+    """
+    x = vec_gse[:, 0]
+    y = vec_gse[:, 1]
+    z = vec_gse[:, 2]
+    return np.column_stack([-x, y, z])
 
 def _pick_first_key(data: Any, *candidates: str):
     """Return the first present key from a CDAWeb/SpaceData payload."""
@@ -343,8 +382,24 @@ def LoadHighResMagWind(start_time, end_time, settings, verbose=True):
         print(f"Input tstart = {t0}, tend = {t1}")
         print(f"Returned tstart = {dfmag.index[0]}, tend = {dfmag.index[-1]}")
 
-    return dfmag
+        vec = _ensure_nx3(vel, n_expected=len(data["Epoch"]))
+        if bool(settings.get("in_rtn", True)):
+            vec = _approx_gse_to_l1_rtn(vec)
+            frame = "RTN"
+        else:
+            frame = "GSE"
 
+        dfpar = pd.DataFrame(
+            index=pd.to_datetime(data["Epoch"]),
+            data={
+                "c1": vec[:, 0],
+                "c2": vec[:, 1],
+                "c3": vec[:, 2],
+                "np": dens,
+                "Vth": vth,
+            },
+        )
+        dfpar = _rename_vec_by_frame(dfpar, "RTN" if frame == "RTN" else "GSE", "V")
 
 def LoadTimeSeriesWIND(
     start_time,
