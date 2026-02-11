@@ -33,7 +33,8 @@ import ssqueezepy
 #from CWTPy import cwt_module
 
 # Local modules
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(1, str(REPO_ROOT / 'functions'))
 import TurbPy as turb
 import general_functions as func
 

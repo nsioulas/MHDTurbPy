@@ -26,7 +26,8 @@ import polars as pl
 
 
 # Import urbPy
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(1, str(REPO_ROOT / 'functions'))
 
 
 from plasma_params import*

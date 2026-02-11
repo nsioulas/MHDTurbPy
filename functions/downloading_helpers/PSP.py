@@ -30,7 +30,8 @@ from scipy import constants
 # ------------------------------------------------------------
 # Local SPEDAS
 # ------------------------------------------------------------
-sys.path.insert(0, os.path.join(os.getcwd(), "pyspedas"))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "pyspedas"))
 import pyspedas
 from pytplot import get_data
 from project_config import repo_data_file
@@ -38,11 +39,13 @@ from project_config import repo_data_file
 # ------------------------------------------------------------
 # Your repo utilities (must exist)
 # ------------------------------------------------------------
-sys.path.insert(1, os.path.join(os.getcwd(), "functions"))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(1, str(REPO_ROOT / "functions"))
 import general_functions as func
 import TurbPy as turb
 
-sys.path.insert(1, os.path.join(os.getcwd(), "functions/downloading_helpers"))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(1, str(REPO_ROOT / "functions" / "downloading_helpers"))
 # ------------------------------------------------------------
 # Shared utilities (lightweight, single authority)
 # ------------------------------------------------------------

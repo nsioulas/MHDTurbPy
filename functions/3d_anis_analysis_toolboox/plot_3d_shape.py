@@ -21,7 +21,8 @@ from scipy.optimize import fsolve
 
 
 # Make sure to use the local spedas
-sys.path.insert(0, os.path.join(os.getcwd(), 'pyspedas'))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / 'pyspedas'))
 import pyspedas
 from pyspedas.utilities import time_string
 from pytplot import get_data
@@ -29,13 +30,15 @@ from pytplot import get_data
 
 """ Import manual functions """
 
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(1, str(REPO_ROOT / 'functions'))
 import calc_diagnostics as calc
 import TurbPy as turb
 import general_functions as func
 import three_D_funcs as threeD
 
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions','3d_anis_analysis_toolboox'))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(1, str(REPO_ROOT / 'functions' / '3d_anis_analysis_toolboox'))
 import collect_wave_coeffs 
 
 
