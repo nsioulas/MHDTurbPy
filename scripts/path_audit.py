@@ -25,6 +25,8 @@ REPO_HINT_PREFIXES = ("functions/", "examples/", "pyspedas/", "assets/", "requir
 IGNORE_LITERALS = {
     "./solar_orbiter_data",
     "./psp_data",
+    "./data/solar_orbiter_data",
+    "./data/psp_data",
     "/Users/",          # literal prefixes used by regex docs/tooling
     "/Applications/",   # literal prefixes used by regex docs/tooling
     "/usr/local/",      # literal prefixes used by regex docs/tooling

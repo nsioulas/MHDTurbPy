@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Patch IPython profile config for safer Windows startup behavior.
+"""Patch IPython profile config and repo notebooks for safer Windows startup behavior.
 
 This script updates (or creates) ``~/.ipython/profile_default/ipython_config.py`` to:
 1) force UTF-8 mode (``PYTHONUTF8=1``),
 2) disable ``deduperreload`` auto-loading if present,
 3) ensure ``IPython.extensions.autoreload`` is present.
 
-It also patches startup files under ``.../profile_default/startup`` to replace
-``%load_ext autoreload`` with the fully-qualified extension name and to disable
-``deduperreload`` extension loads.
+It also patches startup files under ``.../profile_default/startup`` and (optionally)
+repo notebooks to replace short ``autoreload`` extension names with the fully-
+qualified module path and to disable ``deduperreload`` extension loads.
 
 The script is idempotent and can be run multiple times.
 """
@@ -17,6 +17,28 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+
+
+MAGIC_REPLACEMENTS = (
+    ("%load_ext autoreload", "%load_ext IPython.extensions.autoreload"),
+    ("%reload_ext autoreload", "%reload_ext IPython.extensions.autoreload"),
+    (
+        "%load_ext deduperreload",
+        "# disabled by MHDTurbPy fix: %load_ext deduperreload",
+    ),
+    (
+        "%reload_ext deduperreload",
+        "# disabled by MHDTurbPy fix: %reload_ext deduperreload",
+    ),
+    (
+        "%load_ext IPython.extensions.deduperreload",
+        "# disabled by MHDTurbPy fix: %load_ext IPython.extensions.deduperreload",
+    ),
+    (
+        "%reload_ext IPython.extensions.deduperreload",
+        "# disabled by MHDTurbPy fix: %reload_ext IPython.extensions.deduperreload",
+    ),
+)
 
 MARKER_START = "# >>> MHDTurbPy IPython Windows fix >>>"
 MARKER_END = "# <<< MHDTurbPy IPython Windows fix <<<"
@@ -65,18 +87,33 @@ def patch_startup_files(profile_dir: Path) -> int:
             continue
 
         text = p.read_text(encoding="utf-8", errors="ignore")
-        new = text
-        new = new.replace("%load_ext autoreload", "%load_ext IPython.extensions.autoreload")
-        new = new.replace("%load_ext deduperreload", "# disabled by MHDTurbPy fix: %load_ext deduperreload")
-        new = new.replace(
-            "%load_ext IPython.extensions.deduperreload",
-            "# disabled by MHDTurbPy fix: %load_ext IPython.extensions.deduperreload",
-        )
+        new = patch_magic_text(text)
 
         if new != text:
             p.write_text(new, encoding="utf-8")
             changed += 1
 
+    return changed
+
+
+def patch_magic_text(text: str) -> str:
+    updated = text
+    for before, after in MAGIC_REPLACEMENTS:
+        updated = updated.replace(before, after)
+    return updated
+
+
+def patch_repo_notebooks(repo_root: Path) -> int:
+    changed = 0
+    for ipynb_path in repo_root.rglob("*.ipynb"):
+        if ".git" in ipynb_path.parts:
+            continue
+
+        text = ipynb_path.read_text(encoding="utf-8", errors="ignore")
+        new = patch_magic_text(text)
+        if new != text:
+            ipynb_path.write_text(new, encoding="utf-8")
+            changed += 1
     return changed
 
 
@@ -88,13 +125,22 @@ def main() -> None:
         default=Path.home() / ".ipython" / "profile_default" / "ipython_config.py",
         help="Target ipython_config.py path (default: ~/.ipython/profile_default/ipython_config.py)",
     )
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=None,
+        help="If set, recursively patch .ipynb files under this repo root as well.",
+    )
     args = parser.parse_args()
 
     cfg_path = patch_config(args.config)
     startup_changes = patch_startup_files(cfg_path.parent)
+    notebook_changes = patch_repo_notebooks(args.repo_root) if args.repo_root else 0
 
     print(f"Patched config: {cfg_path}")
     print(f"Patched startup files: {startup_changes}")
+    if args.repo_root:
+        print(f"Patched notebooks: {notebook_changes} under {args.repo_root}")
     print("Next steps:")
     print("  1) Restart IPython/Jupyter kernels.")
     print("  2) In a fresh session, run: %load_ext IPython.extensions.autoreload")
