@@ -40,6 +40,20 @@ pip install -r requirements/requirements.txt
 
 > Note: The requirements file contains the core dependencies used across the download/clean/analyze pipeline, including Solar Orbiter retrieval support (`sunpy`, `sunpy-soar`) and the plotting colormap package (`colormaps`). Notebook/Jupyter tooling is intentionally left out so you can install it only when needed.
 
+
+## 3) Configure paths once (optional but recommended)
+Create a single `user_paths.json` file in the repository root (copy from `user_paths.example.json`) and set your machine-specific paths once:
+
+```json
+{
+  "Data_path": "/absolute/path/to/MHDTurbPy",
+  "save_destination": "/absolute/path/to/MHDTurbPy/examples",
+  "cdf_lib_path": "/absolute/path/to/cdf/lib"
+}
+```
+
+All updated Python modules and example notebooks now read from this shared config, so you do not need to edit paths in multiple places.
+
 # Usage
 
 Example notebooks that demonstrate how to download and visualize data are available in `Notebooks_Examples`.

@@ -1,0 +1,5 @@
+{
+  "Data_path": "/absolute/path/to/MHDTurbPy",
+  "save_destination": "/absolute/path/to/MHDTurbPy/examples",
+  "cdf_lib_path": "/absolute/path/to/cdf/lib"
+}

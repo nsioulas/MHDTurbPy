@@ -33,6 +33,7 @@ from scipy import constants
 sys.path.insert(0, os.path.join(os.getcwd(), "pyspedas"))
 import pyspedas
 from pytplot import get_data
+from project_config import repo_data_file
 
 # ------------------------------------------------------------
 # Your repo utilities (must exist)
@@ -807,15 +808,15 @@ def process_qtn_data(t0, t1, credentials, varnames_QTN, ind1, ind2, settings):
     # Hardcoded legacy fallback pickles (kept)
     if dfqtn is None:
         try:
-            dfqtn = pd.read_pickle("/Users/turbulator/work/MHDTurbPy/psp_data/PSP_QTN_Monc/E22.pkl")
+            dfqtn = pd.read_pickle(repo_data_file("psp_data", "PSP_QTN_Monc", "E22.pkl"))
             if "Te_qtn" in dfqtn.columns:
                 del dfqtn["Te_qtn"]
 
-            dfqtn2 = pd.read_pickle("/Users/turbulator/work/MHDTurbPy/psp_data/PSP_QTN_Monc/E23.pkl")
+            dfqtn2 = pd.read_pickle(repo_data_file("psp_data", "PSP_QTN_Monc", "E23.pkl"))
             if "Te_qtn" in dfqtn2.columns:
                 del dfqtn2["Te_qtn"]
 
-            dfqtn3 = pd.read_pickle("/Users/turbulator/work/MHDTurbPy/psp_data/PSP_QTN_Romeo/save_pickled_dfs/e24.pkl")
+            dfqtn3 = pd.read_pickle(repo_data_file("psp_data", "PSP_QTN_Romeo", "save_pickled_dfs", "e24.pkl"))
             if "ne_qtn" in dfqtn3.columns:
                 del dfqtn3["ne_qtn"]
 
@@ -1328,3 +1329,4 @@ def LoadTimeSeriesPSP(
     except Exception:
         logger.exception("LoadTimeSeriesPSP failed in final assembly.")
         return None, None, None, None, None, None, None, None, None, None, None
+
