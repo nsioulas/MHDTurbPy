@@ -5,6 +5,9 @@ Configure once by creating ``user_paths.json`` in the repository root (copy from
 - MHDTURBPY_DATA_PATH
 - MHDTURBPY_SAVE_DESTINATION
 - MHDTURBPY_CDF_LIB_PATH
+
+Any additional keys in ``user_paths.json`` are preserved (for notebook-specific
+optional paths such as ``analysis_data_path`` or ``solo_dist_path``).
 """
 
 from __future__ import annotations
@@ -37,9 +40,9 @@ def load_user_paths(config_path: Optional[str | os.PathLike[str]] = None) -> Dic
         with cfg_path.open("r", encoding="utf-8") as f:
             raw = json.load(f)
         if isinstance(raw, dict):
-            for k in ("Data_path", "save_destination", "cdf_lib_path", "repo_root"):
-                if raw.get(k) is not None:
-                    paths[k] = str(raw[k])
+            for key, value in raw.items():
+                if value is not None:
+                    paths[key] = str(value) if isinstance(value, (str, os.PathLike)) else value
 
     env_map = {
         "MHDTURBPY_DATA_PATH": "Data_path",

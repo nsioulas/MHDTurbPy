@@ -1,5 +1,7 @@
 {
-  "Data_path": "/absolute/path/to/MHDTurbPy",
+  "Data_path": "/absolute/path/to/data/root",
   "save_destination": "/absolute/path/to/MHDTurbPy/examples",
-  "cdf_lib_path": "/absolute/path/to/cdf/lib"
+  "cdf_lib_path": "/absolute/path/to/cdf/lib",
+  "analysis_data_path": "/absolute/path/to/custom/analysis/inputs",
+  "solo_dist_path": "/absolute/path/to/MHDTurbPy/examples/SOLO/solo_dist.pkl"
 }
