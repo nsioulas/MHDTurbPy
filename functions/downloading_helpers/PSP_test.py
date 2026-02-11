@@ -774,18 +774,29 @@ def process_qtn_data(
     except Exception:
         dfqtn = None
 
-    # 2) Hard-coded legacy fallback pickles (kept EXACT behavior)
+    # 2) Legacy fallback pickles (now resolved from one configured root path)
     if dfqtn is None:
         try:
-            dfqtn1 = pd.read_pickle("/Users/turbulator/work/MHDTurbPy/psp_data/PSP_QTN_Monc/E22.pkl")
+            qtn_root = Path(settings.get("Data_path", Path.cwd())) / "psp_data"
+            qtn_paths = settings.get(
+                "legacy_qtn_paths",
+                [
+                    qtn_root / "PSP_QTN_Monc" / "E22.pkl",
+                    qtn_root / "PSP_QTN_Monc" / "E23.pkl",
+                    qtn_root / "PSP_QTN_Romeo" / "save_pickled_dfs" / "e24.pkl",
+                ],
+            )
+            qtn_paths = [Path(p) for p in qtn_paths]
+
+            dfqtn1 = pd.read_pickle(qtn_paths[0])
             if "Te_qtn" in dfqtn1.columns:
                 del dfqtn1["Te_qtn"]
 
-            dfqtn2 = pd.read_pickle("/Users/turbulator/work/MHDTurbPy/psp_data/PSP_QTN_Monc/E23.pkl")
+            dfqtn2 = pd.read_pickle(qtn_paths[1])
             if "Te_qtn" in dfqtn2.columns:
                 del dfqtn2["Te_qtn"]
 
-            dfqtn3 = pd.read_pickle("/Users/turbulator/work/MHDTurbPy/psp_data/PSP_QTN_Romeo/save_pickled_dfs/e24.pkl")
+            dfqtn3 = pd.read_pickle(qtn_paths[2])
             if "ne_qtn" in dfqtn3.columns:
                 del dfqtn3["ne_qtn"]
 

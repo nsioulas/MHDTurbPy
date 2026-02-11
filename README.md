@@ -46,13 +46,15 @@ Create a single `user_paths.json` file in the repository root (copy from `user_p
 
 ```json
 {
-  "Data_path": "/absolute/path/to/MHDTurbPy",
+  "Data_path": "/absolute/path/to/data/root",
   "save_destination": "/absolute/path/to/MHDTurbPy/examples",
-  "cdf_lib_path": "/absolute/path/to/cdf/lib"
+  "cdf_lib_path": "/absolute/path/to/cdf/lib",
+  "analysis_data_path": "/optional/path/for-custom-analysis-inputs",
+  "solo_dist_path": "/optional/path/to/MHDTurbPy/examples/SOLO/solo_dist.pkl"
 }
 ```
 
-All updated Python modules and example notebooks now read from this shared config, so you do not need to edit paths in multiple places.
+All updated Python modules and example notebooks now read from this shared config, so you do not need to edit paths in multiple places. Optional keys (for notebook-specific datasets) can also be kept here to avoid ad-hoc edits.
 
 # Usage
 

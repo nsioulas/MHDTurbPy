@@ -75,6 +75,7 @@ from psd_estimators import (
     SSqueezepyWaveletPSD,
     get_psd_estimator,
 )
+from project_config import load_user_paths
 
 
 
@@ -5790,8 +5791,9 @@ def calculate_angle(which_perihelion,
     import   PSP #$import  LoadTimeSeriesPSP
     au_to_km       = 1.496e8  # Conversion factor
     
-    #Important!! Make sure your current directory is the MHDTurbPy folder!
-    os.chdir("/Users/nokni/work/MHDTurbPy/")
+    # Keep notebook/script execution robust across machines using shared config.
+    user_paths = load_user_paths()
+    os.chdir(user_paths["repo_root"])
 
 
     # Make sure to use the local spedas
