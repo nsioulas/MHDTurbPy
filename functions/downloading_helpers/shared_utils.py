@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 
 try:
-    from project_config import merge_user_paths_into_settings
+    from functions.project_config import merge_user_paths_into_settings
 except Exception:  # optional when used outside repo layout
     def merge_user_paths_into_settings(settings):
         return dict(settings or {})
