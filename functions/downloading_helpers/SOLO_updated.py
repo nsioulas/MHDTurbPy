@@ -27,6 +27,7 @@ sys.path.insert(0, str(REPO_ROOT / "pyspedas"))
 import pyspedas
 from pyspedas.utilities import time_string
 from pytplot import get_data
+from functions.project_config import merge_user_paths_into_settings
 
 # ============================================================
 # Your helper functions
@@ -503,10 +504,11 @@ def LoadTimeSeriesSOLO(
     from pathlib import Path
     import numpy as np
 
-    os.chdir(settings["Data_path"])
-
-    if not os.path.exists("./solar_orbiter_data"):
-        os.makedirs(str(Path(os.getcwd()).joinpath("solar_orbiter_data")), exist_ok=True)
+    settings = merge_user_paths_into_settings(settings)
+    data_root = Path(settings["Data_path"]).expanduser().resolve()
+    data_root.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("SPEDAS_DATA_DIR", str(data_root))
+    (data_root / "solar_orbiter_data").mkdir(parents=True, exist_ok=True)
 
     default_settings = {
         "use_hampel": False,

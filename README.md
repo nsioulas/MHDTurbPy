@@ -56,6 +56,8 @@ Create a single `user_paths.json` file in the repository root (copy from `user_p
 
 All updated Python modules and example notebooks now read from this shared config, so you do not need to edit paths in multiple places. Optional keys (for notebook-specific datasets) can also be kept here to avoid ad-hoc edits.
 
+If `Data_path` is not set, MHDTurbPy defaults to `<repo>/data`.
+
 ### Where to input base paths (important)
 Use **exactly one** of the following methods:
 
@@ -70,6 +72,7 @@ Use **exactly one** of the following methods:
 - `save_destination`: base directory for processed interval outputs (`final.pkl`, `general.pkl`, etc.).
 - `cdf_lib_path`: local CDF library location (optional unless CDF-dependent loaders are used).
 - `analysis_data_path` (optional): override input location used by analysis notebooks.
+
 
 To validate path references after setup, run:
 
@@ -122,6 +125,8 @@ set PYTHONUTF8=1
 
 ```bash
 python scripts/fix_ipython_windows.py
+# optional: patch all repo notebooks in the same run
+# python scripts/fix_ipython_windows.py --repo-root .
 # optional: custom target config path
 # python scripts/fix_ipython_windows.py --config C:\Users\<you>\.ipython\profile_default\ipython_config.py
 ```
@@ -130,7 +135,8 @@ This writes/updates `~/.ipython/profile_default/ipython_config.py` to:
 - remove `deduperreload` from auto-loaded extensions,
 - add `IPython.extensions.autoreload`,
 - set `PYTHONUTF8=1` for session startup,
-- patch startup files under `~/.ipython/profile_default/startup` to disable `deduperreload` loads and normalize `%load_ext autoreload` to `%load_ext IPython.extensions.autoreload`.
+- patch startup files under `~/.ipython/profile_default/startup` to disable `deduperreload` loads and normalize both `%load_ext autoreload` and `%reload_ext autoreload` to `IPython.extensions.autoreload` forms.
+- optionally patch all `.ipynb` files under a repo root (`--repo-root`) with the same extension normalization rules.
 
 If your tracebacks mention stdlib files like `functools.py`, `urllib/parse.py`, `shlex.py`, `re/_casefix.py`, or `pydoc_data/topics.py`, that confirms the decode failure is happening inside extension scanning of the Python installation, not inside MHDTurbPy project files.
 

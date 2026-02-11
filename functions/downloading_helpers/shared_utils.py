@@ -371,3 +371,4 @@ def normalize_settings(settings: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             out["Mag_SCM"] = ms
 
     return out
+

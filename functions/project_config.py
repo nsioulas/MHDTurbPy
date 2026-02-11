@@ -26,7 +26,7 @@ def _default_paths() -> Dict[str, Any]:
     root = repo_root()
     return {
         "repo_root": str(root),
-        "Data_path": str(root),
+        "Data_path": str(root / "data"),
         "save_destination": str(root / "examples"),
         "cdf_lib_path": None,
     }
@@ -64,6 +64,12 @@ def merge_user_paths_into_settings(settings: Optional[Dict[str, Any]]) -> Dict[s
     for key in ("Data_path", "save_destination", "cdf_lib_path"):
         if out.get(key) is None:
             out[key] = user_paths.get(key)
+
+    if out.get("Data_path"):
+        data_path = Path(out["Data_path"]).expanduser().resolve()
+        data_path.mkdir(parents=True, exist_ok=True)
+        out["Data_path"] = str(data_path)
+        os.environ["SPEDAS_DATA_DIR"] = str(data_path)
 
     return out
 

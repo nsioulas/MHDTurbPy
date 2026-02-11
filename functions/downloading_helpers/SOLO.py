@@ -706,8 +706,7 @@ def LoadTimeSeriesSOLO(
     try:
         settings = init_solo_settings(settings)
 
-        os.chdir(settings["Data_path"])
-        solo_dir = Path(os.getcwd()) / "solar_orbiter_data"
+        solo_dir = Path(settings["Data_path"]) / "solar_orbiter_data"
         solo_dir.mkdir(parents=True, exist_ok=True)
 
         try:
