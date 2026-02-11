@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Audit repo path references used in Python and notebook code."""
+"""Audit repo path references used in Python and notebook code.
+
+Default mode checks project source/notebook *code cells* for unresolved paths while
+skipping vendored trees (e.g., ``pyspedas``), tests, and scripts.
+
+Use flags to widen the scan surface (scripts, tests, notebook outputs, pyspedas).
+"""
 
 from __future__ import annotations
 
@@ -8,6 +14,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
 REPO_PATH_RE = re.compile(
     r"REPO_ROOT\s*/\s*['\"]([^'\"]+)['\"](?:\s*/\s*['\"]([^'\"]+)['\"])?(?:\s*/\s*['\"]([^'\"]+)['\"])?"
@@ -15,7 +22,13 @@ REPO_PATH_RE = re.compile(
 QUOTED_RE = re.compile(r"(?P<q>['\"])(?P<val>[^'\"\n]{2,220})(?P=q)")
 
 REPO_HINT_PREFIXES = ("functions/", "examples/", "pyspedas/", "assets/", "requirements/")
-IGNORE_LITERALS = {"./solar_orbiter_data", "./psp_data"}
+IGNORE_LITERALS = {
+    "./solar_orbiter_data",
+    "./psp_data",
+    "/Users/",          # literal prefixes used by regex docs/tooling
+    "/Applications/",   # literal prefixes used by regex docs/tooling
+    "/usr/local/",      # literal prefixes used by regex docs/tooling
+}
 
 
 @dataclass
@@ -26,20 +39,37 @@ class Finding:
     reason: str
 
 
-def _code_text(path: Path) -> str:
-    if path.suffix == ".py":
-        return path.read_text(encoding="utf-8", errors="ignore")
-
-    obj = json.loads(path.read_text(encoding="utf-8"))
-    parts: list[str] = []
+def _iter_notebook_code_lines(obj: dict) -> Iterable[str]:
     for cell in obj.get("cells", []):
         if cell.get("cell_type") != "code":
             continue
         for ln in cell.get("source", []):
             if ln.lstrip().startswith(("%", "!")):
                 continue
-            parts.append(ln)
-        parts.append("\n")
+            yield ln
+        yield "\n"
+
+
+def _iter_notebook_output_lines(obj: dict) -> Iterable[str]:
+    for cell in obj.get("cells", []):
+        for out in cell.get("outputs", []):
+            text = out.get("text")
+            if isinstance(text, list):
+                for ln in text:
+                    yield ln
+            elif isinstance(text, str):
+                yield text
+
+
+def _code_text(path: Path, include_notebook_outputs: bool = False) -> str:
+    if path.suffix == ".py":
+        return path.read_text(encoding="utf-8", errors="ignore")
+
+    obj = json.loads(path.read_text(encoding="utf-8"))
+    parts = list(_iter_notebook_code_lines(obj))
+    if include_notebook_outputs:
+        parts.append("\n# --- notebook outputs ---\n")
+        parts.extend(_iter_notebook_output_lines(obj))
     return "".join(parts)
 
 
@@ -60,19 +90,34 @@ def _candidate_literals(text: str) -> list[tuple[int, str]]:
     return out
 
 
-def audit(root: Path) -> list[Finding]:
+def _should_skip(path: Path, *, include_scripts: bool, include_pyspedas: bool, include_tests: bool) -> bool:
+    if any(p in {".git", ".ipynb_checkpoints", "__pycache__"} for p in path.parts):
+        return True
+    if not include_pyspedas and "pyspedas" in path.parts:
+        return True
+    if not include_scripts and "scripts" in path.parts:
+        return True
+    if not include_tests and (path.name.endswith("_test.py") or "tests" in path.parts):
+        return True
+    return False
+
+
+def audit(
+    root: Path,
+    *,
+    include_scripts: bool = False,
+    include_pyspedas: bool = False,
+    include_tests: bool = False,
+    include_notebook_outputs: bool = False,
+) -> list[Finding]:
     findings: list[Finding] = []
     for path in root.rglob("*"):
         if path.suffix not in {".py", ".ipynb"}:
             continue
-        if any(p in {".git", ".ipynb_checkpoints", "__pycache__"} for p in path.parts):
-            continue
-        if "pyspedas" in path.parts or "scripts" in path.parts:
-            continue
-        if path.name.endswith("_test.py"):
+        if _should_skip(path, include_scripts=include_scripts, include_pyspedas=include_pyspedas, include_tests=include_tests):
             continue
 
-        text = _code_text(path)
+        text = _code_text(path, include_notebook_outputs=include_notebook_outputs)
 
         for m in REPO_PATH_RE.finditer(text):
             rel = "/".join(g for g in m.groups() if g)
@@ -81,7 +126,6 @@ def audit(root: Path) -> list[Finding]:
 
         for off, value in _candidate_literals(text):
             resolved = Path(value).expanduser()
-            ok = False
             if resolved.is_absolute():
                 ok = resolved.exists()
             else:
@@ -89,7 +133,6 @@ def audit(root: Path) -> list[Finding]:
             if not ok:
                 findings.append(Finding(str(path.relative_to(root)), _line(text, off), value, "literal path does not exist"))
 
-    # deduplicate
     uniq = {(f.file, f.line, f.value, f.reason): f for f in findings}
     return sorted(uniq.values(), key=lambda f: (f.file, f.line, f.value))
 
@@ -97,18 +140,32 @@ def audit(root: Path) -> list[Finding]:
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--root", default=".")
+    p.add_argument("--include-scripts", action="store_true", help="Scan files under scripts/")
+    p.add_argument("--include-pyspedas", action="store_true", help="Scan vendored pyspedas tree")
+    p.add_argument("--include-tests", action="store_true", help="Scan *_test.py and tests/ paths")
+    p.add_argument("--include-notebook-outputs", action="store_true", help="Also scan notebook outputs (stderr/stdout text)")
+    p.add_argument("--json", action="store_true", help="Emit findings as JSON")
     args = p.parse_args()
 
     root = Path(args.root).resolve()
-    findings = audit(root)
-    if findings:
+    findings = audit(
+        root,
+        include_scripts=args.include_scripts,
+        include_pyspedas=args.include_pyspedas,
+        include_tests=args.include_tests,
+        include_notebook_outputs=args.include_notebook_outputs,
+    )
+
+    if args.json:
+        print(json.dumps([f.__dict__ for f in findings], indent=2))
+    elif findings:
         print(f"Found {len(findings)} unresolved path references:")
         for f in findings:
             print(f"- {f.file}:{f.line}: {f.value} ({f.reason})")
-        return 1
+    else:
+        print("No unresolved path references found.")
 
-    print("No unresolved path references found.")
-    return 0
+    return 1 if findings else 0
 
 
 if __name__ == "__main__":

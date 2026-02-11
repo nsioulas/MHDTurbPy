@@ -279,19 +279,19 @@ def estimate_Ez(B_df, E_df, min_bz=1, window_size=51, n=2, apply_hampel=True):
 # """e_field_calibration.py
 # ========================
 # Module providing a modern, vectorised pipeline to project probe voltages into spacecraft
-# coordinates, fit a four‑parameter electric‑field calibration model on overlapping time
-# windows, and return smoothly calibrated Ex/Ey time series together with window‑level
+# coordinates, fit a four-parameter electric-field calibration model on overlapping time
+# windows, and return smoothly calibrated Ex/Ey time series together with window-level
 # fit diagnostics.
 
 # Main entry point
 # ----------------
-# calibrate_electric_field(...) – blends Hann‑tapered, quality‑weighted window fits in
-# parallel, optional low‑pass pre‑filtering, and percentile‑based outlier rejection.
+# calibrate_electric_field(...) – blends Hann-tapered, quality-weighted window fits in
+# parallel, optional low-pass pre-filtering, and percentile-based outlier rejection.
 
 # Utility helpers
 # ---------------
-# * project_dV               – rotate probe‐pair voltages into S/C coordinates.
-# * apply_lowpass_filter     – zero‑phase Butterworth low‑pass.
+# * project_dV               – rotate probe-pair voltages into S/C coordinates.
+# * apply_lowpass_filter     – zero-phase Butterworth low-pass.
 # * percentile_filter_interpolate_ts – robust percentile clipping + gap interpolation.
 # * find_longest_intervals   – pick the M longest |Bz|>threshold intervals.
 # * estimate_Ez              – reconstruct Ez from E·B=0 plus optional Hampel filter.
@@ -300,7 +300,7 @@ def estimate_Ez(B_df, E_df, min_bz=1, window_size=51, n=2, apply_hampel=True):
 # -----
 # * Synchronisation of data frames relies on ``general_functions.synchronize_dfs``
 #   (imported as ``func``).  Replace with your own routine if needed.
-# * All physical unit conversions are explicit and NumPy‑vectorised.
+# * All physical unit conversions are explicit and NumPy-vectorised.
 # * No external state is stored; everything is functional and testable.
 # """
 
@@ -916,7 +916,7 @@ sys.path.insert(1, str(REPO_ROOT / 'functions'))
 
 # # def apply_lowpass_filter(arr: np.ndarray, cutoff: float, fs: float,
 # #                           order: int = 5) -> np.ndarray:
-# #     """Zero‑phase Butterworth low‑pass using *filtfilt*."""
+# #     """Zero-phase Butterworth low-pass using *filtfilt*."""
 # #     b, a = _butter_lowpass(cutoff, fs, order)
 # #     return filtfilt(b, a, arr)
 
@@ -927,7 +927,7 @@ sys.path.insert(1, str(REPO_ROOT / 'functions'))
 # # def percentile_filter_interpolate_ts(df: pd.DataFrame | pd.Series,
 # #                                      low_pct: float = 0,
 # #                                      hi_pct: float = 99.9) -> pd.DataFrame:
-# #     """Column‑wise percentile clipping followed by linear interpolation.
+# #     """Column-wise percentile clipping followed by linear interpolation.
 
 # #     Any value outside the [`low_pct`, `hi_pct`] range is set to *NaN* then filled.
 # #     """
@@ -945,7 +945,7 @@ sys.path.insert(1, str(REPO_ROOT / 'functions'))
 # #     return out if isinstance(df, pd.DataFrame) else out.iloc[:, 0]
 
 # # # -----------------------------------------------------------------------------
-# # # Window‑level fit (private)
+# # # Window-level fit (private)
 # # # -----------------------------------------------------------------------------
 
 # # def _fit_window(start_ns: int, end_ns: int,
@@ -953,7 +953,7 @@ sys.path.insert(1, str(REPO_ROOT / 'functions'))
 # #                 VxB_x: np.ndarray, VxB_y: np.ndarray,
 # #                 dVx: np.ndarray, dVy: np.ndarray,
 # #                 robust: bool = True):
-# #     """Internal routine: least‑squares fit of the 4‑parameter model on one window."""
+# #     """Internal routine: least-squares fit of the 4-parameter model on one window."""
 # #     mask = (t >= start_ns) & (t <= end_ns)
 # #     if mask.sum() < 10:
 # #         return None  # not enough points
@@ -995,12 +995,12 @@ sys.path.insert(1, str(REPO_ROOT / 'functions'))
 # #                              robust_ls: bool               = True,
 # #                              n_jobs: int                   = -1,
 # #                              func_module                   = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
-# #     """Calibrate *dvx,dvy* to *Ex,Ey* using overlapping Hann‑weighted windows.
+# #     """Calibrate *dvx,dvy* to *Ex,Ey* using overlapping Hann-weighted windows.
 
 # #     Parameters
 # #     ----------
 # #     edf : DataFrame
-# #         High‑rate differential voltages with columns ``dvx`` and ``dvy`` (V).
+# #         High-rate differential voltages with columns ``dvx`` and ``dvy`` (V).
 # #     vdf : DataFrame
 # #         Spacecraft velocity ``Vx,Vy,Vz`` (km/s).
 # #     bdf : DataFrame
@@ -1008,17 +1008,17 @@ sys.path.insert(1, str(REPO_ROOT / 'functions'))
 # #     window : str, default "30s"
 # #         Window length – any pandas offset alias.
 # #     overlap : float, default 0.9
-# #         Fractional overlap between successive windows (0 ≤ overlap < 1).
+# #         Fractional overlap between successive windows (0 <= overlap < 1).
 # #     lowpass_hz : float or None
-# #         Apply zero‑phase Butterworth low‑pass to both *V* and *B* before the fit.
+# #         Apply zero-phase Butterworth low-pass to both *V* and *B* before the fit.
 # #     lowpass_order : int, default 5
 # #         Filter order for ``lowpass_hz``.
 # #     pct_clip : (low, high)
 # #         Percentile bounds for final Ex/Ey clipping.
 # #     robust_ls : bool, default True
 # #         Use Huber loss in ``scipy.optimize.least_squares``.
-# #     n_jobs : int, default ‑1
-# #         Parallel workers (joblib).  *‑1* → all cores.
+# #     n_jobs : int, default -1
+# #         Parallel workers (joblib).  *-1* -> all cores.
 # #     func_module : module or None
 # #         Module providing ``synchronize_dfs``.  If ``None`` we try to import
 # #         ``general_functions as func``.
@@ -1028,7 +1028,7 @@ sys.path.insert(1, str(REPO_ROOT / 'functions'))
 # #     E_cal : DataFrame
 # #         Calibrated ``Ex,Ey`` (mV/m) on the edf index.
 # #     coeffs : DataFrame
-# #         Window‑level coefficients ``a,b,c,d`` plus quality weights.
+# #         Window-level coefficients ``a,b,c,d`` plus quality weights.
 # #     """
 
 # #     try:
@@ -1045,7 +1045,7 @@ sys.path.insert(1, str(REPO_ROOT / 'functions'))
 # #         df[["Bx", "By", "Bz"]] = bdf
 # #         df = df.dropna()
     
-# #         # --- 1. optional low‑pass -------------------------------------------------
+# #         # --- 1. optional low-pass -------------------------------------------------
 # #         if lowpass_hz is not None:
 # #             dt = np.median(np.diff(df.index.view("int64"))) * 1e-9  # seconds
 # #             fs = 1.0 / dt
@@ -1053,9 +1053,9 @@ sys.path.insert(1, str(REPO_ROOT / 'functions'))
 # #                 df[col] = apply_lowpass_filter(df[col].values, lowpass_hz, fs,
 # #                                                order=lowpass_order)
     
-# #         # --- 2. pre‑compute arrays ----------------------------------------------
-# #         V = df[["Vx", "Vy", "Vz"]].values * 1e3  # km/s → m/s
-# #         B = df[["Bx", "By", "Bz"]].values * 1e-9  # nT  → T
+# #         # --- 2. pre-compute arrays ----------------------------------------------
+# #         V = df[["Vx", "Vy", "Vz"]].values * 1e3  # km/s -> m/s
+# #         B = df[["Bx", "By", "Bz"]].values * 1e-9  # nT  -> T
 # #         VxB = -np.cross(V, B)
 # #         VxB_x, VxB_y = VxB[:, 0], VxB[:, 1]
 # #         dVx = df["dvx"].values
@@ -1079,7 +1079,7 @@ sys.path.insert(1, str(REPO_ROOT / 'functions'))
 # #         if coeffs.empty:
 # #             raise RuntimeError("No successful window fits – check input data.")
     
-# #         # --- 5. overlap‑add synthesis -------------------------------------------
+# #         # --- 5. overlap-add synthesis -------------------------------------------
 # #         n_pts = len(df)
 # #         Ex_sum = np.zeros(n_pts)
 # #         Ey_sum = np.zeros(n_pts)

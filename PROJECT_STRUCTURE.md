@@ -16,7 +16,7 @@ This repository now follows a more user-friendly top-level layout:
 - `environment.yml`
   - Conda environment definition.
 - `user_paths.example.json`
-- `scripts/path_audit.py` (checks `.py`/`.ipynb` path references after repo reorganizations)
+- `scripts/path_audit.py` (checks `.py`/`.ipynb` path references after repo reorganizations; optional strict flags for scripts/tests/notebook outputs)
   - Template for local machine-specific path settings.
 - `pyspedas/`
   - Bundled dependency source tree.
