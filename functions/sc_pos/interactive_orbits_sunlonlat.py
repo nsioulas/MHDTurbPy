@@ -7,7 +7,10 @@ from typing import List, Optional
 import pandas as pd
 import plotly.graph_objects as go
 
-from horizons_sun_lonlat import get_lonlat_xyz_timeseries
+try:
+    from .horizons_sun_lonlat import get_lonlat_xyz_timeseries
+except Exception:
+    from horizons_sun_lonlat import get_lonlat_xyz_timeseries
 
 
 def build_figure(dfs: List[pd.DataFrame], names: List[str]) -> go.Figure:

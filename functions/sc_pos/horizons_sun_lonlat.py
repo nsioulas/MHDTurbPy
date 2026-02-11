@@ -199,7 +199,10 @@ def get_repo_style_orbit_df(
     from sunpy.coordinates import get_horizons_coord, get_body_heliographic_stonyhurst
     from sunpy.coordinates.frames import HeliographicStonyhurst, HeliographicCarrington
 
-    import helpers as helpers_mod
+    try:
+        from . import helpers as helpers_mod
+    except Exception:
+        import helpers as helpers_mod
 
     spkid = resolve_spacecraft_spkid(target)
 

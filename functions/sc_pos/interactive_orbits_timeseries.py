@@ -6,8 +6,14 @@ from pathlib import Path
 import plotly.express as px
 from plotly.subplots import make_subplots
 
-import helpers
-from horizons_sun_lonlat import get_repo_style_orbit_df
+try:
+    from . import helpers
+except Exception:
+    import helpers
+try:
+    from .horizons_sun_lonlat import get_repo_style_orbit_df
+except Exception:
+    from horizons_sun_lonlat import get_repo_style_orbit_df
 
 
 def main():

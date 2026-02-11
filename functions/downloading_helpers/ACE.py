@@ -19,7 +19,8 @@ _VTH_COEFF = 13.84112218           # km/s * sqrt(eV) = sqrt(2 e / m_p)/1000
 # ------------------------------------------------------------
 # Local SPEDAS import (repo-local pattern)
 # ------------------------------------------------------------
-sys.path.insert(0, os.path.join(os.getcwd(), "pyspedas"))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "pyspedas"))
 import pyspedas  # type: ignore
 from pytplot import get_data  # type: ignore
 
