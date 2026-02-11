@@ -13,7 +13,8 @@ from scipy.optimize import least_squares
 from joblib import Parallel, delayed
 
 # Import signal_processing or general_functions
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(1, str(REPO_ROOT / 'functions'))
 try:
     import general_functions as func
 except ImportError:
@@ -358,7 +359,8 @@ def estimate_Ez(B_df, E_df, min_bz=1, window_size=51, n=2, apply_hampel=True):
 # from scipy.odr import ODR, Model, Data
 # from astropy import units as u
 
-# sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+# REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(1, str(REPO_ROOT / 'functions'))
 # import calc_diagnostics as calc
 # import TurbPy as turb
 # import general_functions as func

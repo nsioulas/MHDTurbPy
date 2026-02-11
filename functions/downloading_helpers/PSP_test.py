@@ -19,14 +19,16 @@ from scipy import constants
 # -----------------------------------------------------------------------------
 # Local SPEDAS (keep repo layout compatibility)
 # -----------------------------------------------------------------------------
-sys.path.insert(0, os.path.join(os.getcwd(), "pyspedas"))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "pyspedas"))
 import pyspedas  # noqa: E402
 from pytplot import get_data  # noqa: E402
 
 # -----------------------------------------------------------------------------
 # Your helper functions (repo-local)
 # -----------------------------------------------------------------------------
-sys.path.insert(1, os.path.join(os.getcwd(), "functions"))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(1, str(REPO_ROOT / "functions"))
 import general_functions as func  # noqa: E402
 import TurbPy as turb  # noqa: E402
 
@@ -1690,7 +1692,8 @@ def LoadTimeSeriesPSP(
 # # ============================================================
 # # Your manual functions (must exist)
 # # ============================================================
-# sys.path.insert(1, os.path.join(os.getcwd(), "functions"))
+# REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(1, str(REPO_ROOT / "functions"))
 # import general_functions as func
 # import TurbPy as turb
 

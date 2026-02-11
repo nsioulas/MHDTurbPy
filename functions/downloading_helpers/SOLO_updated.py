@@ -22,7 +22,8 @@ logging.basicConfig(
 # ============================================================
 # Local SPEDAS
 # ============================================================
-sys.path.insert(0, os.path.join(os.getcwd(), "pyspedas"))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "pyspedas"))
 import pyspedas
 from pyspedas.utilities import time_string
 from pytplot import get_data
@@ -30,7 +31,8 @@ from pytplot import get_data
 # ============================================================
 # Your helper functions
 # ============================================================
-sys.path.insert(1, os.path.join(os.getcwd(), "functions"))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(1, str(REPO_ROOT / "functions"))
 import general_functions as func
 
 # ============================================================
@@ -766,14 +768,16 @@ def LoadTimeSeriesSOLO(
 
 
 # # Make sure to use the local spedas
-# sys.path.insert(0, os.path.join(os.getcwd(), 'pyspedas'))
+# REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / 'pyspedas'))
 # import pyspedas
 # from pyspedas.utilities import time_string
 # from pytplot import get_data
 
 
 # """ Import manual functions """
-# sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+# REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(1, str(REPO_ROOT / 'functions'))
 # import general_functions as func
 
 
