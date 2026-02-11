@@ -76,6 +76,23 @@ def _clean_fill_values(df: pd.DataFrame, cols: Tuple[str, ...], threshold: float
     return out
 
 
+
+
+def _pick_first_key(data: Any, *candidates: str):
+    """Return the first present key from a CDAWeb/SpaceData payload."""
+    for key in candidates:
+        try:
+            if key in data:
+                return data[key]
+        except Exception:
+            pass
+    for key in candidates:
+        try:
+            return data[key]
+        except Exception:
+            continue
+    raise KeyError(f"None of the candidate keys were found: {candidates}")
+
 def describe_wind_source_selection(settings: Dict[str, Any]) -> Dict[str, str]:
     """Return dataset names selected by current WIND cadence settings."""
     mag_res = float(settings["MAG_resol"])
@@ -147,14 +164,18 @@ def LoadTimeSeriesWind_particles(start_time, end_time, settings):
         if not status:
             raise RuntimeError("Failed to download WI_PLSP_3DP particle data.")
 
+        vel = _pick_first_key(data, "MOM$P$VELOCITY", "MOM.P.VELOCITY")
+        dens = _pick_first_key(data, "MOM$P$DENSITY", "MOM.P.DENSITY")
+        vth = _pick_first_key(data, "MOM$P$VTHERMAL", "MOM.P.VTHERMAL")
+
         dfpar = pd.DataFrame(
             index=pd.to_datetime(data["Epoch"]),
             data={
-                "Vr": data["MOM$P$VELOCITY"].T[0],
-                "Vt": data["MOM$P$VELOCITY"].T[1],
-                "Vn": data["MOM$P$VELOCITY"].T[2],
-                "np": data["MOM$P$DENSITY"],
-                "Vth": data["MOM$P$VTHERMAL"],
+                "Vr": vel.T[0],
+                "Vt": vel.T[1],
+                "Vn": vel.T[2],
+                "np": dens,
+                "Vth": vth,
             },
         )
 
@@ -208,12 +229,14 @@ def LoadHighResMagWind(start_time, end_time, settings, verbose=True):
         if not status:
             raise RuntimeError("Failed to download WI_PLSP_3DP magnetic fallback data.")
 
+        magf = _pick_first_key(data, "MOM$P$MAGF", "MOM.P.MAGF")
+
         dfmag = pd.DataFrame(
             index=pd.to_datetime(data["Epoch"]),
             data={
-                "Br": data["MOM$P$MAGF"].T[0],
-                "Bt": data["MOM$P$MAGF"].T[1],
-                "Bn": data["MOM$P$MAGF"].T[2],
+                "Br": magf.T[0],
+                "Bt": magf.T[1],
+                "Bn": magf.T[2],
             },
         ).interpolate()
         dfmag["Btot"] = np.sqrt(dfmag["Br"] ** 2 + dfmag["Bt"] ** 2 + dfmag["Bn"] ** 2)
