@@ -78,6 +78,76 @@ def _clean_fill_values(df: pd.DataFrame, cols: Tuple[str, ...], threshold: float
 
 
 
+
+def _pick_first_key(data: Any, *candidates: str):
+    """Return the first present key from a CDAWeb/SpaceData payload."""
+    for key in candidates:
+        try:
+            if key in data:
+                return data[key]
+        except Exception:
+            pass
+    for key in candidates:
+        try:
+            return data[key]
+        except Exception:
+            continue
+    raise KeyError(f"None of the candidate keys were found: {candidates}")
+
+def describe_wind_source_selection(settings: Dict[str, Any]) -> Dict[str, str]:
+    """Return dataset names selected by current WIND cadence settings."""
+    mag_res = float(settings["MAG_resol"])
+    part_res = float(settings["part_resol"])
+
+    if mag_res < 3:
+        mag_source = "WI_H2_MFI"
+    elif mag_res == 3:
+        mag_source = "WI_H0_MFI"
+    else:
+        mag_source = "WI_PLSP_3DP"
+
+def _approx_gse_to_l1_rtn(vec_gse: np.ndarray) -> np.ndarray:
+    """Approximate GSE -> RTN transform for near-Earth/L1 spacecraft.
+
+    Convention used across this repository (same as ACE helper):
+    R ~ -X_GSE, T ~ Y_GSE, N ~ Z_GSE.
+    """
+    x = vec_gse[:, 0]
+    y = vec_gse[:, 1]
+    z = vec_gse[:, 2]
+    return np.column_stack([-x, y, z])
+
+
+
+
+def _ensure_nx3(vec: Any, n_expected: int | None = None) -> np.ndarray:
+    """Ensure vector-like input is shaped (N, 3)."""
+    arr = np.asarray(vec, dtype=float)
+    if arr.ndim != 2:
+        raise ValueError(f"Expected 2D vec3 array, got shape {arr.shape}")
+    if arr.shape[1] == 3:
+        out = arr
+    elif arr.shape[0] == 3:
+        out = arr.T
+    else:
+        raise ValueError(f"Could not interpret vec3 array shape {arr.shape}")
+
+    if n_expected is not None and out.shape[0] != int(n_expected):
+        raise ValueError(f"Vec3 length mismatch: expected {n_expected}, got {out.shape[0]}")
+    return out
+
+
+def _rename_vec_by_frame(df: pd.DataFrame, frame: str, prefix: str) -> pd.DataFrame:
+    """Rename vector columns to either RTN (r,t,n) or XYZ (x,y,z)."""
+    out = df.copy()
+    frame = str(frame).upper()
+    if prefix == "B":
+        out = out.rename(columns={"c1": "Br", "c2": "Bt", "c3": "Bn"} if frame == "RTN" else {"c1": "Bx", "c2": "By", "c3": "Bz"})
+    elif prefix == "V":
+        out = out.rename(columns={"c1": "Vr", "c2": "Vt", "c3": "Vn"} if frame == "RTN" else {"c1": "Vx", "c2": "Vy", "c3": "Vz"})
+    return out
+
+
 def _pick_first_key(data: Any, *candidates: str):
     """Return the first present key from a CDAWeb/SpaceData payload."""
     for key in candidates:
@@ -108,7 +178,7 @@ def describe_wind_source_selection(settings: Dict[str, Any]) -> Dict[str, str]:
     part_source = "WI_PM_3DP" if part_res <= 3 else "WI_PLSP_3DP"
     elec_source = "WI_H5_SWE" if settings.get("Down_electrons", False) else "disabled"
 
-    return {"mag": mag_source, "par": part_source, "elec": elec_source}
+    return {"mag": mag_source, "par": part_source, "elec": elec_source, "coord_out": "RTN(L1-approx)" if bool(settings.get("in_rtn", True)) else "GSE"}
 
 
 def LoadTimeSeriesWind_electrons(start_time, end_time, settings):
@@ -141,16 +211,24 @@ def LoadTimeSeriesWind_particles(start_time, end_time, settings):
         if not status:
             raise RuntimeError("Failed to download WI_PM_3DP particle data.")
 
+        vec = _ensure_nx3(data["P_VELS"], n_expected=len(data["Epoch"]))
+        if bool(settings.get("in_rtn", True)):
+            vec = _approx_gse_to_l1_rtn(vec)
+            frame = "RTN"
+        else:
+            frame = "GSE"
+
         dfpar = pd.DataFrame(
             index=pd.to_datetime(data["Epoch"]),
             data={
-                "Vr": data["P_VELS"][:, 0],
-                "Vt": data["P_VELS"][:, 1],
-                "Vn": data["P_VELS"][:, 2],
+                "c1": vec[:, 0],
+                "c2": vec[:, 1],
+                "c3": vec[:, 2],
                 "np": data["P_DENS"],
                 "Tp": data["P_TEMP"],
             },
         )
+        dfpar = _rename_vec_by_frame(dfpar, "RTN" if frame == "RTN" else "GSE", "V")
         dfpar["Tp_K"] = _EV_TO_K * dfpar["Tp"]
         dfpar["Vth"] = 0.128487 * np.sqrt(dfpar["Tp_K"].clip(lower=0))
         qtn_flag = "No_QTN"
@@ -168,16 +246,24 @@ def LoadTimeSeriesWind_particles(start_time, end_time, settings):
         dens = _pick_first_key(data, "MOM$P$DENSITY", "MOM.P.DENSITY")
         vth = _pick_first_key(data, "MOM$P$VTHERMAL", "MOM.P.VTHERMAL")
 
+        vec = _ensure_nx3(vel, n_expected=len(data["Epoch"]))
+        if bool(settings.get("in_rtn", True)):
+            vec = _approx_gse_to_l1_rtn(vec)
+            frame = "RTN"
+        else:
+            frame = "GSE"
+
         dfpar = pd.DataFrame(
             index=pd.to_datetime(data["Epoch"]),
             data={
-                "Vr": vel.T[0],
-                "Vt": vel.T[1],
-                "Vn": vel.T[2],
+                "c1": vec[:, 0],
+                "c2": vec[:, 1],
+                "c3": vec[:, 2],
                 "np": dens,
                 "Vth": vth,
             },
         )
+        dfpar = _rename_vec_by_frame(dfpar, "RTN" if frame == "RTN" else "GSE", "V")
 
         # Legacy formula used in this pipeline branch: kT = (m_p * v_th^2) / 2
         vth_mps = np.asarray(dfpar["Vth"], dtype=float) * 1e3
@@ -185,7 +271,8 @@ def LoadTimeSeriesWind_particles(start_time, end_time, settings):
         dfpar["Tp"] = tp_k / _EV_TO_K
         qtn_flag = "No_QTN"
 
-    dfpar = _clean_fill_values(dfpar, ("Vr", "Vt", "Vn", "np", "Tp", "Vth"))
+    vec_cols = ("Vr", "Vt", "Vn") if bool(settings.get("in_rtn", True)) else ("Vx", "Vy", "Vz")
+    dfpar = _clean_fill_values(dfpar, vec_cols + ("np", "Tp", "Vth"))
     dfdis = _build_wind_distance_df(dfpar.index)
     return dfpar, dfdis, qtn_flag
 
@@ -201,29 +288,45 @@ def LoadHighResMagWind(start_time, end_time, settings, verbose=True):
         if not status:
             raise RuntimeError("Failed to download WI_H0_MFI magnetic data.")
 
+        vec = _ensure_nx3(data["B3GSE"], n_expected=len(data["Epoch3"]))
+        if bool(settings.get("in_rtn", True)):
+            vec = _approx_gse_to_l1_rtn(vec)
+            frame = "RTN"
+        else:
+            frame = "GSE"
+
         dfmag = pd.DataFrame(
             index=pd.to_datetime(data["Epoch3"]),
             data={
-                "Br": data["B3GSE"][:, 0],
-                "Bt": data["B3GSE"][:, 1],
-                "Bn": data["B3GSE"][:, 2],
+                "c1": vec[:, 0],
+                "c2": vec[:, 1],
+                "c3": vec[:, 2],
                 "Btot": data["B3F1"],
             },
         )
+        dfmag = _rename_vec_by_frame(dfmag, "RTN" if frame == "RTN" else "GSE", "B")
     elif mag_resol < 3:
         status, data = cdas.get_data("WI_H2_MFI", ["BGSE", "BF1"], t0, t1)
         if not status:
             raise RuntimeError("Failed to download WI_H2_MFI magnetic data.")
 
+        vec = _ensure_nx3(data["BGSE"], n_expected=len(data["Epoch"]))
+        if bool(settings.get("in_rtn", True)):
+            vec = _approx_gse_to_l1_rtn(vec)
+            frame = "RTN"
+        else:
+            frame = "GSE"
+
         dfmag = pd.DataFrame(
             index=pd.to_datetime(data["Epoch"]),
             data={
-                "Br": data["BGSE"][:, 0],
-                "Bt": data["BGSE"][:, 1],
-                "Bn": data["BGSE"][:, 2],
+                "c1": vec[:, 0],
+                "c2": vec[:, 1],
+                "c3": vec[:, 2],
                 "Btot": data["BF1"],
             },
         )
+        dfmag = _rename_vec_by_frame(dfmag, "RTN" if frame == "RTN" else "GSE", "B")
     else:
         status, data = cdas.get_data("WI_PLSP_3DP", ["MOM.P.MAGF"], str(start_time), str(end_time))
         if not status:
@@ -231,18 +334,29 @@ def LoadHighResMagWind(start_time, end_time, settings, verbose=True):
 
         magf = _pick_first_key(data, "MOM$P$MAGF", "MOM.P.MAGF")
 
+        vec = _ensure_nx3(magf, n_expected=len(data["Epoch"]))
+        if bool(settings.get("in_rtn", True)):
+            vec = _approx_gse_to_l1_rtn(vec)
+            frame = "RTN"
+        else:
+            frame = "GSE"
+
         dfmag = pd.DataFrame(
             index=pd.to_datetime(data["Epoch"]),
             data={
-                "Br": magf.T[0],
-                "Bt": magf.T[1],
-                "Bn": magf.T[2],
+                "c1": vec[:, 0],
+                "c2": vec[:, 1],
+                "c3": vec[:, 2],
             },
         ).interpolate()
-        dfmag["Btot"] = np.sqrt(dfmag["Br"] ** 2 + dfmag["Bt"] ** 2 + dfmag["Bn"] ** 2)
+        dfmag = _rename_vec_by_frame(dfmag, "RTN" if frame == "RTN" else "GSE", "B")
 
-    dfmag = _clean_fill_values(dfmag, ("Br", "Bt", "Bn", "Btot"), threshold=-1e30)
-    dfmag.loc[np.abs(dfmag["Btot"]) > 1e3, ["Br", "Bt", "Bn", "Btot"]] = np.nan
+        bcols_tmp = ["Br", "Bt", "Bn"] if bool(settings.get("in_rtn", True)) else ["Bx", "By", "Bz"]
+        dfmag["Btot"] = np.sqrt(dfmag[bcols_tmp[0]] ** 2 + dfmag[bcols_tmp[1]] ** 2 + dfmag[bcols_tmp[2]] ** 2)
+
+    bcols = ("Br", "Bt", "Bn") if bool(settings.get("in_rtn", True)) else ("Bx", "By", "Bz")
+    dfmag = _clean_fill_values(dfmag, bcols + ("Btot",), threshold=-1e30)
+    dfmag.loc[np.abs(dfmag["Btot"]) > 1e3, list(bcols) + ["Btot"]] = np.nan
 
     if verbose and not dfmag.empty:
         print("Done.")
@@ -333,7 +447,7 @@ def LoadTimeSeriesWIND(
         try:
             print("Applying hampel filter to particle data!")
             dfpar_filt = diagnostics_par["resampled_df"].copy()
-            list_2_hampel = ["Vr", "Vt", "Vn", "np", "Vth"]
+            list_2_hampel = ["Vr", "Vt", "Vn", "np", "Vth"] if bool(settings.get("in_rtn", True)) else ["Vx", "Vy", "Vz", "np", "Vth"]
             ws_hampel = settings.get("hampel_params", {}).get("w", 200)
             n_hampel = settings.get("hampel_params", {}).get("std", 3)
 
