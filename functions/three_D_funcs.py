@@ -52,7 +52,7 @@ def est_alignment_angles(
     yvec_mag = func.estimate_vec_magnitude(yvec)
 
 
-    # Estimate sigma (sigma_r for (δv, δb), sigma_c for (δzp, δz-) )
+    # Estimate sigma (sigma_r for (deltav, deltab), sigma_c for (deltazp, deltaz-) )
     sigma_ts             = (xvec_mag**2 - yvec_mag**2 )/( xvec_mag**2 + yvec_mag**2 )
     
     if est_sigma_c:
@@ -535,10 +535,10 @@ def quants_2_estimate(
         ell = l_mag * di * 1e3 * u.m
 
         
-        # Convert number density (cm⁻³) to mass density (kg/m³) assuming proton-only plasma
+        # Convert number density (cm^-3) to mass density (kg/m^3) assuming proton-only plasma
         rho = (func.newindex(Np, needed_index).values.ravel() * (u.cm**-3) * (constants.m_p * u.kg)).to(u.kg/u.m**3)
         
-        # Compute heating rate: [velocity^3/length] yields m²/s³; multiplied by rho gives kg/(m·s³)=W/m³.
+        # Compute heating rate: [velocity^3/length] yields m^2/s^3; multiplied by rho gives kg/(m·s³)=W/m^3.
         variables['e_plus']  = - ( ( (3/4) * (dzm_longitud * zp_sq ) / ell ) * rho).to(u.W/u.m**3).value
         variables['e_minus'] = - ( ( (3/4) * ( dzp_longitud * zm_sq) / ell ) * rho).to(u.W/u.m**3).value
     
