@@ -34,7 +34,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "pyspedas"))
 import pyspedas
 from pytplot import get_data
-from functions.project_config import repo_data_file
 
 # ------------------------------------------------------------
 # Your repo utilities (must exist)
@@ -811,15 +810,17 @@ def process_qtn_data(t0, t1, credentials, varnames_QTN, ind1, ind2, settings):
     # Hardcoded legacy fallback pickles (kept)
     if dfqtn is None:
         try:
-            dfqtn = pd.read_pickle(repo_data_file("psp_data", "PSP_QTN_Monc", "E22.pkl"))
+            dfqtn = pd.read_pickle(Path(settings["Data_path"]) / "psp_data" / "PSP_QTN_Monc" / "E22.pkl")
             if "Te_qtn" in dfqtn.columns:
                 del dfqtn["Te_qtn"]
 
-            dfqtn2 = pd.read_pickle(repo_data_file("psp_data", "PSP_QTN_Monc", "E23.pkl"))
+            dfqtn2 = pd.read_pickle(Path(settings["Data_path"]) / "psp_data" / "PSP_QTN_Monc" / "E23.pkl")
             if "Te_qtn" in dfqtn2.columns:
                 del dfqtn2["Te_qtn"]
 
-            dfqtn3 = pd.read_pickle(repo_data_file("psp_data", "PSP_QTN_Romeo", "save_pickled_dfs", "e24.pkl"))
+            dfqtn3 = pd.read_pickle(
+                Path(settings["Data_path"]) / "psp_data" / "PSP_QTN_Romeo" / "save_pickled_dfs" / "e24.pkl"
+            )
             if "ne_qtn" in dfqtn3.columns:
                 del dfqtn3["ne_qtn"]
 
@@ -1171,8 +1172,7 @@ def LoadTimeSeriesPSP(
     """
     settings = init_psp_settings(settings)
 
-    os.chdir(settings["Data_path"])
-    Path("./psp_data").mkdir(exist_ok=True)
+    (Path(settings["Data_path"]) / "psp_data").mkdir(parents=True, exist_ok=True)
 
     # interval expansion (kept)
     t0i, t1i = func.ensure_time_format(start_time, end_time)
@@ -1332,4 +1332,3 @@ def LoadTimeSeriesPSP(
     except Exception:
         logger.exception("LoadTimeSeriesPSP failed in final assembly.")
         return None, None, None, None, None, None, None, None, None, None, None
-
