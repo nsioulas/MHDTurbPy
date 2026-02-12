@@ -777,6 +777,188 @@ def build_3d_figure(
     return fig
 
 
+def _pairwise_stats(values: np.ndarray) -> tuple[float, float, float]:
+    """Return mean/median/max of upper-triangle pairwise absolute differences."""
+    if values.size < 2:
+        return np.nan, np.nan, np.nan
+    d = np.abs(values[:, None] - values[None, :])
+    tri = d[np.triu_indices_from(d, k=1)]
+    return float(np.mean(tri)), float(np.median(tri)), float(np.max(tri))
+
+
+def _pairwise_perp_stats(yvals: np.ndarray, zvals: np.ndarray) -> tuple[float, float, float]:
+    """Return mean/median/max transverse pairwise distance in the Y-Z plane."""
+    if yvals.size < 2:
+        return np.nan, np.nan, np.nan
+    dy = yvals[:, None] - yvals[None, :]
+    dz = zvals[:, None] - zvals[None, :]
+    d = np.sqrt(dy * dy + dz * dz)
+    tri = d[np.triu_indices_from(d, k=1)]
+    return float(np.mean(tri)), float(np.median(tri)), float(np.max(tri))
+
+
+def find_best_gse_alignment_intervals(
+    targets: list[str],
+    start: str,
+    stop: str,
+    step: str = "15min",
+    window_hours: float = 6.0,
+    n_best: int = 3,
+    vsw_kms: float = 400.0,
+    min_coverage: float = 0.8,
+    overlap: float = 0.0,
+    w_perp: float = 0.65,
+    w_lag: float = 0.35,
+    verbose: bool = True,
+) -> pd.DataFrame:
+    """
+    Rank fixed-duration GSE windows where spacecraft are most likely to sample
+    the same solar-wind stream.
+
+    Physical criterion (lower is better):
+    - transverse spread in Y-Z (streamline-to-streamline separation), and
+    - convective X-lag converted to advection time using a constant Vsw.
+    """
+    if len(targets) < 2:
+        raise ValueError("Need at least two spacecraft to evaluate alignment")
+    if window_hours <= 0:
+        raise ValueError("window_hours must be positive")
+    if not (0.0 < min_coverage <= 1.0):
+        raise ValueError("min_coverage must be in (0, 1]")
+    if not (0.0 <= overlap < 1.0):
+        raise ValueError("overlap must be in [0, 1)")
+
+    if verbose:
+        print("[alignment] Estimating best GSE alignment windows under assumptions:")
+        print("[alignment]  1) Solar wind advection is approximately along -X_GSE.")
+        print("[alignment]  2) Constant bulk speed Vsw is used to map X separation into time lag.")
+        print("[alignment]  3) Spacecraft sample the same stream when Y-Z separation is small and X-lag is short.")
+        print("[alignment]  4) Each interval is summarized by mean spacecraft position.")
+        print(f"[alignment]  Parameters: window_hours={window_hours}, vsw_kms={vsw_kms}, min_coverage={min_coverage}, overlap={overlap}")
+
+    au_to_re = (u.AU / const.R_earth).decompose().value
+    re_to_km = const.R_earth.to_value(u.km)
+
+    # Build synchronized GSE table
+    sc_series = {}
+    for name in targets:
+        spkid = resolve_spacecraft_spkid(name)
+        df = _get_xyz_timeseries(spkid, start, stop, step, frame="GSE").rename(
+            columns={"x_au": f"{name}_x_au", "y_au": f"{name}_y_au", "z_au": f"{name}_z_au"}
+        )
+        sc_series[name] = df
+
+    all_df = pd.concat(sc_series.values(), axis=1).sort_index()
+
+    dt = pd.to_timedelta(window_hours, unit="h")
+    stride = pd.to_timedelta(window_hours * (1.0 - overlap), unit="h")
+    if stride <= pd.Timedelta(0):
+        stride = dt
+
+    t0 = all_df.index.min()
+    t1 = all_df.index.max()
+
+    rows = []
+    t = t0
+    while t + dt <= t1:
+        w = all_df.loc[(all_df.index >= t) & (all_df.index < t + dt)]
+        if len(w) == 0:
+            t += stride
+            continue
+
+        means = {}
+        coverages = {}
+        for name in targets:
+            cols = [f"{name}_x_au", f"{name}_y_au", f"{name}_z_au"]
+            valid = w[cols].dropna()
+            coverages[name] = len(valid) / len(w)
+            if len(valid) == 0:
+                continue
+            means[name] = valid.mean()
+
+        kept = [name for name in targets if (name in means and coverages[name] >= min_coverage)]
+        if len(kept) < 2:
+            t += stride
+            continue
+
+        x_re = np.array([means[name][f"{name}_x_au"] for name in kept]) * au_to_re
+        y_re = np.array([means[name][f"{name}_y_au"] for name in kept]) * au_to_re
+        z_re = np.array([means[name][f"{name}_z_au"] for name in kept]) * au_to_re
+
+        mean_perp_re, median_perp_re, max_perp_re = _pairwise_perp_stats(y_re, z_re)
+        mean_dx_re, median_dx_re, max_dx_re = _pairwise_stats(x_re)
+
+        median_lag_hr = (median_dx_re * re_to_km / vsw_kms) / 3600.0
+        max_lag_hr = (max_dx_re * re_to_km / vsw_kms) / 3600.0
+
+        # Dimensionless metric; smaller is better.
+        # The lag term is normalized by window duration.
+        metric = w_perp * median_perp_re + w_lag * (median_lag_hr / window_hours) * 100.0
+
+        rows.append(
+            {
+                "window_start": t,
+                "window_stop": t + dt,
+                "n_spacecraft": len(kept),
+                "spacecraft": ",".join(kept),
+                "metric": float(metric),
+                "median_perp_re": float(median_perp_re),
+                "max_perp_re": float(max_perp_re),
+                "median_dx_re": float(median_dx_re),
+                "max_dx_re": float(max_dx_re),
+                "median_lag_hr": float(median_lag_hr),
+                "max_lag_hr": float(max_lag_hr),
+                "mean_coverage": float(np.mean([coverages[name] for name in kept])),
+            }
+        )
+        t += stride
+
+    if len(rows) == 0:
+        return pd.DataFrame()
+
+    out = pd.DataFrame(rows).sort_values(["metric", "median_perp_re", "median_lag_hr"]).reset_index(drop=True)
+    out.insert(0, "rank", np.arange(1, len(out) + 1))
+    return out.head(int(n_best)).copy()
+
+
+def build_best_alignment_3d_figures(
+    ranked_windows: pd.DataFrame,
+    targets: list[str],
+    step: str = "15min",
+    gse_axis_units: str = "Re",
+    width: int = 1100,
+    height: int = 800,
+) -> list[go.Figure]:
+    """Create one GSE 3D figure per ranked alignment window."""
+    figs = []
+    if ranked_windows is None or len(ranked_windows) == 0:
+        return figs
+
+    for _, row in ranked_windows.iterrows():
+        start = pd.to_datetime(row["window_start"]).isoformat()
+        stop = pd.to_datetime(row["window_stop"]).isoformat()
+        fig = build_3d_figure(
+            targets=targets,
+            start=start,
+            stop=stop,
+            step=step,
+            frame3d="GSE",
+            width=width,
+            height=height,
+            gse_axis_units=gse_axis_units,
+            verbose=False,
+        )
+        fig.update_layout(
+            title=(
+                f"Rank {int(row['rank'])}: {start} → {stop} | "
+                f"metric={row['metric']:.2f}, median ⟂ sep={row['median_perp_re']:.1f} Re, "
+                f"median lag={row['median_lag_hr']:.2f} h"
+            )
+        )
+        figs.append(fig)
+    return figs
+
+
 
 def write_combined_html(fig_ts: go.Figure, fig_3d: go.Figure, out_html: str):
     html_ts = pio.to_html(fig_ts, include_plotlyjs="cdn", full_html=False)
