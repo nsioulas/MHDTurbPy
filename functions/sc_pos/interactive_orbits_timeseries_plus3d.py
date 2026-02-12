@@ -281,6 +281,9 @@ def build_3d_figure(
     au_to_re = (u.AU / const.R_earth).decompose().value
     pos_scale = au_to_re if (geocentric and gse_units == "RE") else 1.0
     coord_unit = "Re" if (geocentric and gse_units == "RE") else "AU"
+    # Approximate Earth-Sun Lagrange distances along GSE X (in chosen display units)
+    l1_dist = (0.01 * u.AU).to_value(u.AU) * pos_scale
+    l2_dist = (0.01 * u.AU).to_value(u.AU) * pos_scale
 
     if verbose:
         print(f"[3D] Building 3D figure in frame3d={frame3d} (positions in AU).")
@@ -646,6 +649,22 @@ def build_3d_figure(
                 name="Sunward boundary",
                 showlegend=False,
                 hoverinfo="skip",
+            ),
+            row=1,
+            col=1,
+        )
+
+        # Near-Earth Lagrange points (black dots)
+        fig.add_trace(
+            go.Scatter3d(
+                x=[l1_dist, -l2_dist], y=[0.0, 0.0], z=[0.0, 0.0],
+                mode="markers+text",
+                marker=dict(size=4, color="black", symbol="circle"),
+                text=["L1", "L2"],
+                textposition="top center",
+                name="Lagrange points",
+                showlegend=False,
+                hovertemplate="%{text}<extra></extra>",
             ),
             row=1,
             col=1,
