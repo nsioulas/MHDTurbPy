@@ -777,6 +777,270 @@ def build_3d_figure(
     return fig
 
 
+def _pairwise_metrics(xyz: np.ndarray, flow_hat: np.ndarray):
+    """Return pairwise perpendicular/parallel separations for a single timestamp."""
+    n_sc = xyz.shape[0]
+    if n_sc < 2:
+        return np.array([]), np.array([])
+
+    perp_vals = []
+    par_vals = []
+    for i in range(n_sc):
+        for j in range(i + 1, n_sc):
+            dr = xyz[i] - xyz[j]
+            par = np.dot(dr, flow_hat)
+            perp = np.linalg.norm(dr - par * flow_hat)
+            perp_vals.append(perp)
+            par_vals.append(np.abs(par))
+    return np.asarray(perp_vals), np.asarray(par_vals)
+
+
+def find_best_stream_aligned_intervals(
+    targets: list[str],
+    start: str,
+    stop: str,
+    step: str = "1h",
+    window_hours: float = 12.0,
+    top_n: int = 3,
+    frame: str = "GSE",
+    flow_dir_gse: tuple[float, float, float] = (-1.0, 0.0, 0.0),
+    vsw_kms: float = 400.0,
+    along_weight: float = 0.25,
+    min_coverage: float = 0.75,
+    verbose: bool = True,
+):
+    """
+    Identify windows where spacecraft are closest to sampling the same solar-wind stream.
+
+    Physics-driven metric (dimensionless):
+      J = median(d_perp) / L_adv + along_weight * median(|d_parallel|) / L_adv,
+    where L_adv = Vsw * window_duration and d_perp / d_parallel are pairwise
+    separations perpendicular / parallel to the assumed flow direction.
+    """
+    if frame.upper() != "GSE":
+        raise ValueError("This interval-selection metric is implemented for GSE only.")
+    if window_hours <= 0:
+        raise ValueError("window_hours must be > 0")
+    if top_n < 1:
+        raise ValueError("top_n must be >= 1")
+
+    flow_hat = np.asarray(flow_dir_gse, dtype=float)
+    if np.linalg.norm(flow_hat) == 0:
+        raise ValueError("flow_dir_gse must be non-zero")
+    flow_hat = flow_hat / np.linalg.norm(flow_hat)
+
+    tracks = {}
+    for t in targets:
+        spkid = resolve_spacecraft_spkid(t)
+        tracks[t] = _get_xyz_timeseries(spkid, start, stop, step, frame="GSE")
+
+    time_index = None
+    for df in tracks.values():
+        time_index = df.index if time_index is None else time_index.intersection(df.index)
+    time_index = pd.DatetimeIndex(sorted(time_index))
+
+    if len(time_index) == 0:
+        raise RuntimeError("No overlapping timestamps were found across spacecraft.")
+
+    l_adv_au = ((vsw_kms * u.km / u.s) * (window_hours * u.hour)).to_value(u.AU)
+
+    rows = []
+    for ts in time_index:
+        xyz = np.array([[tracks[t].loc[ts, "x_au"], tracks[t].loc[ts, "y_au"], tracks[t].loc[ts, "z_au"]] for t in targets])
+        perp, par = _pairwise_metrics(xyz, flow_hat)
+        if len(perp) == 0:
+            continue
+        rows.append(
+            {
+                "time": ts,
+                "median_perp_au": np.median(perp),
+                "median_par_au": np.median(par),
+                "max_perp_au": np.max(perp),
+                "max_par_au": np.max(par),
+            }
+        )
+
+    metric_df = pd.DataFrame(rows).set_index("time").sort_index()
+
+    win = f"{float(window_hours):g}h"
+    grouped = metric_df.groupby(pd.Grouper(freq=win))
+
+    score_rows = []
+    for t0, g in grouped:
+        if len(g) == 0:
+            continue
+
+        # Require enough cadence coverage in the interval.
+        t1 = t0 + pd.Timedelta(hours=window_hours)
+        expected = metric_df.loc[(metric_df.index >= t0) & (metric_df.index < t1)]
+        coverage = len(g) / max(len(expected), 1)
+        if coverage < min_coverage:
+            continue
+
+        median_perp = g["median_perp_au"].median()
+        median_par = g["median_par_au"].median()
+        metric = (median_perp / l_adv_au) + along_weight * (median_par / l_adv_au)
+
+        score_rows.append(
+            {
+                "window_start": t0,
+                "window_end": t1,
+                "n_samples": len(g),
+                "coverage": coverage,
+                "median_perp_au": median_perp,
+                "median_par_au": median_par,
+                "max_perp_au": g["max_perp_au"].median(),
+                "max_par_au": g["max_par_au"].median(),
+                "adv_length_au": l_adv_au,
+                "alignment_metric": metric,
+            }
+        )
+
+    scores = pd.DataFrame(score_rows).sort_values("alignment_metric", ascending=True).reset_index(drop=True)
+    if len(scores) == 0:
+        raise RuntimeError("No valid windows found. Try reducing min_coverage or window_hours.")
+
+    best = scores.head(top_n).copy()
+
+    if verbose:
+        print("[alignment] Physical assumptions used in metric:")
+        print("  1) Frozen-in advection over each interval.")
+        print(f"  2) Constant flow direction in GSE: {tuple(flow_hat.round(3))}.")
+        print(f"  3) Constant Vsw = {vsw_kms:.1f} km/s for normalization only.")
+        print(f"  4) Interval duration = {window_hours:g} h, L_adv = {l_adv_au:.4f} AU.")
+        print(f"  5) Score = d_perp/L_adv + {along_weight:g} * d_parallel/L_adv.")
+
+    return {
+        "scores": scores,
+        "best": best,
+        "tracks": tracks,
+        "flow_hat": flow_hat,
+    }
+
+
+def plot_stream_alignment_interval(
+    tracks: dict[str, pd.DataFrame],
+    targets: list[str],
+    window_start,
+    window_end,
+    flow_hat: np.ndarray,
+    summary_row: pd.Series | None = None,
+    width: int = 1000,
+    height: int = 750,
+):
+    """3D plot for a single selected interval in GSE coordinates."""
+    colors = px.colors.qualitative.Plotly
+    fig = go.Figure()
+
+    # Keep axis ranges consistent and centered around interval centroid.
+    xyz_all = []
+    for t in targets:
+        seg = tracks[t].loc[(tracks[t].index >= window_start) & (tracks[t].index < window_end)]
+        if len(seg) == 0:
+            continue
+        xyz_all.append(seg[["x_au", "y_au", "z_au"]].values)
+    if len(xyz_all) == 0:
+        raise RuntimeError("No samples in requested interval.")
+    xyz_all = np.vstack(xyz_all)
+    center = xyz_all.mean(axis=0)
+
+    for i, t in enumerate(targets):
+        seg = tracks[t].loc[(tracks[t].index >= window_start) & (tracks[t].index < window_end)]
+        if len(seg) == 0:
+            continue
+        color = colors[i % len(colors)]
+        fig.add_trace(
+            go.Scatter3d(
+                x=seg["x_au"],
+                y=seg["y_au"],
+                z=seg["z_au"],
+                mode="lines+markers",
+                marker=dict(size=3, color=color),
+                line=dict(color=color, width=5),
+                name=t,
+            )
+        )
+
+    arrow_len = max(np.linalg.norm(xyz_all - center, axis=1).max(), 0.02)
+    p0 = center
+    p1 = center + flow_hat * arrow_len
+    fig.add_trace(
+        go.Scatter3d(
+            x=[p0[0], p1[0]],
+            y=[p0[1], p1[1]],
+            z=[p0[2], p1[2]],
+            mode="lines",
+            line=dict(color="black", width=8, dash="dash"),
+            name="Assumed flow dir",
+        )
+    )
+
+    title = f"GSE stream-alignment interval: {pd.Timestamp(window_start)} to {pd.Timestamp(window_end)}"
+    if summary_row is not None:
+        title += (
+            f"<br><sup>metric={summary_row['alignment_metric']:.4f}, "
+            f"median d⊥={summary_row['median_perp_au']:.4f} AU, "
+            f"median |d∥|={summary_row['median_par_au']:.4f} AU</sup>"
+        )
+
+    fig.update_layout(
+        title=title,
+        template="plotly_white",
+        width=width,
+        height=height,
+        scene=dict(
+            xaxis_title="X [AU]",
+            yaxis_title="Y [AU]",
+            zaxis_title="Z [AU]",
+            aspectmode="data",
+        ),
+    )
+    return fig
+
+
+def build_best_alignment_interval_figures(
+    targets: list[str],
+    start: str,
+    stop: str,
+    step: str = "1h",
+    window_hours: float = 12.0,
+    top_n: int = 3,
+    vsw_kms: float = 400.0,
+    along_weight: float = 0.25,
+    min_coverage: float = 0.75,
+    verbose: bool = True,
+):
+    """Convenience wrapper: score windows then return N best interval figures."""
+    out = find_best_stream_aligned_intervals(
+        targets=targets,
+        start=start,
+        stop=stop,
+        step=step,
+        window_hours=window_hours,
+        top_n=top_n,
+        frame="GSE",
+        vsw_kms=vsw_kms,
+        along_weight=along_weight,
+        min_coverage=min_coverage,
+        verbose=verbose,
+    )
+
+    figs = []
+    for _, row in out["best"].iterrows():
+        figs.append(
+            plot_stream_alignment_interval(
+                tracks=out["tracks"],
+                targets=targets,
+                window_start=row["window_start"],
+                window_end=row["window_end"],
+                flow_hat=out["flow_hat"],
+                summary_row=row,
+            )
+        )
+
+    return out["best"], figs, out["scores"]
+
+
 
 def write_combined_html(fig_ts: go.Figure, fig_3d: go.Figure, out_html: str):
     html_ts = pio.to_html(fig_ts, include_plotlyjs="cdn", full_html=False)
