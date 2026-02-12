@@ -9,3 +9,14 @@ examples/PSP/*.pkl
 examples/WIND/*.pkl
 examples/PSP/*.pkl
 examples/WIND/*.pkl
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.virtual_documents/
+data/
+psp_data/
+solar_orbiter_data/
+examples/downloaded_intervals/
+examples/selected_intervals/
+selected_intervals/
+*.tmp

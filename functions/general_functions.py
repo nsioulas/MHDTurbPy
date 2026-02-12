@@ -1,7 +1,6 @@
 import os
 import numpy as np
 import pandas as pd
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -17,12 +16,13 @@ import joblib
 from joblib import Parallel, delayed
 import statistics
 from statistics import mode
-import orderedstructs
+#import orderedstructs
 import sys
 import pytplot
 
 import warnings
 warnings.filterwarnings('ignore')
+import polars as pl
 
 
 # Import urbPy
@@ -30,7 +30,822 @@ sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
 
 
 from plasma_params import*
-import signal_processing 
+import signal_processing  #import synchronize_dfs
+
+
+
+def _finalize_alignment(df1, df2, *, interp_method='time'):
+    """
+    Internal helper: clamp two DataFrames to their overlapping time range,
+    time-interpolate small gaps, and trim leading/trailing NaNs jointly.
+
+    Assumes both have a DatetimeIndex.
+    """
+    if not isinstance(df1.index, pd.DatetimeIndex):
+        raise TypeError("df1 must have a DatetimeIndex.")
+    if not isinstance(df2.index, pd.DatetimeIndex):
+        raise TypeError("df2 must have a DatetimeIndex.")
+
+    # Ensure monotonic indices for time interpolation
+    df1 = df1.sort_index()
+    df2 = df2.sort_index()
+
+    # 1) Overlapping time window
+    overlap_start = max(df1.index.min(), df2.index.min())
+    overlap_end   = min(df1.index.max(), df2.index.max())
+
+    if overlap_start >= overlap_end:
+        # No overlap -> return empties with the right columns/dtypes
+        return df1.iloc[0:0].copy(), df2.iloc[0:0].copy()
+
+    df1 = df1.loc[overlap_start:overlap_end].copy()
+    df2 = df2.loc[overlap_start:overlap_end].copy()
+
+    # 2) Interpolate small internal gaps in time
+    df1 = df1.interpolate(method=interp_method)
+    df2 = df2.interpolate(method=interp_method)
+
+    # 3) Trim leading/trailing NaNs jointly
+    fvi1 = df1.first_valid_index()
+    lvi1 = df1.last_valid_index()
+    fvi2 = df2.first_valid_index()
+    lvi2 = df2.last_valid_index()
+
+    if fvi1 is None or fvi2 is None:
+        # One (or both) are all-NaN in this window
+        return df1.iloc[0:0].copy(), df2.iloc[0:0].copy()
+
+    new_start = max(fvi1, fvi2)
+    new_end   = min(lvi1, lvi2)
+
+    if new_start > new_end:
+        # No joint interval where both have finite values
+        return df1.iloc[0:0].copy(), df2.iloc[0:0].copy()
+
+    df1 = df1.loc[new_start:new_end]
+    df2 = df2.loc[new_start:new_end]
+
+    return df1, df2
+
+
+def synchronize_dfs(df_higher_freq, df_lower_freq, upsample):
+    """
+    Synchronize two time-indexed DataFrames with different cadences.
+
+    Parameters
+    ----------
+    df_higher_freq : pd.DataFrame
+        Higher-cadence time series.
+    df_lower_freq : pd.DataFrame
+        Lower-cadence time series.
+    upsample : bool
+        If True  -> upsample the lower-frequency DF to the higher cadence
+                    using signal_processing.upsample_dataframe.
+        If False -> downsample the higher-frequency DF to the lower cadence
+                    using signal_processing.downsample_and_filter (with
+                    anti-aliasing low-pass filtering).
+
+    Returns
+    -------
+    df_high_sync, df_low_sync : pd.DataFrame
+        Two DataFrames that:
+          1. Live strictly on the common overlapping time range,
+          2. Have small internal gaps interpolated in time,
+          3. Have leading/trailing NaNs removed based on the joint valid window.
+    """
+    if not isinstance(df_higher_freq.index, pd.DatetimeIndex):
+        raise TypeError("df_higher_freq must have a DatetimeIndex.")
+    if not isinstance(df_lower_freq.index, pd.DatetimeIndex):
+        raise TypeError("df_lower_freq must have a DatetimeIndex.")
+
+    # Work on sorted copies; do not modify the caller's frames in place
+    df_higher_freq = df_higher_freq.sort_index()
+    df_lower_freq  = df_lower_freq.sort_index()
+
+    if upsample:
+        # ===== UPSAMPLE: low cadence -> high cadence =====
+        # Clean low-cadence series before FIR + filtfilt to avoid NaNs in the filter
+        low_clean = df_lower_freq.interpolate(method='time').dropna(how='all')
+        if low_clean.empty:
+            # Nothing usable in low series
+            return df_higher_freq.iloc[0:0].copy(), df_lower_freq.iloc[0:0].copy()
+
+        high_sorted = df_higher_freq  # already sorted
+
+        # Anti-imaging FIR low-pass + interpolation onto the high-cadence grid
+        aligned_low = signal_processing.upsample_dataframe(
+            low_clean,
+            high_sorted,
+        )
+
+        # Final overlap clamp + interpolation + joint trim
+        high_sync, low_sync = _finalize_alignment(high_sorted, aligned_low)
+
+    else:
+        # ===== DOWNSAMPLE: high cadence -> low cadence =====
+        # Clean both before low-pass filtering; filtfilt cannot handle NaNs
+        high_clean = df_higher_freq.interpolate(method='time').dropna(how='all')
+        low_clean  = df_lower_freq.interpolate(method='time').dropna(how='all')
+
+        if high_clean.empty or low_clean.empty:
+            # Nothing usable in one of the series
+            return df_higher_freq.iloc[0:0].copy(), df_lower_freq.iloc[0:0].copy()
+
+        # Anti-aliasing low-pass filter at ~Nyquist(low_fs) and resample onto low_clean.index
+        aligned_high = signal_processing.downsample_and_filter(
+            high_clean,
+            low_clean,
+        )
+
+        # Final overlap clamp + interpolation + joint trim
+        high_sync, low_sync = _finalize_alignment(aligned_high, low_clean)
+
+    return high_sync, low_sync
+
+
+
+
+
+def read_pickle(path):
+    class FixUnpickler(pickle.Unpickler):
+        def find_class(self, module, name):
+            # intercept either numpy._core.multiarray._frombuffer
+            # or numpy.core.numeric._frombuffer
+            if name == '_frombuffer' and module.startswith('numpy'):
+                def _fixed(buf, dtype=None, shape=None, order=None):
+                    arr = np.frombuffer(buf, dtype=dtype)
+                    if shape is not None:
+                        return arr.reshape(shape, order=order)
+                    return arr
+                return _fixed
+            return super().find_class(module, name)
+    with open(path, 'rb') as f:
+        return FixUnpickler(f).load()
+
+
+
+def create_gap_mask(master_index: pd.DatetimeIndex,
+                    gap_dfs: list[pd.DataFrame],
+                    buffer: str = '10s',
+                    min_gap: str = '1s'
+                   ) -> pd.Series:
+    """
+    Build a 0/1 mask over master_index:
+      • 0 if timestamp lies in any gap [start-buffer, end+buffer],
+      • 1 otherwise.
+    Then remove any gap-run shorter than min_gap by setting it back to 1.
+
+    Parameters
+    ----------
+    master_index : pd.DatetimeIndex
+        Full timeline (e.g. coh['sig_c'].index)
+    gap_dfs : list of pd.DataFrame
+        Each DF must have 'Start'/'End' columns (case-insensitive).
+    buffer : str
+        Pandas offset string to extend each interval on both sides.
+    min_gap : str
+        Minimum gap duration; shorter zero-runs are reset to 1.
+    """
+
+    # Convert to Timedelta
+    buff       = pd.to_timedelta(buffer)
+    min_gap_td = pd.to_timedelta(min_gap)
+
+    # Initialize all valid (1)
+    mask_arr = np.ones(len(master_index), dtype=int)
+
+    # 1) Mark gaps with buffer
+    for gdf in gap_dfs:
+        if gdf.empty:
+            continue
+
+        cols_lc = {c.lower(): c for c in gdf.columns}
+        if 'start' not in cols_lc or 'end' not in cols_lc:
+            continue  # skip if no interval columns
+
+        starts = pd.to_datetime(gdf[cols_lc['start']], errors='coerce') - buff
+        ends   = pd.to_datetime(gdf[cols_lc['end']],   errors='coerce') + buff
+
+        for s, e in zip(starts, ends):
+            if pd.isna(s) or pd.isna(e):
+                continue
+            if s > e:
+                s, e = e, s
+            i0 = master_index.searchsorted(s, side='left')
+            i1 = master_index.searchsorted(e, side='right')
+            mask_arr[i0:i1] = 0
+
+    mask = pd.Series(mask_arr, index=master_index, name='data_valid')
+
+    # 2) Heal tiny gaps: any zero-run < min_gap → set back to 1
+    df = pd.DataFrame({'mask': mask})
+    # group number increments on mask-change
+    df['grp'] = (df['mask'] != df['mask'].shift()).cumsum()
+
+    for _, sub in df.groupby('grp'):
+        if sub['mask'].iat[0] == 0:
+            duration = sub.index[-1] - sub.index[0]
+            if duration < min_gap_td:
+                mask.loc[sub.index] = 1
+
+    return mask
+
+
+
+import numpy as np
+from joblib import Parallel, delayed
+
+# def compute_quantile_edges_function(
+#     x, y,
+#     Nx_bins,
+#     Ny_bins,
+#     log_x           = True,
+#     poly_order      = None,
+#     auto_poly       = True,               # NEW: automatic degree selector
+#     max_poly_order  = 5,              # NEW: search cap for auto selector
+#     criterion       = "bic",               # NEW: {"bic"} (others reserved)
+#     n_jobs          = -1,
+#     return_counts   = False,
+#     return_avg_y    = False,
+#     low_pct         = 0.05,
+#     high_pct        = 99.8,
+# ):
+#     """
+#     Compute quantile edges of y as a function of x.
+
+#     Extensions over the previous version
+#     ------------------------------------
+#       • y-values outside the [low_pct, high_pct] range are discarded;
+#       • polynomial fits are weighted by the # of points in each x-bin;
+#       • *optional* automatic selection of the best polynomial degree
+#         using a conservative weighted-BIC score (set auto_poly=True).
+#     """
+#     # ---------- input checks & percentile clipping -------------------
+#     x = np.asarray(x, float).ravel()
+#     y = np.asarray(y, float).ravel()
+#     if x.shape != y.shape:
+#         raise ValueError("x and y must have the same length")
+#     if not (0 <= low_pct < high_pct <= 100):
+#         raise ValueError("0 ≤ low_pct < high_pct ≤ 100")
+
+#     lo, hi = np.percentile(y, [low_pct, high_pct])
+#     keep   = (y >= lo) & (y <= hi)
+#     x, y   = x[keep], y[keep]
+
+#     # ---------- x-bin edges ------------------------------------------
+#     x_edges = (np.logspace(np.log10(x.min()), np.log10(x.max()), Nx_bins + 1)
+#                if log_x else
+#                np.linspace(x.min(), x.max(), Nx_bins + 1))
+
+#     order                = np.argsort(x)
+#     x_sorted, y_sorted   = x[order], y[order]
+#     bin_idx              = np.searchsorted(x_sorted, x_edges)
+#     q_levels             = np.linspace(0.0, 1.0, Ny_bins + 1)
+
+#     # ---------- quantiles per x-bin ----------------------------------
+#     def _bin_q(i):
+#         s, e = bin_idx[i], bin_idx[i + 1]
+#         return (np.quantile(y_sorted[s:e], q_levels)
+#                 if e - s >= 2 else np.full_like(q_levels, np.nan))
+
+#     y_edges_per_bin = np.vstack(
+#         Parallel(n_jobs=n_jobs)(delayed(_bin_q)(i) for i in range(Nx_bins))
+#     )
+#     x_centres = 0.5 * (x_edges[:-1] + x_edges[1:])
+#     bin_sizes = np.diff(bin_idx)                            # <-- counts for weighting
+
+#     # ---------- counts / averages if requested -----------------------
+#     counts = av_y = None
+#     if return_counts or return_avg_y:
+#         def _stats(i):
+#             s, e = bin_idx[i], bin_idx[i + 1]
+#             if e - s < 1:
+#                 return np.zeros(Ny_bins, int), np.full(Ny_bins, np.nan)
+#             yy = y_sorted[s:e]
+#             c, _ = np.histogram(yy, bins=y_edges_per_bin[i])
+#             av  = np.array([
+#                 yy[(yy >= y_edges_per_bin[i,j]) & (yy < y_edges_per_bin[i,j+1])].mean()
+#                 if c[j] else np.nan for j in range(Ny_bins)
+#             ])
+#             return c, av
+#         tmp = Parallel(n_jobs=n_jobs)(delayed(_stats)(i) for i in range(Nx_bins))
+#         if return_counts: counts = np.vstack([t[0] for t in tmp])
+#         if return_avg_y : av_y   = np.vstack([t[1] for t in tmp])
+
+#     # ---------- (auto-)select polynomial degree ----------------------
+#     # If auto_poly is requested, ignore any user-supplied poly_order
+#     selected_poly_order = None
+#     selection_table     = None
+#     if auto_poly:
+#         if max_poly_order < 0:
+#             raise ValueError("max_poly_order must be non-negative")
+#         degrees   = range(max_poly_order + 1)
+#         bic_score = []
+
+#         for p in degrees:
+#             wrss = 0.0
+#             npts = 0
+#             for j in range(Ny_bins + 1):
+#                 ok = (~np.isnan(y_edges_per_bin[:, j])) & (bin_sizes > 0)
+#                 if ok.sum() < p + 1:       # not enough points to fit p-th order
+#                     continue
+#                 coeffs = np.polyfit(
+#                     x_centres[ok],
+#                     y_edges_per_bin[ok, j],
+#                     p,
+#                     w=np.sqrt(bin_sizes[ok]),
+#                 )
+#                 resid  = (np.polyval(coeffs, x_centres[ok])
+#                           - y_edges_per_bin[ok, j])
+#                 wrss  += np.sum(bin_sizes[ok] * resid**2)
+#                 npts  += ok.sum()
+#             if npts == 0 or wrss <= 0:
+#                 bic = np.inf
+#             else:
+#                 k   = p + 1
+#                 bic = npts * np.log(wrss / npts) + k * np.log(npts)
+#             bic_score.append(bic)
+
+#         selected_poly_order = int(np.argmin(bic_score))
+#         poly_order          = selected_poly_order
+#         selection_table     = {"degree": list(degrees), "score": bic_score}
+
+#     # ---------- weighted polynomial fits -----------------------------
+#     edge_functions      = None
+#     quantile_classifier = None
+#     if isinstance(poly_order, int) and poly_order >= 0:
+#         edge_functions = []
+#         for j in range(Ny_bins + 1):
+#             ok = (~np.isnan(y_edges_per_bin[:, j])) & (bin_sizes > 0)
+#             if ok.sum() < poly_order + 1:
+#                 edge_functions.append(None)
+#                 continue
+#             coeffs = np.polyfit(
+#                 x_centres[ok],
+#                 y_edges_per_bin[ok, j],
+#                 poly_order,
+#                 w=np.sqrt(bin_sizes[ok])
+#             )
+#             edge_functions.append(np.poly1d(coeffs))
+
+#         def _classifier(x0, y0):
+#             edges = np.array([
+#                 f(x0) if f is not None else np.nan for f in edge_functions
+#             ])
+#             return np.searchsorted(edges, y0, side="right") - 1
+#         quantile_classifier = _classifier
+
+#     # ---------- return ------------------------------------------------
+#     out = dict(
+#         x_edges=x_edges,
+#         x_centres=x_centres,
+#         y_edges_per_bin=y_edges_per_bin,
+#     )
+#     if edge_functions is not None:
+#         out["edge_functions"]      = edge_functions
+#         out["quantile_classifier"] = quantile_classifier
+#     if counts is not None:  out["counts"]      = counts
+#     if av_y   is not None:  out["av_y_values"] = av_y
+#     if auto_poly:
+#         out["selected_poly_order"] = selected_poly_order
+#         out["selection_table"]     = selection_table
+#     return out
+
+
+import numpy as np
+
+def masked_nanmean(arr, axis=1):
+    arr = np.asarray(arr)
+
+    # Mask: valid entries are non-nan and non-zero
+    mask = (~np.isnan(arr)) & (arr != 0)
+
+    # Replace nans with 0 for summation
+    arr_filled = np.nan_to_num(arr, nan=0.0)
+
+    # Sum over valid entries
+    sums = np.sum(arr_filled * mask, axis=axis)
+
+    # Count valid entries
+    counts = np.sum(mask, axis=axis)
+
+    # Compute mean safely
+    out = sums / counts
+    out[counts == 0] = np.nan  # if no valid entries, return nan
+    return out
+
+import numpy as np
+
+def masked_nanmedian(arr, axis=1):
+    arr = np.asarray(arr)
+
+    # valid entries are non-nan and non-zero
+    mask = (~np.isnan(arr)) & (arr != 0)
+
+    # need float dtype to support NaNs
+    arr_masked = arr.astype(float, copy=True)
+    arr_masked[~mask] = np.nan
+
+    # median over valid entries (nanmedian ignores NaNs)
+    out = np.nanmedian(arr_masked, axis=axis)
+    return out
+
+
+
+import numpy as np
+from joblib import Parallel, delayed
+
+# optional – only needed for model="parker" or "empirical"
+from scipy.special import lambertw
+from scipy.optimize import least_squares
+
+
+def compute_quantile_edges_function(
+    x, y,
+    Nx_bins,
+    Ny_bins,
+    *,
+    log_x           = True,
+    poly_order      = None,
+    auto_poly       = True,
+    max_poly_order  = 5,
+    criterion       = "bic",
+    model           = "parker",          # now: {"poly", "parker", "empirical"}
+    n_jobs          = -1,
+    return_counts   = False,
+    return_avg_y    = False,
+    low_pct         = 0.05,
+    high_pct        = 99.8,
+):
+    # --- input checks & percentile clipping -------------------
+    x = np.asarray(x, float).ravel()
+    y = np.asarray(y, float).ravel()
+    if x.shape != y.shape:
+        raise ValueError("x and y must have the same length")
+    if not (0 <= low_pct < high_pct <= 100):
+        raise ValueError("0 ≤ low_pct < high_pct ≤ 100")
+    if model not in {"poly", "parker", "empirical"}:
+        raise ValueError("model must be 'poly', 'parker' or 'empirical'")
+
+    lo, hi = np.percentile(y, [low_pct, high_pct])
+    keep   = (y >= lo) & (y <= hi)
+    x, y   = x[keep], y[keep]
+
+    # --- x‑bin edges --------------------------------------------
+    x_edges = (np.logspace(np.log10(x.min()), np.log10(x.max()), Nx_bins + 1)
+               if log_x else
+               np.linspace(x.min(), x.max(), Nx_bins + 1))
+
+    order                = np.argsort(x)
+    x_sorted, y_sorted   = x[order], y[order]
+    bin_idx              = np.searchsorted(x_sorted, x_edges)
+    q_levels             = np.linspace(0.0, 1.0, Ny_bins + 1)
+
+    # --- quantiles per x‑bin ------------------------------------
+    def _bin_q(i):
+        s, e = bin_idx[i], bin_idx[i + 1]
+        if e - s < 2:
+            return np.full_like(q_levels, np.nan)
+        return np.quantile(y_sorted[s:e], q_levels)
+
+    y_edges_per_bin = np.vstack(
+        Parallel(n_jobs=n_jobs)(delayed(_bin_q)(i) for i in range(Nx_bins))
+    )
+    x_centres = 0.5 * (x_edges[:-1] + x_edges[1:])
+    bin_sizes = np.diff(bin_idx)
+
+    # --- optional counts / averages -----------------------------
+    counts = av_y = None
+    if return_counts or return_avg_y:
+        def _stats(i):
+            s, e = bin_idx[i], bin_idx[i + 1]
+            if e - s < 1:
+                return np.zeros(Ny_bins, int), np.full(Ny_bins, np.nan)
+            yy = y_sorted[s:e]
+            c, _ = np.histogram(yy, bins=y_edges_per_bin[i])
+            av  = np.array([
+                yy[(yy >= y_edges_per_bin[i,j]) & (yy < y_edges_per_bin[i,j+1])].mean()
+                if c[j] else np.nan
+                for j in range(Ny_bins)
+            ])
+            return c, av
+
+        tmp = Parallel(n_jobs=n_jobs)(delayed(_stats)(i) for i in range(Nx_bins))
+        if return_counts: counts = np.vstack([t[0] for t in tmp])
+        if return_avg_y: av_y  = np.vstack([t[1] for t in tmp])
+
+    # ========== MODEL‑SPECIFIC EDGE FUNCTIONS ======================
+    edge_functions      = []
+    fit_parameters      = []
+    selected_poly_order = None
+    selection_table     = None
+
+    # ----------------------------------------------------------------
+    # (A) Polynomial branch
+    # ----------------------------------------------------------------
+    if model == "poly":
+        # optional automatic degree selection
+        if auto_poly:
+            degrees   = range(max_poly_order + 1)
+            bic_score = []
+            for p in degrees:
+                wrss = 0.0
+                npts = 0
+                for j in range(Ny_bins + 1):
+                    ok = (~np.isnan(y_edges_per_bin[:, j])) & (bin_sizes > 0)
+                    if ok.sum() < p + 1:
+                        continue
+                    coeffs = np.polyfit(x_centres[ok], y_edges_per_bin[ok, j],
+                                        p, w=np.sqrt(bin_sizes[ok]))
+                    resid  = (np.polyval(coeffs, x_centres[ok])
+                              - y_edges_per_bin[ok, j])
+                    wrss  += np.sum(bin_sizes[ok] * resid**2)
+                    npts  += ok.sum()
+                bic = (np.inf if (npts == 0 or wrss <= 0)
+                       else npts*np.log(wrss/npts) + (p+1)*np.log(npts))
+                bic_score.append(bic)
+            selected_poly_order = int(np.argmin(bic_score))
+            poly_order          = selected_poly_order
+            selection_table     = {"degree": list(degrees), "score": bic_score}
+
+        if not isinstance(poly_order, int) or poly_order < 0:
+            raise ValueError("poly_order must be a non‑negative integer")
+
+        for j in range(Ny_bins + 1):
+            ok = (~np.isnan(y_edges_per_bin[:, j])) & (bin_sizes > 0)
+            if ok.sum() < poly_order + 1:
+                edge_functions.append(None)
+                fit_parameters.append(None)
+                continue
+            coeffs = np.polyfit(x_centres[ok], y_edges_per_bin[ok, j],
+                                poly_order, w=np.sqrt(bin_sizes[ok]))
+            fit_parameters.append(coeffs)
+
+            p = np.poly1d(coeffs)
+            edge_functions.append(p)
+
+    # ----------------------------------------------------------------
+    # (B) Parker branch
+    # ----------------------------------------------------------------
+    elif model == "parker":
+        def parker_speed(r, C, rc):
+            r  = np.asarray(r, float)
+            R  = 4.0 * (np.log(r/rc) + rc/r - 1.0)
+            z  = -np.exp(-(R + 1.0))
+            w0  = lambertw(z, k=0).real
+            w_1 = lambertw(z, k=-1).real
+            w   = np.where(r <= rc, w0, w_1)
+            return C * np.sqrt(-w)
+
+        for j in range(Ny_bins + 1):
+            ok = (~np.isnan(y_edges_per_bin[:, j])) & (bin_sizes > 0)
+            if ok.sum() < 3:
+                edge_functions.append(None)
+                fit_parameters.append(None)
+                continue
+
+            r_data = x_centres[ok]
+            v_data = y_edges_per_bin[ok, j]
+            wts    = np.sqrt(bin_sizes[ok])
+
+            C0  = np.nanmedian(v_data) / np.sqrt(2.0)
+            rc0 = np.nanmedian(r_data)
+
+            def resid_parker(p):
+                return (parker_speed(r_data, *p) - v_data) * wts
+
+            sol = least_squares(resid_parker, x0=[C0, rc0],
+                                bounds=([0.0, 0.0], np.inf))
+            C_fit, rc_fit = sol.x
+
+            fit_parameters.append((C_fit, rc_fit))
+            edge_functions.append(
+                lambda r, C=C_fit, rc=rc_fit: parker_speed(r, C, rc)
+            )
+
+    # ----------------------------------------------------------------
+    # (C) Empirical exponential branch
+    # ----------------------------------------------------------------
+    else:  # model == "empirical"
+        def empirical_speed(r, u_inf, r1, a):
+            return u_inf * (1 - np.exp(- (r / r1)**a))
+
+        for j in range(Ny_bins + 1):
+            ok = (~np.isnan(y_edges_per_bin[:, j])) & (bin_sizes > 0)
+            if ok.sum() < 3:
+                edge_functions.append(None)
+                fit_parameters.append(None)
+                continue
+
+            r_data = x_centres[ok]
+            v_data = y_edges_per_bin[ok, j]
+            wts    = np.sqrt(bin_sizes[ok])
+
+            # initial guesses
+            u_inf0 = np.nanmax(v_data)
+            r10    = np.nanmedian(r_data)
+            a0     = 1.0
+
+            def resid_empirical(p):
+                return (empirical_speed(r_data, *p) - v_data) * wts
+
+            sol = least_squares(
+                resid_empirical,
+                x0=[u_inf0, r10, a0],
+                bounds=([0.0, 0.0, 0.0], np.inf)
+            )
+            u_inf_fit, r1_fit, a_fit = sol.x
+
+            fit_parameters.append((u_inf_fit, r1_fit, a_fit))
+            edge_functions.append(
+                lambda r, ui=u_inf_fit, r1=r1_fit, a=a_fit: empirical_speed(r, ui, r1, a)
+            )
+
+    # --- common classifier -----------------------------------------
+    def _classifier(x0, y0):
+        edges = np.array([
+            f(x0) if f is not None else np.nan
+            for f in edge_functions
+        ])
+        return np.searchsorted(edges, y0, side="right") - 1
+
+    # --- package output --------------------------------------------
+    out = dict(
+        x_edges             = x_edges,
+        x_centres           = x_centres,
+        y_edges_per_bin     = y_edges_per_bin,
+        edge_functions      = edge_functions,
+        quantile_classifier = _classifier,
+        fit_parameters      = fit_parameters,
+        model               = model,
+    )
+    if counts is not None:    out["counts"]      = counts
+    if av_y is not None:      out["av_y_values"] = av_y
+    if model == "poly" and auto_poly:
+        out["selected_poly_order"] = selected_poly_order
+        out["selection_table"]     = selection_table
+
+    return out
+
+
+from scipy.special import lambertw
+
+# Synthetic demonstration of full vs. surrogate Parker‐wind curves.
+# Replace fit_params, d_all, and v_all with your own quantile_functions and data_dict.
+
+# --- Define helper functions ---
+def eval_lambertw(r, fit_parameters):
+    r = np.asarray(r, float)
+    params = np.asarray(fit_parameters, float)
+    C  = params[:, 0][:, None]
+    rc = params[:, 1][:, None]
+    R  = r[None, :]
+    X  = 4.0 * (np.log(R/rc) + rc/R - 1.0)
+    Z  = -np.exp(-(X + 1.0))
+    W0 = lambertw(Z, k=0).real
+    W1 = lambertw(Z, k=-1).real
+    mask = (R <= rc)
+    W = np.where(mask, W0, W1)
+    return C * np.sqrt(-W)
+
+def build_parker_surrogates(fit_parameters, r_min, r_max, n_samples=100, poly_degree=5):
+    r_samp = np.exp(np.linspace(np.log(r_min), np.log(r_max), n_samples))
+    V_mat = eval_lambertw(r_samp, fit_parameters)
+    ln_r = np.log(r_samp)
+    coefs = np.zeros((len(fit_parameters), poly_degree+1))
+    for j in range(len(fit_parameters)):
+        ln_V = np.log(V_mat[j])
+        coefs[j] = np.polyfit(ln_r, ln_V, poly_degree)
+    return coefs
+
+def eval_parker_surrogates(r, coefs):
+    ln_r = np.log(r)
+    ln_V = np.vstack([np.polyval(coefs[j], ln_r) for j in range(len(coefs))])
+    return np.exp(ln_V)
+
+
+
+def compute_optimal_y_bins(x,
+                           y,
+                           Nx_bins,
+                           Ny_bins,
+                           log_x         = True,
+                           n_jobs        = -1,
+                           return_counts = False,
+                           return_avg_y  = False):
+    """
+    Given arrays x and y, this function:
+      1. Creates Nx_bins x bins (using linear or logarithmic spacing).
+      2. Within each x bin, splits the corresponding y values into Ny_bins bins (via quantiles).
+      3. Computes the optimal y bin edges as the median of the y bin edges computed across x bins.
+      4. Optionally returns:
+         - counts: a (Nx_bins, Ny_bins) counts matrix (number of points per x bin for each global y bin).
+         - avg_y: overall average y per x bin.
+         - av_y_values: a (Nx_bins, Ny_bins) matrix of the cell‐averaged y values.
+    
+    Returns a dictionary with keys:
+        'x_edges': x bin edges,
+        'y_edges': optimal y bin edges,
+        'x': x bin centers,
+        and optionally 'counts', 'avg_y', 'av_y_values'.
+    """
+    def _compute_quantile_for_bin(start, end, y_sorted, q):
+        if start == end:
+            return None
+        return np.quantile(y_sorted[start:end], q)
+    
+    def _compute_counts_for_xbin(i, bin_idx, y_sorted, optimal_y_edges, Ny_bins):
+        start, end = bin_idx[i], bin_idx[i+1]
+        if start == end:
+            return np.zeros(Ny_bins, dtype=int)
+        return np.histogram(y_sorted[start:end], bins=optimal_y_edges)[0]
+    
+    def _compute_cell_avg_for_xbin(i, bin_idx, y_sorted, optimal_y_edges, Ny_bins):
+        start, end = bin_idx[i], bin_idx[i+1]
+        if start == end:
+            return np.full(Ny_bins, np.nan)
+        y_cell = y_sorted[start:end]
+        avg_values = np.empty(Ny_bins, dtype=float)
+        for j in range(Ny_bins):
+            lower = optimal_y_edges[j]
+            upper = optimal_y_edges[j+1]
+            # Use a half-open interval except for the last bin
+            if j < Ny_bins - 1:
+                mask = (y_cell >= lower) & (y_cell < upper)
+            else:
+                mask = (y_cell >= lower) & (y_cell <= upper)
+            avg_values[j] = np.mean(y_cell[mask]) if np.any(mask) else np.nan
+        return avg_values
+    
+    def _compute_avg_for_xbin(i, bin_idx, y_sorted):
+        start, end = bin_idx[i], bin_idx[i+1]
+        return np.mean(y_sorted[start:end]) if start != end else np.nan
+    
+
+
+    
+    results = {}
+
+    # Ensure arrays
+    x = np.asarray(x)
+    y = np.asarray(y)
+    
+    # Compute x bin edges (linear or logarithmic)
+    if log_x:
+        x_edges = np.logspace(np.log10(x.min()), np.log10(x.max()), Nx_bins+1)
+    else:
+        x_edges = np.linspace(x.min(), x.max(), Nx_bins+1)
+    results['x_edges'] = x_edges
+
+    # Sort x and y for fast slicing
+    order = np.argsort(x)
+    x_sorted = x[order]
+    y_sorted = y[order]
+    
+    # Find indices corresponding to x bin boundaries
+    bin_idx = np.searchsorted(x_sorted, x_edges)
+    
+    # Precompute quantile levels for Ny_bins bins
+    q = np.linspace(0, 1, Ny_bins+1)
+    
+    # Parallel computation: compute quantile edges for each x bin
+    quantiles = Parallel(n_jobs=n_jobs)(
+        delayed(_compute_quantile_for_bin)(bin_idx[i], bin_idx[i+1], y_sorted, q)
+        for i in range(Nx_bins)
+    )
+    
+    # Compute x bin centers
+    xb = x_edges[:-1] + 0.5 * (x_edges[1:] - x_edges[:-1])
+    results['x'] = xb
+
+    # Filter out empty x bins
+    valid_quantiles = [q_arr for q_arr in quantiles if q_arr is not None]
+    if not valid_quantiles:
+        raise ValueError("No valid x bins with data found.")
+    
+    # Stack per-bin quantile arrays and compute median across x bins to get global y edges
+    y_quantiles = np.vstack(valid_quantiles)
+    optimal_y_edges = np.median(y_quantiles, axis=0)
+    results['y_edges'] = optimal_y_edges
+    
+    if return_counts:
+        counts_list = Parallel(n_jobs=n_jobs)(
+            delayed(_compute_counts_for_xbin)(i, bin_idx, y_sorted, optimal_y_edges, Ny_bins)
+            for i in range(Nx_bins)
+        )
+        counts = np.vstack(counts_list)
+        results['counts'] = counts
+    
+
+    if return_avg_y:
+        cell_avg_list = Parallel(n_jobs=n_jobs)(
+            delayed(_compute_cell_avg_for_xbin)(i, bin_idx, y_sorted, optimal_y_edges, Ny_bins)
+            for i in range(Nx_bins)
+        )
+        cell_avg_y = np.vstack(cell_avg_list)
+        results['av_y_values'] = cell_avg_y
+    
+    return results
 
 
 
@@ -52,8 +867,6 @@ def ensure_iterable(obj):
     else:
         return [obj]
 
-
-import orderedstructs
 
 def savepickle_dill(df_2_save, save_path, filename):
     file_path = Path(save_path).joinpath(filename)
@@ -140,11 +953,11 @@ def compute_curvature(x, y):
     
     return curvature
 
-
+import pytplot
 def tplot_to_dataframe(file_path, 
-                       var_name=None, 
-                       convert_time_to_datetime=True,
-                       time_unit='s'):
+                       var_name                 = None, 
+                       convert_time_to_datetime = True,
+                       time_unit                = 's'):
     """
     Restore a TPlot file (IDL .tplot or .sav with TPlot variables) using pytplot
     and convert a specified TPlot variable into a pandas DataFrame with a DateTimeIndex.
@@ -246,155 +1059,14 @@ def tplot_to_dataframe(file_path,
         # Name each column var_name_0, var_name_1, etc.
         col_count = data_vals.shape[1]
         col_names = [f"{var_name}_{i}" for i in range(col_count)]
-        df = pd.DataFrame(data_vals, index=time_index, columns=col_names)
+        df        = pd.DataFrame(data_vals, index=time_index, columns=col_names)
 
     return df
 
 
 
-# def synchronize_dfs(df_higher_freq, df_lower_freq, upsample=True, 
-#                    order_up=3, order_down=5, percentage=1.15, interp_method='linear'):
-#     """
-#     Align two DataFrames based on their frequency by either upsampling the lower frequency DataFrame 
-#     or downsampling the higher frequency DataFrame.
-
-#     Args:
-#         df_higher_freq: [pandas DataFrame] DataFrame with higher frequency data.
-#         df_lower_freq: [pandas DataFrame] DataFrame with lower frequency data.
-#         upsample: [bool] If True, upsample the lower frequency DataFrame; otherwise, downsample the higher frequency one.
-#         order_up: [int] Order of the Butterworth filter for upsampling.
-#         order_down: [int] Order of the Butterworth filter for downsampling.
-#         percentage: [float] Multiplier for the cutoff frequency during downsampling.
-#         interp_method: [str] Interpolation method for reindexing.
-
-#     Returns:
-#         Tuple[pandas DataFrame, pandas DataFrame]: Aligned DataFrames (high_freq_df, low_freq_df).
-#     """
-    
-
-#     if overlapping_start >= overlapping_end:
-#         raise ValueError("No overlapping time range between high_df and low_df.")
-
-#     # Trim both DataFrames to the overlapping range before any processing
-
-#     if upsample:
-#         # Upsample the lower frequency DataFrame to match the higher frequency one
-#         aligned_lower_freq = signal_processing.upsample_and_filter(
-#             low_df         = df_lower_freq, 
-#             high_df        = df_higher_freq, 
-#             order          = order_up, 
-#             interp_method  = interp_method
-#         )
-#         # Ensure both DataFrames cover the exact same time range after synchronization
-#         aligned_high_freq = df_higher_freq.loc[aligned_lower_freq.index]
-#         return aligned_high_freq, aligned_lower_freq
-
-#     else:
-#         # Downsample the higher frequency DataFrame to match the lower frequency one
-#         aligned_higher_freq  = signal_processing.downsample_and_filter(
-#             high_df          = df_higher_freq, 
-#             low_df           = df_lower_freq, 
-#             order            = order_down, 
-#             percentage       = percentage
-#         )
-        
-#         # Ensure both DataFrames cover the exact same time range after synchronization
-#         aligned_low_freq = df_lower_freq.loc[aligned_higher_freq.index]
-#         return aligned_higher_freq, aligned_low_freq
 
 
-
-def synchronize_dfs(df_higher_freq, df_lower_freq, upsample):
-    """
-    Align two dataframes based on their frequency, upsample lower frequency 
-    dataframe if specified, otherwise downsample the higher frequency one.
-
-    In the end, we ensure that we return two DataFrames that:
-      1. Are strictly in the overlapping time range,
-      2. Have no NaNs at the beginning or end (trimmed away),
-      3. Are time-interpolated (so small internal gaps are filled).
-    """
-    if upsample:
-        # 1) Upsample lower frequency to match higher frequency
-        aligned_lower_freq = signal_processing.upsample_dataframe(df_lower_freq, df_higher_freq)
-
-        # 2) Overlap clamp
-        overlapping_start = max(df_higher_freq.index.min(), aligned_lower_freq.index.min())
-        overlapping_end   = min(df_higher_freq.index.max(), aligned_lower_freq.index.max())
-
-        df_higher_freq     = df_higher_freq.loc[overlapping_start:overlapping_end]
-        aligned_lower_freq = aligned_lower_freq.loc[overlapping_start:overlapping_end]
-
-        # 3) Interpolate both to fill small gaps
-        df_higher_freq     = df_higher_freq.interpolate(method='time')
-        aligned_lower_freq = aligned_lower_freq.interpolate(method='time')
-
-        # 4) Remove leading/trailing NaNs from both
-
-        # (a) Find first/last valid index in each
-        fvi_high = df_higher_freq.first_valid_index()
-        lvi_high = df_higher_freq.last_valid_index()
-
-        fvi_low  = aligned_lower_freq.first_valid_index()
-        lvi_low  = aligned_lower_freq.last_valid_index()
-
-        # If either is entirely NaN, just return empty slices
-        if fvi_high is None or fvi_low is None:
-            return (df_higher_freq.iloc[0:0], aligned_lower_freq.iloc[0:0])
-
-        # (b) Take the maximum of first_valid_indices => start
-        new_start = max(fvi_high, fvi_low)
-        # (c) Take the minimum of last_valid_indices  => end
-        new_end   = min(lvi_high, lvi_low)
-
-        # (d) Trim both DataFrames
-        df_higher_freq     = df_higher_freq.loc[new_start:new_end]
-        aligned_lower_freq = aligned_lower_freq.loc[new_start:new_end]
-
-        return df_higher_freq, aligned_lower_freq
-
-    else:
-        # 1) Downsample higher frequency to match lower frequency
-        try:
-            # Interpolate + dropna inside, if needed (unchanged)
-            aligned_higher_freq = signal_processing.downsample_and_filter(
-                df_higher_freq.interpolate().dropna(),
-                df_lower_freq.interpolate().dropna()
-            )
-            
-            # 2) Overlap clamp
-            overlapping_start = max(aligned_higher_freq.index.min(), df_lower_freq.index.min())
-            overlapping_end   = min(aligned_higher_freq.index.max(), df_lower_freq.index.max())
-
-            aligned_higher_freq = aligned_higher_freq.loc[overlapping_start:overlapping_end]
-            df_lower_freq       = df_lower_freq.loc[overlapping_start:overlapping_end]
-
-            # 3) Interpolate both (fills small internal gaps)
-            aligned_higher_freq = aligned_higher_freq.interpolate(method='time')
-            df_lower_freq       = df_lower_freq.interpolate(method='time')
-
-            # 4) Remove leading/trailing NaNs from both
-            fvi_high = aligned_higher_freq.first_valid_index()
-            lvi_high = aligned_higher_freq.last_valid_index()
-
-            fvi_low  = df_lower_freq.first_valid_index()
-            lvi_low  = df_lower_freq.last_valid_index()
-
-            if fvi_high is None or fvi_low is None:
-                return (aligned_higher_freq.iloc[0:0], df_lower_freq.iloc[0:0])
-
-            new_start = max(fvi_high, fvi_low)
-            new_end   = min(lvi_high, lvi_low)
-
-            aligned_higher_freq = aligned_higher_freq.loc[new_start:new_end]
-            df_lower_freq       = df_lower_freq.loc[new_start:new_end]
-
-            return aligned_higher_freq, df_lower_freq
-
-        except Exception as e:
-            print(f'Error aligning dataframes: {e}')
-            # Optionally handle error or return the original dataframes
-            return df_higher_freq, df_lower_freq
 
 
 def clean_data(x, y):
@@ -460,6 +1132,44 @@ def custom_nansum_product(xvec, yvec, axis):
                 if not np.isnan(xvec[j, i]) and not np.isnan(yvec[j, i]):
                     result[j] += xvec[j, i] * yvec[j, i]
     return result
+
+
+
+
+import sqlite3
+import os
+
+def print_last_100_commands():
+    # Locate the default IPython history file.
+    # If you use a different profile, adjust the path accordingly.
+    history_path = os.path.expanduser("~/.ipython/profile_default/history.sqlite")
+    
+    if not os.path.exists(history_path):
+        print("IPython history file not found. Check your IPython profile settings.")
+        return
+
+    # Connect to the SQLite database
+    conn = sqlite3.connect(history_path)
+    cursor = conn.cursor()
+    
+    # The history is stored in a table named 'history' where each row represents a command.
+    # This query orders by the session and line number in descending order, then limits to 30 entries.
+    query = """
+        SELECT source
+        FROM history
+        ORDER BY session DESC, line DESC
+        LIMIT 100
+    """
+    cursor.execute(query)
+    commands = cursor.fetchall()
+
+    conn.close()
+
+    # Print each command cell
+    for idx, (command,) in enumerate(commands, start=1):
+        print(f"--- Command {idx} ---")
+        print(command)
+        print()
 
 
 
@@ -860,117 +1570,82 @@ def smooth_filter(xv, arr, window):
     return smooth_grad
 
 
+import numpy as np
+import pandas as pd
+from numba import njit
+import matplotlib.pyplot as plt
+
 @njit
-def custom_median(array):
-    sorted_array = np.sort(array)
-    n = len(sorted_array)
-    middle = n // 2
+def custom_median(arr):
+    """Compute the median of a 1D array."""
+    sarr = np.sort(arr)
+    n = sarr.shape[0]
+    mid = n // 2
     if n % 2 == 0:
-        return 0.5 * (sorted_array[middle - 1] + sorted_array[middle])
+        return 0.5 * (sarr[mid - 1] + sarr[mid])
     else:
-        return sorted_array[middle]
+        return sarr[mid]
 
 @njit
-def calc_medians(window_size, arr, medians):
-    half_window = window_size // 2
-    n = len(arr)
-    for i in range(half_window, n - half_window):
-        window = arr[i - half_window:i + half_window + 1]
-        medians[i] = custom_median(window)
-    return medians
-
-@njit
-def calc_medians_std(window_size, arr, medians_diff, medians):
-    half_window = window_size // 2
-    k = 1.4826  # Scale factor for Gaussian distribution
-    n = len(arr)
-    for i in range(half_window, n - half_window):
-        window = arr[i - half_window:i + half_window + 1]
-        median = medians[i]
-        abs_deviation = np.abs(window - median)
-        mad = custom_median(abs_deviation)
-        medians_diff[i] = k * mad
-    return medians_diff
-
-@njit(parallel=True)
-def calc_medians_parallel(window_size, arr, medians):
-    half_window = window_size // 2
-    n = len(arr)
-    for i in prange(half_window, n - half_window):
-        window     = arr[i - half_window:i + half_window + 1]
-        medians[i] = custom_median(window)
-    return medians
-
-@njit(parallel=True)
-def calc_medians_std_parallel(window_size, arr, medians_diff, medians):
-    half_window = window_size // 2
-    k = 1.4826
-    n = len(arr)
-    for i in prange(half_window, n - half_window):
-        window = arr[i - half_window:i + half_window + 1]
-        median = medians[i]
-        abs_deviation = np.abs(window - median)
-        mad = custom_median(abs_deviation)
-        medians_diff[i] = k * mad
-    return medians_diff
-
-def hampel(arr, window_size=5, n=3, parallel=True):
+def hampel_filter_core(arr, window_size, n_sigmas):
     """
-    Apply Hampel filter to despike a time series by removing spurious data points.
+    Core Hampel filter that processes every element.
+    At the boundaries the window is reduced to the available points.
+    """
+    half_window = window_size // 2
+    n = arr.shape[0]
+    filtered = arr.copy()
+    for i in range(n):
+        # Determine window boundaries (using available points at edges)
+        start = i - half_window if i - half_window >= 0 else 0
+        end = i + half_window + 1 if i + half_window + 1 <= n else n
+        window = arr[start:end]
+        med = custom_median(window)
+        mad = custom_median(np.abs(window - med))
+        threshold = n_sigmas * 1.4826 * mad
+        if np.abs(arr[i] - med) > threshold:
+            filtered[i] = med
+    return filtered
 
-    Parameters:
+def hampel(arr, window_size=5, n=3):
+    """
+    Apply the Hampel filter to a 1D time series to replace outliers.
+
+    Parameters
     ----------
     arr : numpy.ndarray, pandas.Series, or pandas.DataFrame
-        The input time series as a 1-dimensional array.
+        1D input time series.
     window_size : int, optional
-        The size of the sliding window used to compute the median and MAD of neighboring values.
-        It should be an odd integer to have a symmetric window around each point. The default value is 5.
+        Size of the sliding window (must be odd). If even, it will be adjusted.
     n : int or float, optional
-        The number of MADs away from the median used to define outliers. Data points that deviate
-        from the median by more than `n` times the MAD are considered outliers. The default value is 3.
-    parallel : bool, optional
-        Whether to use parallel computation for performance. The default is True.
+        The number of MADs (after scaling) used to define outliers.
 
-    Returns:
+    Returns
     -------
     filtered_arr : numpy.ndarray
-        A new filtered time series with outliers replaced by the median of neighboring values.
+        The filtered time series with outliers replaced by the window median.
     outlier_indices : numpy.ndarray
-        An array of indices corresponding to the positions of the identified outliers in the original `arr`.
+        Indices where outliers were detected and replaced.
     """
-    # Convert input to numpy array if it's a pandas Series or DataFrame
+    # Convert input to a 1D numpy array
     if isinstance(arr, (pd.Series, pd.DataFrame)):
         arr = arr.values.flatten()
-    elif not isinstance(arr, np.ndarray):
-        raise ValueError("arr must be a numpy array or pandas Series or DataFrame!")
-    
+    else:
+        arr = np.asarray(arr)
     if arr.ndim != 1:
         raise ValueError("Input array must be one-dimensional!")
-
+        
     # Ensure window_size is odd
     if window_size % 2 == 0:
-        window_size += 1  # Make it odd
-        print(f"window_size adjusted to {window_size} to make it odd.")
-
-    medians      = np.full_like(arr, np.nan, dtype=np.float64)
-    medians_diff = np.full_like(arr, np.nan, dtype=np.float64)
-
-    if parallel:
-        medians = calc_medians_parallel(window_size, arr, medians)
-        medians_diff = calc_medians_std_parallel(window_size, arr, medians_diff, medians)
-    else:
-        medians = calc_medians(window_size, arr, medians)
-        medians_diff = calc_medians_std(window_size, arr, medians_diff, medians)
-
-    # Identify outliers
-    threshold = n * medians_diff
-    difference = np.abs(arr - medians)
-    outlier_indices = np.where(difference > threshold)[0]
-
-    # Create a copy of the original array to avoid modifying it
-    filtered_arr = arr.copy()
-    filtered_arr[outlier_indices] = medians[outlier_indices]
-
+        window_size += 1
+        print(f"window_size adjusted to {window_size} for symmetry.")
+    
+    # Apply the core Hampel filter
+    filtered_arr = hampel_filter_core(arr, window_size, n)
+    
+    # Determine outlier indices (where the value was replaced)
+    outlier_indices = np.where(filtered_arr != arr)[0]
+    
     return filtered_arr, outlier_indices
 
 # solve for a and b
@@ -1048,30 +1723,172 @@ def curve_fit_log(xdata, ydata) :
     # There is no need to apply fscalex^-1 as original data is already available
     return (popt_log, pcov_log, ydatafit_log)
 
+import numpy as np
+import matplotlib.pyplot as plt
+
+import numpy as np
+import matplotlib.pyplot as plt
 
 
-def find_fit(x, y, x0, xf):  
-    x    = np.array(x)
-    y    = np.array(y)
-    ind1 = np.argsort(x)
-     
-    x   = x[ind1]
-    y   = y[ind1]
-    ind = y>-1e15
+# ----------------------------------------------------------------------
+# plaw_fit_est_plot
+# ----------------------------------------------------------------------
+def plaw_fit_est_plot(
+    x, y,
+    x0, xf,
+    ax=None,
+    n_plot: int = 200,
+    var_symbol: str = "R",
+    **plot_kwargs,
+):
+    """
+    Fit and (optionally) plot a power law :math:`y = A\,x^{m}` on
+    the interval :math:`[x_0,\,x_f]`.
 
-    x   = x[ind]
-    y   = y[ind]
-    # Apply fit on specified range #
-   # print(len(np.where(x == x.flat[np.abs(x - x0).argmin()])[0]))
-    if  len(np.where(x == x.flat[np.abs(x - x0).argmin()])[0])>-0:
-        s = np.where(x == x.flat[np.abs(x - x0).argmin()])[0][0]
-        e = np.where(x  == x.flat[np.abs(x - xf).argmin()])[0][0]
-        
-        if (len(y[s:e])>1):
-            fit = curve_fit_log(x[s:e],y[s:e])
-            return fit, s, e, x, y
+    Parameters
+    ----------
+    x, y : array‑like
+        Data vectors.
+    x0, xf : float
+        Lower and upper bounds of the fitting window.
+    ax : matplotlib.axes.Axes, optional
+        Axis on which to draw the fitted curve.
+    n_plot : int, default = 200
+        Number of points in the smooth curve plotted for visualisation.
+    var_symbol : str, default = ``"R"``
+        LaTeX variable to display as the base of the power‑law in the legend.
+        For example, ``var_symbol="k"`` will label the fit as
+        :math:`k^{m\\,\\pm\\,\\Delta m}`.
+    **plot_kwargs
+        Passed directly to :py:meth:`matplotlib.axes.Axes.loglog`.
+
+    Returns
+    -------
+    x_fit : ndarray
+        Geometric grid spanning :math:`[x_0,\,x_f]` (length = *n_plot*).
+    y_fit : ndarray
+        Best‑fit curve :math:`A\,x^{m}`.
+    plaw_exp : float
+        Slope :math:`m` of the power law.
+    err_plaw_exp : float
+        1‑σ uncertainty on :math:`m` (from covariance of the log–log fit).
+    """
+    # --- 1. clean & select data ------------------------------------------
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+
+    good = (x > 0) & (y > 0)      # enforce domain (logarithms below)
+    x, y = x[good], y[good]
+
+    sel = (x >= x0) & (x <= xf)
+    if sel.sum() < 2:
+        raise ValueError("Not enough points in fitting window")
+
+    x_win, y_win = x[sel], y[sel]
+
+    # --- 2. log–log linear regression ------------------------------------
+    logx, logy = np.log(x_win), np.log(y_win)
+    (m, logA), cov = np.polyfit(logx, logy, 1, cov=True)
+    err_m = float(np.sqrt(cov[0, 0]))
+    A     = float(np.exp(logA))
+
+    # --- 3. smooth curve for plotting ------------------------------------
+    x_fit = np.geomspace(x0, xf, n_plot)
+    y_fit = A * x_fit**m
+
+    # --- 4. optional plotting --------------------------------------------
+    if ax is None:
+        ax = plt.gca()
+    lbl = rf"${var_symbol}^{{{m:.2f}\,\pm\,{err_m:.2f}}}$"
+    ax.loglog(x_fit, y_fit, label=lbl, **plot_kwargs)
+
+    return x_fit, y_fit, m, err_m
+
+
+import numpy as np
+
+def find_fit(x, y, x0, xf, return_fit_values=False, return_uncertainty=False, return_cov=False):
+    """
+    Perform a log–log (power-law) fit of y(x) over [x0, xf], using natural logs:
+
+        log(y) = a + m log(x)   ->   y = exp(a) * x^m
+
+    Parameters
+    ----------
+    x, y : array-like
+        Data arrays.
+    x0, xf : float
+        Fit range in x.
+    return_fit_values : bool
+        If True, return (x_fit, y_fit) over the fitted slice.
+        If False, return the cleaned (x, y).
+    return_uncertainty : bool
+        If True, also return (a_err, m_err) from the polyfit covariance.
+    return_cov : bool
+        If True, also return covariance matrix 'cov' from np.polyfit(..., cov=True).
+
+    Returns (backward compatible)
+    -----------------------------
+    Base return:
+        fit, s, e, x_out, y_out
+    where:
+        fit = (a, m)
+        s, e are slice indices on the cleaned/sorted arrays
+        x_out, y_out are either cleaned (x, y) or fit-curve (x_fit, y_fit)
+
+    Optional extras (appended, in this order if requested):
+        (a_err, m_err), cov
+    """
+    x = np.asarray(x)
+    y = np.asarray(y)
+
+    order = np.argsort(x)
+    x = x[order]
+    y = y[order]
+
+    mask = (x > 0) & (y > 0)
+    x = x[mask]
+    y = y[mask]
+
+    s = np.searchsorted(x, x0, side="left")
+    e = np.searchsorted(x, xf, side="right")
+    if e - s < 2:
+        raise ValueError("Not enough points in fitting range")
+
+    logx = np.log(x[s:e])
+    logy = np.log(y[s:e])
+
+    cov = None
+    try:
+        coeff, cov = np.polyfit(logx, logy, 1, cov=True)  # coeff = [m, a]
+    except TypeError:
+        coeff = np.polyfit(logx, logy, 1)                 # coeff = [m, a]
+
+    m, a = float(coeff[0]), float(coeff[1])
+    fit = (a, m)
+
+    if return_fit_values:
+        x_out = x[s:e]
+        y_out = np.exp(a) * x_out**m
+    else:
+        x_out = x
+        y_out = y
+
+    extras = []
+    if return_uncertainty:
+        if cov is None:
+            a_err = np.nan
+            m_err = np.nan
         else:
-            return [0],0,0,0,[0]
+            m_err = float(np.sqrt(cov[0, 0]))
+            a_err = float(np.sqrt(cov[1, 1]))
+        extras.append((a_err, m_err))
+
+    if return_cov:
+        extras.append(cov)
+
+    return (fit, s, e, x_out, y_out, *extras)
+
 
 def curve_fit_log_wrap(x, y, x0, xf):  
     
@@ -1585,66 +2402,100 @@ def interp(df, new_index):
 
 
 
-def simple_python_rolling_median(vector: np.ndarray,
-                                 window_length: int) -> np.ndarray:
-    """Computes a rolling median of a numpy vector returning a new numpy
-    vector of the same length.
-    NaNs in the input are not handled but a ValueError will be raised."""
-    if vector.ndim != 1:
-        raise ValueError(
-            f'vector must be one dimensional not shape {vector.shape}'
-        )
-    skip_list = orderedstructs.SkipList(float)
-    ret = np.empty_like(vector)
-    for i in range(len(vector)):
-        value = vector[i]
-        skip_list.insert(value)
-        if i >= window_length - 1:
-            # // 4 for lower quartile
-            # * 3 // 4 for upper quartile etc.
-            median = skip_list.at(window_length // 2)
-            skip_list.remove(vector[i - window_length + 1])
-        else:
-            median = np.nan
-        ret[i] = median
-    return ret
+# def simple_python_rolling_median(vector: np.ndarray,
+#                                  window_length: int) -> np.ndarray:
+#     """Computes a rolling median of a numpy vector returning a new numpy
+#     vector of the same length.
+#     NaNs in the input are not handled but a ValueError will be raised."""
+#     if vector.ndim != 1:
+#         raise ValueError(
+#             f'vector must be one dimensional not shape {vector.shape}'
+#         )
+#     skip_list = orderedstructs.SkipList(float)
+#     ret = np.empty_like(vector)
+#     for i in range(len(vector)):
+#         value = vector[i]
+#         skip_list.insert(value)
+#         if i >= window_length - 1:
+#             # // 4 for lower quartile
+#             # * 3 // 4 for upper quartile etc.
+#             median = skip_list.at(window_length // 2)
+#             skip_list.remove(vector[i - window_length + 1])
+#         else:
+#             median = np.nan
+#         ret[i] = median
+#     return ret
 
 
 
 
-def  use_dates_return_elements_of_df_inbetween(t0, t1, df):
+# def  use_dates_return_elements_of_df_inbetween(t0, t1, df):
+#     """
+#     Return the rows of df between the nearest indices to t0 and t1 using iloc.
+
+#     Parameters:
+#     -----------
+#     t0 : datetime-like or str
+#         Start date (if str, converted to datetime).
+#     t1 : datetime-like or str
+#         End date (if str, converted to datetime).
+#     df : pd.DataFrame
+#         DataFrame with a sorted datetime-like index.
+
+#     Returns:
+#     --------
+#     pd.DataFrame
+#         A DataFrame slice from the nearest index to t0 up to the nearest index to t1.
+#     """
+#     df = df.sort_index()
+
+#     # Convert to datetime if necessary
+#     if isinstance(t0, str):
+#         t0 = pd.to_datetime(t0)
+#     if isinstance(t1, str):
+#         t1 = pd.to_datetime(t1)
+
+#     # Find nearest indices
+#     unique_idx = df.index.unique()
+#     start_idx = unique_idx.get_indexer([t0], method="nearest")[0]
+#     end_idx = unique_idx.get_indexer([t1], method="nearest")[0]
+
+#     # Slice using iloc
+#     return df.iloc[start_idx:end_idx]
+
+
+
+def use_dates_return_elements_of_df_inbetween(start_date, end_date, df):
     """
-    Return the rows of df between the nearest indices to t0 and t1 using iloc.
+    Returns a subset of the DataFrame `df` between `start_date` and `end_date` (inclusive).
 
     Parameters:
     -----------
-    t0 : datetime-like or str
-        Start date (if str, converted to datetime).
-    t1 : datetime-like or str
-        End date (if str, converted to datetime).
-    df : pd.DataFrame
-        DataFrame with a sorted datetime-like index.
+    start_date : pd.Timestamp
+        Lower bound for filtering.
+    end_date   : pd.Timestamp
+        Upper bound for filtering.
+    df         : pd.DataFrame
+        The DataFrame to filter. Its index must be datetime-like.
 
     Returns:
     --------
     pd.DataFrame
-        A DataFrame slice from the nearest index to t0 up to the nearest index to t1.
+        The filtered DataFrame containing rows where the index is between
+        `start_date` and `end_date`.
     """
+
     df = df.sort_index()
 
     # Convert to datetime if necessary
-    if isinstance(t0, str):
-        t0 = pd.to_datetime(t0)
-    if isinstance(t1, str):
-        t1 = pd.to_datetime(t1)
+    if isinstance(start_date, str):
+        start_date = pd.to_datetime(start_date)
+    if isinstance(end_date, str):
+        end_date = pd.to_datetime(end_date)
+        
+    return df.loc[(df.index >= start_date) & (df.index <= end_date)]
 
-    # Find nearest indices
-    unique_idx = df.index.unique()
-    start_idx = unique_idx.get_indexer([t0], method="nearest")[0]
-    end_idx = unique_idx.get_indexer([t1], method="nearest")[0]
 
-    # Slice using iloc
-    return df.iloc[start_idx:end_idx]
 
 
 # def find_big_gaps(df, gap_time_threshold):
@@ -1669,16 +2520,16 @@ def  use_dates_return_elements_of_df_inbetween(t0, t1, df):
 
 def find_big_gaps(
     df, 
-    gap_time_threshold  = 10.0, 
-    expected_start      = None, 
-    expected_end        = None
+    gap_time_threshold = 10.0, 
+    expected_start     = None, 
+    expected_end       = None
 ):
     """
     Identifies "big gaps" where:
-      1) The gap between consecutive filtered data points exceeds `gap_time_threshold`.
-      2) The gap from an `expected_start` (if given) to the first filtered data point 
+      1) The gap between consecutive *filtered* data points exceeds `gap_time_threshold`.
+      2) The gap from an `expected_start` (if given) to the first valid row 
          exceeds `gap_time_threshold`.
-      3) The gap from the last filtered data point to an `expected_end` (if given) 
+      3) The gap from the last valid row to an `expected_end` (if given) 
          exceeds `gap_time_threshold`.
 
     Parameters
@@ -1687,135 +2538,74 @@ def find_big_gaps(
         DataFrame with a DateTimeIndex and at least one column.
         Rows whose first column <= -1e10 will be excluded from gap checks.
     gap_time_threshold : float, optional
-        The gap size threshold in seconds. Default=10.0 seconds.
+        The gap size threshold in seconds. Default=60.0 seconds.
     expected_start : None or str or pd.Timestamp, optional
-        If provided (e.g. "2025-01-01 09:00:00"), we also check if there's a large
-        gap between this time and the first valid row. If that difference in seconds 
-        is > gap_time_threshold, it's listed as a gap.
+        If provided (e.g. "2025-01-01 00:00:00"), we check if there's a large
+        gap between this time and the first valid row.
     expected_end : None or str or pd.Timestamp, optional
-        If provided, we also check if there's a large gap between the last valid row 
-        and this time. If that difference is > gap_time_threshold, it's listed as a gap.
+        If provided, we check if there's a large gap between the last valid row 
+        and this time.
 
     Returns
     -------
     gaps_df : pandas.DataFrame
-        A DataFrame with columns ["Start", "End"] listing the start and end of each
-        detected gap. Gaps are returned if they exceed `gap_time_threshold` in seconds.
-
-    Notes
-    -----
-    - We filter out rows in which the **first column** is <= -1e10 (same as your
-      original logic).
-    - The function sorts the DataFrame by its DateTimeIndex if not already sorted.
-    - If there is no valid data, or if only 1 valid row remains, only the "start"
-      or "end" gap (if any) can be reported (no consecutive row gaps).
+        A DataFrame with columns ["Start", "End"] listing each detected gap.
     """
-
-    def _check_full_empty_gap_only(expected_start, expected_end, gap_time_threshold):
-        """
-        Helper for the case where we have no valid data in the DF after filtering.
-        If both expected_start and expected_end are given and the time difference
-        is > threshold, we'll return one big gap from start->end. Otherwise, empty.
-    
-        Returns a DataFrame with columns ["Start", "End"].
-        """
-        if (expected_start is not None) and (expected_end is not None):
-            # measure difference from expected_start to expected_end
-            diff_sec = (expected_end - expected_start).total_seconds()
-            if diff_sec > gap_time_threshold:
-                return pd.DataFrame([{"Start": expected_start, "End": expected_end}],
-                                    columns=["Start", "End"])
-        # No gap or incomplete info, return empty
-        return pd.DataFrame(columns=["Start", "End"])
-
-    # ------------------------------------------------------------------------
-    # 1) Ensure the DF is sorted by DateTimeIndex
-    # ------------------------------------------------------------------------
-    if not df.index.is_monotonic_increasing:
-        df = df.sort_index()
-
-    # ------------------------------------------------------------------------
-    # 2) Filter out rows where the first column <= -1e10
-    # ------------------------------------------------------------------------
-    filtered_df = df[df.iloc[:, 0] > -1e10].dropna()
-    if filtered_df.empty:
-        # No valid data at all => any "start" or "end" gap is measured purely
-        # from expected_start to expected_end (if both are given).
-        # Typically, we interpret: if expected_start & expected_end are present
-        # and the gap is bigger than threshold => one big gap.
-        # Otherwise, we just return empty. 
-        return None
-
-    # ------------------------------------------------------------------------
-    # 3) Convert expected_start / expected_end to Timestamps if not None
-    # ------------------------------------------------------------------------
+    # Convert expected_start / expected_end to Timestamps if needed
     if expected_start is not None and not isinstance(expected_start, pd.Timestamp):
         expected_start = pd.Timestamp(expected_start)
     if expected_end is not None and not isinstance(expected_end, pd.Timestamp):
         expected_end = pd.Timestamp(expected_end)
 
-      # Prepare a list to accumulate gap rows
+    # Ensure the DataFrame is sorted by its DateTimeIndex
+    if not df.index.is_monotonic_increasing:
+        df = df.sort_index()
+
+    # Filter out rows where the first column <= -1e10 (and drop NaNs)
+    filtered_df = df[df.iloc[:, 0] > -1e10].dropna(subset=[df.columns[0]])
     gap_rows = []
 
-    # ------------------------------------------------------------------------
-    # 4) Check gap from expected_start to first valid row
-    # ------------------------------------------------------------------------
+    # CASE 1: No valid data after filtering
+    if filtered_df.empty:
+        if (expected_start is not None) and (expected_end is not None):
+            diff_sec = (expected_end - expected_start).total_seconds()
+            if diff_sec > gap_time_threshold:
+                gap_rows.append({"Start": expected_start, "End": expected_end})
+        return pd.DataFrame(gap_rows, columns=["Start", "End"])
+
+    # CASE 2: Check gap from expected_start to first valid row
+    first_time = filtered_df.index[0]
     if expected_start is not None:
-        first_time = filtered_df.index[0]
         start_diff_sec = (first_time - expected_start).total_seconds()
         if start_diff_sec > gap_time_threshold:
             gap_rows.append({"Start": expected_start, "End": first_time})
 
-    # ------------------------------------------------------------------------
-    # If only 1 valid row, we won't find any consecutive row gaps, 
-    # but we might still check from that row to expected_end.
-    # ------------------------------------------------------------------------
+    # If only one valid row, we only check the gap to expected_end
     if len(filtered_df) == 1:
-        # Only one valid row => skip consecutive checks, but check end gap
         if expected_end is not None:
-            last_time = filtered_df.index[0]
-            end_diff_sec = (expected_end - last_time).total_seconds()
+            end_diff_sec = (expected_end - first_time).total_seconds()
             if end_diff_sec > gap_time_threshold:
-                gap_rows.append({"Start": last_time, "End": expected_end})
+                gap_rows.append({"Start": first_time, "End": expected_end})
         return pd.DataFrame(gap_rows, columns=["Start", "End"])
 
-    # ------------------------------------------------------------------------
-    # 5) Compute consecutive time differences (in seconds) in filtered data
-    #    time_diffs[i] is gap from row (i-1) to row i.
-    # ------------------------------------------------------------------------
+    # CASE 3: Check consecutive row gaps in the filtered data
     time_diffs = filtered_df.index.to_series().diff().dt.total_seconds()
-    # Boolean mask: True at index i => gap between i-1 and i > threshold
     gap_mask = time_diffs > gap_time_threshold
-    gap_mask_values = gap_mask.values  # convert to numpy boolean array
+    gap_indices = np.where(gap_mask.values)[0]
+    f_idx = filtered_df.index
 
-    # ------------------------------------------------------------------------
-    # 6) Vectorized detection: we want all i where gap_mask[i] is True
-    #    The "start" is index[i-1], "end" is index[i]
-    # ------------------------------------------------------------------------
-    gap_indices = np.where(gap_mask_values)[0]  # array of int positions
-    f_idx = filtered_df.index  # DatetimeIndex
-
-    # For each i in gap_indices, gap is (f_idx[i-1], f_idx[i])
     for i in gap_indices:
-        # i-1 must be >= 0, which it should be for i>0
-        start_time = f_idx[i - 1]
-        end_time = f_idx[i]
-        gap_rows.append({"Start": start_time, "End": end_time})
+        gap_rows.append({"Start": f_idx[i - 1], "End": f_idx[i]})
 
-    # ------------------------------------------------------------------------
-    # 7) Check gap from last valid row to expected_end
-    # ------------------------------------------------------------------------
+    # CASE 4: Check gap from last valid row to expected_end
+    last_time = filtered_df.index[-1]
     if expected_end is not None:
-        last_time = filtered_df.index[-1]
         end_diff_sec = (expected_end - last_time).total_seconds()
         if end_diff_sec > gap_time_threshold:
             gap_rows.append({"Start": last_time, "End": expected_end})
 
-    # ------------------------------------------------------------------------
-    # 8) Build a DataFrame of all gaps found
-    # ------------------------------------------------------------------------
-    gaps_df = pd.DataFrame(gap_rows, columns=["Start", "End"])
-    return gaps_df
+    return pd.DataFrame(gap_rows, columns=["Start", "End"])
+
 
 # def find_big_gaps(df, gap_time_threshold=10):
 #     """
@@ -2138,397 +2928,389 @@ def ensure_time_format(start_time, end_time):
     return t0.strftime(desired_format), t1.strftime(desired_format)
 
 
-import numpy as np
-from scipy import stats
 
-def binned_quantity(x, y, what='mean', std_or_error_of_mean=True, bins=100, loglog=True, return_counts=False, return_percentiles=False, lower_percentile =25, higher_percentile = 75):
+
+
+def binned_quantity(
+    x, y,
+    what                             = "mean",
+    std_or_error_of_mean             =  True,
+    bins                             = 100,
+    loglog                           = True,
+    return_counts                    = False,
+    return_percentiles               = False,
+    lower_percentile                 = 25,
+    higher_percentile                = 75,
+    low_per                          = None,
+    high_perc                        = None,
+    *,                       # NEW: keyword-only opt-out flags
+    return_edges                     =  False,
+):
     """
-    Calculate binned statistics of one variable (y) with respect to another variable (x).
+    Identical call signature; two improvements:
 
-    Parameters
-    ----------
-    x : array_like
-        Input array. This represents the independent variable.
-    y : array_like
-        Input array. This represents the dependent variable.
-    what : str or callable, optional
-        The type of binned statistic to compute. This can be any of the options supported by `scipy.stats.binned_statistic()`.
-        The default is 'mean'.
-    std_or_error_of_mean : bool, optional
-        Indicates whether to return the standard deviation (True) or the error of the mean (False) of the binned statistic.
-        The default is True.
-    bins : int or array_like, optional
-        The number of bins to use for the histogram. If `loglog` is True, this value is used to generate logarithmic bins.
-        The default is 100.
-    loglog : bool, optional
-        If True, logarithmic bins are used instead of linear bins. The default is True.
-    return_counts : bool, optional
-        If True, also return the number of points in each bin. The default is False.
-    return_percentiles : bool, optional
-        If True, also return the 25th and 75th percentiles for each bin. The default is False.
-
-    Returns
-    -------
-    x_b : ndarray
-        The centers of the bins.
-    y_b : ndarray
-        The value of the binned statistic.
-    z_b : ndarray
-        The standard deviation or error of the mean of the binned statistic.
-    points : ndarray, optional
-        The number of points in each bin. This is only returned if `return_counts` is True.
-    percentiles : tuple of ndarrays, optional
-        The 25th and 75th percentiles for each bin. This is only returned if `return_percentiles` is True.
+    • For log-bins the centre x_b is now the geometric mean √(x_L x_R).
+    • Set return_edges=True to also receive (x_lo, x_hi).
     """
-    
-    if loglog:
-        mask = np.where((y > -1e10) & (x > 0) )[0]        
+    # 1 · sanitise
+    x, y = map(np.asarray, (x, y))
+    mask = (x > 0) if loglog else np.ones_like(x, bool)
+    mask &= np.isfinite(x) & np.isfinite(y)
+    x, y = x[mask], y[mask]
+
+    # 2 · bin edges
+    if np.ndim(bins) == 0 or isinstance(bins, (int, np.integer)):
+        bins = (np.logspace if loglog else np.linspace)(
+            np.log10(x.min()) if loglog else x.min(),
+            np.log10(x.max()) if loglog else x.max(),
+            int(bins),
+        )
+        # if loglog:
+        #     bins = 10 ** bins
+    bins = np.asarray(bins, float)
+    n_bins = bins.size - 1
+    x_lo, x_hi = bins[:-1], bins[1:]
+    x_ctr = np.sqrt(x_lo * x_hi) if loglog else 0.5 * (x_lo + x_hi)  # FIX 1
+
+    # 3 · fast grouping
+    idx = np.digitize(x, bins) - 1
+    keep = (idx >= 0) & (idx < n_bins)
+    idx, y = idx[keep], y[keep]
+
+    count = np.bincount(idx, minlength=n_bins).astype(float)
+    sum_y = np.bincount(idx, weights=y, minlength=n_bins)
+    mean  = sum_y / np.where(count, count, np.nan)
+
+    # robust variance
+    sum_y2 = np.bincount(idx, weights=y ** 2, minlength=n_bins)
+    var = (sum_y2 / np.where(count, count, np.nan)) - mean ** 2
+    var[var < 0] = 0.0
+    std = np.sqrt(var)
+
+    # optional: per-bin custom statistic
+    if callable(what):
+        y_stat = np.array([what(y[idx == i]) if c else np.nan
+                           for i, c in enumerate(count)])
     else:
-        mask = np.where((y > -1e10) & (x > -1e10) )[0]
-    x = np.asarray(x[mask], dtype=float)
-    y = np.asarray(y[mask], dtype=float)
+        mapping = {"mean": mean, "std": std,
+                   "median": np.array([np.nan if c == 0 else
+                                       np.median(y[idx == i])
+                                       for i, c in enumerate(count)]),
+                   "count": count}
+        y_stat = mapping.get(what, mean)
 
-    if loglog:
-        bins = np.logspace(np.log10(np.nanmin(x)), np.log10(np.nanmax(x)), bins)
+    z_stat = std if std_or_error_of_mean else std / np.sqrt(count)
 
-    # Binned statistic calculation
-    y_b, x_b, _ = stats.binned_statistic(x, y, statistic=what, bins=bins)
-    z_b, _, _ = stats.binned_statistic(x, y, statistic='std', bins=bins)
-    points, _, _ = stats.binned_statistic(x, y, statistic='count', bins=bins)
-
-    if std_or_error_of_mean == 0:
-        z_b /= np.sqrt(points)
-
-    x_b = x_b[:-1] + 0.5 * (x_b[1:] - x_b[:-1])
-
-    result = (x_b, y_b, z_b, points) if return_counts else (x_b, y_b, z_b)
-
+    out = (x_ctr, y_stat, z_stat)
+    if return_counts:
+        out += (count,)
     if return_percentiles:
-        percentile_25, _, _ = stats.binned_statistic(x, y, statistic=lambda y: np.percentile(y, lower_percentile), bins=bins)
-        percentile_75, _, _ = stats.binned_statistic(x, y, statistic=lambda y: np.percentile(y, higher_percentile), bins=bins)
-        percentiles = (percentile_25, percentile_75)
-        result += (percentiles,)
+        pct_lo  = np.full_like(mean, np.nan)
+        pct_hi  = np.full_like(mean, np.nan)
+        for i, c in enumerate(count):
+            if c:
+                yy = y[idx == i]
+                pct_lo[i], pct_hi[i] = np.percentile(yy,
+                                                     [lower_percentile,
+                                                      higher_percentile])
+        out += ((pct_lo, pct_hi),)
+    if return_edges:                         # NEW
+        out = (x_lo, x_hi) + out
+    return out
 
-    return result
 
-
-# # --- Numba Helper Functions ---
-# @njit(inline='always')
-# def find_bin(x, bin_edges):
-#     n = len(bin_edges)
-#     if x < bin_edges[0]:
-#         return 0
-#     if x >= bin_edges[n - 1]:
-#         return n - 2  # Last valid index for n-1 bins.
-#     lo = 0
-#     hi = n - 1
-#     while hi - lo > 1:
-#         mid = (lo + hi) // 2
-#         if x < bin_edges[mid]:
-#             hi = mid
-#         else:
-#             lo = mid
-#     return lo
-
-# @njit(parallel=True)
-# def compute_bins_numba_no_atomic(valid_x, valid_y, bin_edges, nbins, counts, sums, sumsqs, nchunks):
-#     n = valid_x.shape[0]
-#     chunk_size = (n + nchunks - 1) // nchunks  # Ceiling division.
-#     # Temporary arrays for each chunk.
-#     temp_counts = np.zeros((nchunks, nbins), dtype=np.int64)
-#     temp_sums   = np.zeros((nchunks, nbins), dtype=np.float64)
-#     temp_sumsqs = np.zeros((nchunks, nbins), dtype=np.float64)
-    
-#     for i in prange(nchunks):
-#         start = i * chunk_size
-#         end = start + chunk_size
-#         if end > n:
-#             end = n
-#         for j in range(start, end):
-#             bin_index = find_bin(valid_x[j], bin_edges)
-#             temp_counts[i, bin_index] += 1
-#             temp_sums[i, bin_index]   += valid_y[j]
-#             temp_sumsqs[i, bin_index] += valid_y[j] * valid_y[j]
-    
-#     # Reduce temporary arrays into final arrays.
-#     for i in range(nchunks):
-#         for b in range(nbins):
-#             counts[b] += temp_counts[i, b]
-#             sums[b]   += temp_sums[i, b]
-#             sumsqs[b] += temp_sumsqs[i, b]
-
-# # --- Numba Version ---
-# def binned_quantity_numba(x, y, what='mean', std_or_error_of_mean=True,
-#                           bins=100, loglog=True, return_counts=False,
-#                           return_percentiles=False, lower_percentile=25,
-#                           higher_percentile=75, nchunks=16):
+# def binned_quantity(x, y, what='mean', std_or_error_of_mean=True, bins=100, loglog=True, return_counts=False, return_percentiles=False, lower_percentile =25, higher_percentile = 75):
 #     """
-#     Numba-accelerated binned statistic computation.
-    
+#     Vectorised alternative to `binned_quantity` that avoids multiple passes
+#     through the data.  Median and percentile estimates are ∼10‑100× faster
+#     (depending on sample size) because the data are sorted only once.
+#     """
+#     # 1. sanitise & mask
+#     x, y = np.asarray(x), np.asarray(y)
+#     if loglog:
+#         mask = (x > 0) & np.isfinite(x) & np.isfinite(y)
+#     else:
+#         mask = np.isfinite(x) & np.isfinite(y)
+#     x, y = x[mask].astype(float), y[mask].astype(float)
+
+#     # 2. bin edges
+#     if np.ndim(bins)==0 or isinstance(bins, (int, np.integer)):
+#         if loglog:
+#             bins = np.logspace(np.log10(x.min()), np.log10(x.max()), int(bins))
+#         else:
+#             bins = np.linspace(x.min(), x.max(), int(bins))
+#     bins = np.asarray(bins, dtype=float)
+#     n_bins = bins.size - 1
+
+#     # 3. assign each point to a bin (−1 for out‑of‑range)
+#     bin_idx = np.digitize(x, bins) - 1
+#     valid = (bin_idx >= 0) & (bin_idx < n_bins)
+#     bin_idx = bin_idx[valid]
+#     x, y = x[valid], y[valid]
+
+#     # 4. fast aggregated sums
+#     count = np.bincount(bin_idx, minlength=n_bins).astype(float)
+#     sum_y  = np.bincount(bin_idx, weights=y, minlength=n_bins)
+#     sum_y2 = np.bincount(bin_idx, weights=y*y, minlength=n_bins)
+
+#     with np.errstate(invalid='ignore', divide='ignore'):
+#         mean = sum_y / count
+#         var  = (sum_y2 / count) - mean**2
+#         std  = np.sqrt(var)
+
+#     # 5. optional median/percentiles (single pass sorting)
+#     y_median = None
+#     pct_low = pct_high = None
+#     if (what == 'median') or return_percentiles:
+#         order = np.argsort(bin_idx, kind='mergesort')  # stable
+#         sorted_bins = bin_idx[order]
+#         sorted_y    = y[order]
+#         # cumulative counts to split
+#         split_idx = np.cumsum(np.bincount(sorted_bins, minlength=n_bins))[:-1]
+#         groups = np.split(sorted_y, split_idx)
+#         # list comprehension is fine: n_bins is small (∼10‑100)
+#         if what == 'median':
+#             y_median = np.array([np.median(g) if g.size else np.nan for g in groups])
+#         if return_percentiles:
+#             pct_low  = np.array([np.percentile(g, lower_percentile) if g.size else np.nan for g in groups])
+#             pct_high = np.array([np.percentile(g, higher_percentile) if g.size else np.nan for g in groups])
+
+#     # 6. choose requested statistic
+#     stats_map = {
+#         'mean': mean,
+#         'std': std,
+#         'count': count,
+#         'median': y_median,
+#     }
+#     if callable(what):
+#         y_b = np.full(n_bins, np.nan)
+#         for idx, grp in enumerate(np.split(sorted_y, split_idx) if (what!='mean' and what!='median') else []):
+#             y_b[idx] = what(grp) if grp.size else np.nan
+#     else:
+#         y_b = stats_map.get(what, mean)  # default mean
+
+#     # 7. error of mean or std
+#     z_b = std.copy()
+#     if std_or_error_of_mean == 0:
+#         with np.errstate(divide='ignore', invalid='ignore'):
+#             z_b = std/np.sqrt(count)
+
+#     # 8. bin centres
+#     x_b = 0.5*(bins[1:] + bins[:-1])
+
+#     # 9. assemble output
+#     out = (x_b, y_b, z_b)
+#     if return_counts:
+#         out += (count,)
+#     if return_percentiles:
+#         out += ((pct_low, pct_high),)
+#     return out
+
+# import numpy as np
+# from scipy import stats
+
+# def binned_quantity(x, y, what='mean', std_or_error_of_mean=True, bins=100, loglog=True, return_counts=False, return_percentiles=False, lower_percentile =25, higher_percentile = 75):
+#     """
+#     Calculate binned statistics of one variable (y) with respect to another variable (x).
+
 #     Parameters
 #     ----------
-#     x, y : array_like
-#         Input arrays.
-#     what : {'mean', 'sum', 'std', 'median'}, optional
-#         The binned statistic to compute. For 'mean', 'sum', and 'std' the aggregation is done
-#         using a Numba-accelerated summation routine. For 'median', the binning is computed in pure NumPy.
+#     x : array_like
+#         Input array. This represents the independent variable.
+#     y : array_like
+#         Input array. This represents the dependent variable.
+#     what : str or callable, optional
+#         The type of binned statistic to compute. This can be any of the options supported by `scipy.stats.binned_statistic()`.
+#         The default is 'mean'.
 #     std_or_error_of_mean : bool, optional
-#         For what=='mean', if True the third output is the standard deviation,
-#         otherwise it is the error-of-mean. (Ignored for other statistics.)
+#         Indicates whether to return the standard deviation (True) or the error of the mean (False) of the binned statistic.
+#         The default is True.
 #     bins : int or array_like, optional
-#         Number of bins (if int) or the bin edges.
+#         The number of bins to use for the histogram. If `loglog` is True, this value is used to generate logarithmic bins.
+#         The default is 100.
 #     loglog : bool, optional
-#         If True, logarithmic bins are used (requires x > 0).
+#         If True, logarithmic bins are used instead of linear bins. The default is True.
 #     return_counts : bool, optional
-#         If True, also return the counts per bin.
+#         If True, also return the number of points in each bin. The default is False.
 #     return_percentiles : bool, optional
-#         If True, also return the (lower, upper) percentiles per bin.
-#     nchunks : int, optional
-#         Number of chunks to use for parallelization.
-    
+#         If True, also return the 25th and 75th percentiles for each bin. The default is False.
+
 #     Returns
 #     -------
-#     bin_centers : ndarray
+#     x_b : ndarray
 #         The centers of the bins.
-#     stat : ndarray
-#         The binned statistic (mean, sum, std, or median).
-#     z : ndarray
-#         For what=='mean': the standard deviation (or error-of-mean if std_or_error_of_mean is False);
-#         for what=='sum' or 'std': the standard deviation of the bin values;
-#         for what=='median': the standard deviation of the values in each bin.
-#     [counts] : ndarray, optional
-#         The counts per bin (if return_counts is True).
-#     [percentiles] : tuple of ndarrays, optional
-#         The (lower, upper) percentiles per bin (if return_percentiles is True).
+#     y_b : ndarray
+#         The value of the binned statistic.
+#     z_b : ndarray
+#         The standard deviation or error of the mean of the binned statistic.
+#     points : ndarray, optional
+#         The number of points in each bin. This is only returned if `return_counts` is True.
+#     percentiles : tuple of ndarrays, optional
+#         The 25th and 75th percentiles for each bin. This is only returned if `return_percentiles` is True.
 #     """
-#     # Convert inputs to float arrays.
+    
+#     if loglog:
+#         mask = np.where((y > -1e10) & (x > 0) )[0]        
+#     else:
+#         mask = np.where((y > -1e10) & (x > -1e10) )[0]
+#     x = np.asarray(x[mask], dtype=float)
+#     y = np.asarray(y[mask], dtype=float)
+
+#     if loglog:
+#         bins = np.logspace(np.log10(np.nanmin(x)), np.log10(np.nanmax(x)), bins)
+
+#     # Binned statistic calculation
+#     y_b, x_b, _ = stats.binned_statistic(x, y, statistic=what, bins=bins)
+#     z_b, _, _ = stats.binned_statistic(x, y, statistic='std', bins=bins)
+#     points, _, _ = stats.binned_statistic(x, y, statistic='count', bins=bins)
+
+#     if std_or_error_of_mean == 0:
+#         z_b /= np.sqrt(points)
+
+#     x_b = x_b[:-1] + 0.5 * (x_b[1:] - x_b[:-1])
+
+#     result = (x_b, y_b, z_b, points) if return_counts else (x_b, y_b, z_b)
+
+#     if return_percentiles:
+#         percentile_25, _, _ = stats.binned_statistic(x, y, statistic=lambda y: np.percentile(y, lower_percentile), bins=bins)
+#         percentile_75, _, _ = stats.binned_statistic(x, y, statistic=lambda y: np.percentile(y, higher_percentile), bins=bins)
+#         percentiles = (percentile_25, percentile_75)
+#         result += (percentiles,)
+
+#     return result
+
+
+
+
+# from concurrent.futures import ThreadPoolExecutor  # Ensure this import is present
+# import numpy as np
+# from scipy import stats
+
+# def binned_quantity(x, y, what='mean', std_or_error_of_mean=True, bins=100, 
+#                     loglog=True, return_counts=False, return_percentiles=False, 
+#                     lower_percentile=25, higher_percentile=75):
+#     """
+#     Optimized version that computes bin centers using vectorized operations.
+#     """
 #     x = np.asarray(x, dtype=float)
 #     y = np.asarray(y, dtype=float)
-    
-#     # Filter data.
 #     if loglog:
-#         mask = (y > -1e10) & (x > 0)
+#         mask = (x > 0) & (y > -1e10)
 #     else:
-#         mask = (y > -1e10) & (x > -1e10)
+#         mask = (x > -1e10) & (y > -1e10)
 #     x = x[mask]
 #     y = y[mask]
     
-#     # Determine bin edges.
-#     if loglog:
-#         if np.isscalar(bins):
-#             bin_edges = np.logspace(np.log10(np.nanmin(x)),
-#                                     np.log10(np.nanmax(x)),
-#                                     int(bins))
+#     if np.isscalar(bins):
+#         nbins = int(bins)
+#         if loglog:
+#             bin_edges = np.logspace(np.log10(x.min()), np.log10(x.max()), nbins + 1)
 #         else:
-#             bin_edges = np.asarray(bins, dtype=np.float64)
+#             bin_edges = np.linspace(x.min(), x.max(), nbins + 1)
 #     else:
-#         if np.isscalar(bins):
-#             bin_edges = np.linspace(np.nanmin(x),
-#                                     np.nanmax(x),
-#                                     int(bins) + 1)
-#         else:
-#             bin_edges = np.asarray(bins, dtype=np.float64)
-    
-#     nbins = len(bin_edges) - 1
+#         bin_edges = np.asarray(bins, dtype=float)
+#         nbins = len(bin_edges) - 1
+        
+#     # Compute bin centers
 #     bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
     
-#     # --- Compute the requested statistic ---
-#     if what == 'median':
-#         # For median, compute bin indices and then loop over bins.
-#         bin_indices = np.searchsorted(bin_edges, x, side='right') - 1
-#         bin_indices = np.clip(bin_indices, 0, nbins - 1)
-#         stat = np.empty(nbins, dtype=np.float64)
-#         z = np.empty(nbins, dtype=np.float64)
-#         if return_counts:
-#             counts = np.empty(nbins, dtype=np.int64)
-#         for i in range(nbins):
-#             y_in_bin = y[bin_indices == i]
-#             if y_in_bin.size > 0:
-#                 stat[i] = np.median(y_in_bin)
-#                 z[i] = np.std(y_in_bin)
-#                 if return_counts:
-#                     counts[i] = y_in_bin.size
-#             else:
-#                 stat[i] = np.nan
-#                 z[i] = np.nan
-#                 if return_counts:
-#                     counts[i] = 0
-#     elif what in ('mean', 'sum', 'std'):
-#         counts = np.zeros(nbins, dtype=np.int64)
-#         sums   = np.zeros(nbins, dtype=np.float64)
-#         sumsqs = np.zeros(nbins, dtype=np.float64)
-#         compute_bins_numba_no_atomic(x, y, bin_edges, nbins, counts, sums, sumsqs, nchunks)
-        
+#     # Determine bin indices (vectorized)
+#     bin_indices = np.digitize(x, bin_edges) - 1
+#     valid = (bin_indices >= 0) & (bin_indices < nbins)
+#     x = x[valid]
+#     y = y[valid]
+#     bin_indices = bin_indices[valid]
+    
+#     counts = np.bincount(bin_indices, minlength=nbins)
+    
+#     # Initialize arrays with float type explicitly
+#     stat_vals = np.full(nbins, np.nan, dtype=float)
+#     err_vals  = np.full(nbins, np.nan, dtype=float)
+    
+#     if isinstance(what, str) and what in ['mean', 'sum']:
 #         if what == 'mean':
-#             stat = sums / np.where(counts == 0, 1, counts)
+#             sum_y = np.bincount(bin_indices, weights=y, minlength=nbins)
+#             stat_vals = np.divide(
+#                 sum_y, 
+#                 counts, 
+#                 out=np.full(sum_y.shape, np.nan, dtype=float), 
+#                 where=counts > 0
+#             )
 #         elif what == 'sum':
-#             stat = sums
-#         elif what == 'std':
-#             means = sums / np.where(counts == 0, 1, counts)
-#             variance = sumsqs / np.where(counts == 0, 1, counts) - means**2
-#             stat = np.sqrt(np.maximum(variance, 0))
-        
-#         # Also compute z as the standard deviation (or error) per bin.
-#         means_for_std = sums / np.where(counts == 0, 1, counts)
-#         variance = sumsqs / np.where(counts == 0, 1, counts) - means_for_std**2
-#         z = np.sqrt(np.maximum(variance, 0))
-#         if what == 'mean' and not std_or_error_of_mean:
-#             z = z / np.where(counts == 0, 1, np.sqrt(counts))
+#             stat_vals = np.bincount(bin_indices, weights=y, minlength=nbins)
+#         sum_y2 = np.bincount(bin_indices, weights=y*y, minlength=nbins)
+#         with np.errstate(divide='ignore', invalid='ignore'):
+#             mean_y = stat_vals
+#             std = np.sqrt(np.divide(
+#                 sum_y2, 
+#                 counts, 
+#                 out=np.full(sum_y2.shape, np.nan, dtype=float), 
+#                 where=counts > 0
+#             ) - mean_y**2)
+#         err_vals = std.copy()
 #     else:
-#         raise NotImplementedError("Unsupported statistic. Use 'mean', 'sum', 'std', or 'median'.")
-    
-#     extra = ()
-#     if return_percentiles:
-#         bin_indices = np.searchsorted(bin_edges, x, side='right') - 1
-#         bin_indices = np.clip(bin_indices, 0, nbins - 1)
-#         perc_lower = np.empty(nbins, dtype=np.float64)
-#         perc_upper = np.empty(nbins, dtype=np.float64)
-#         for i in range(nbins):
-#             y_in_bin = y[bin_indices == i]
-#             if y_in_bin.size > 0:
-#                 perc_lower[i] = np.percentile(y_in_bin, lower_percentile)
-#                 perc_upper[i] = np.percentile(y_in_bin, higher_percentile)
+#         order = np.argsort(bin_indices)
+#         sorted_bins = bin_indices[order]
+#         sorted_y = y[order]
+#         bin_start = np.searchsorted(sorted_bins, np.arange(nbins))
+#         bin_end   = np.searchsorted(sorted_bins, np.arange(nbins + 1))
+        
+#         def compute_stat(i):
+#             if bin_end[i] > bin_start[i]:
+#                 y_slice = sorted_y[bin_start[i]:bin_end[i]]
+#                 if what == 'median':
+#                     return np.median(y_slice)
+#                 else:
+#                     return what(y_slice)
 #             else:
-#                 perc_lower[i] = np.nan
-#                 perc_upper[i] = np.nan
-#         extra += ((perc_lower, perc_upper),)
+#                 return np.nan
+        
+#         with ThreadPoolExecutor() as executor:
+#             stat_list = list(executor.map(compute_stat, range(nbins)))
+#         stat_vals = np.array(stat_list, dtype=float)
+        
+#         def compute_std(i):
+#             if bin_end[i] > bin_start[i]:
+#                 y_slice = sorted_y[bin_start[i]:bin_end[i]]
+#                 return np.std(y_slice, ddof=1) if len(y_slice) > 1 else 0.0
+#             else:
+#                 return np.nan
+        
+#         with ThreadPoolExecutor() as executor:
+#             std_list = list(executor.map(compute_std, range(nbins)))
+#         err_vals = np.array(std_list, dtype=float)
     
-#     if return_counts and what != 'median':
-#         extra = (counts,) + extra
-#     elif return_counts and what == 'median':
-#         extra = (counts,) + extra
+#     if std_or_error_of_mean == False:
+#         with np.errstate(divide='ignore', invalid='ignore'):
+#             err_vals = np.divide(
+#                 err_vals, 
+#                 np.sqrt(counts), 
+#                 out=np.full(err_vals.shape, np.nan, dtype=float), 
+#                 where=counts > 0
+#             )
     
-#     return (bin_centers, stat, z) + extra
-
-# # --- Numba Wrapper for Warmup ---
-# def binned_quantity(x, y, *args, **kwargs):
-#     """
-#     Wrapper that first calls binned_quantity_numba on a tiny subset (using only the first element)
-#     to trigger the JIT compilation and then calls binned_quantity_numba on the full data.
-#     Returns only the full-data results.
-#     """
-#     x = np.asarray(x)
-#     if x.size > 0:
-#         _ = binned_quantity_numba(x[:1], y[:1], *args, **kwargs)
-#     return binned_quantity_numba(x, y, *args, **kwargs)
-
-
-
-
-@jit(nopython=True, parallel=True)
-def mean_manual(xpar,
-                ypar,
-                what='mean',
-                std_or_std_mean=True,
-                nbins=100,
-                loglog=True,
-                upper_percentile=95,
-                remove_upper_percentile=False):
-    """
-    Calculate manually binned statistics of one variable (ypar) with respect to another variable (xpar).
-
-    Parameters
-    ----------
-    xpar : array_like
-        Input array. This represents the independent variable.
-    ypar : array_like
-        Input array. This represents the dependent variable.
-    what : str, optional
-        The type of binned statistic to compute. It can be 'mean' or 'median'. The default is 'mean'.
-    std_or_std_mean : bool, optional
-        Indicates whether to return the standard deviation (True) or the standard error of the mean (False) of the binned statistic.
-        The default is True.
-    nbins : int, optional
-        The number of bins to use for the histogram. The default is 100.
-    loglog : bool, optional
-        If True, logarithmic bins are used instead of linear bins. The default is True.
-    upper_percentile : int, optional
-        The upper percentile value for removing outliers. The default is 95.
-    remove_upper_percentile : bool, optional
-        If True, remove upper percentiles to eliminate outliers. The default is False.
-
-    Returns
-    -------
-    ndarray
-        The centers of the bins for the independent variable.
-    ndarray
-        The value of the binned statistic (mean or median) for the dependent variable.
-    ndarray
-        The standard deviation or standard error of the mean of the binned statistic.
-
-    Notes
-    -----
-    This function manually calculates binned statistics by dividing the data into specified bins and computing the mean or median
-    for the dependent variable (ypar) in each bin. It also calculates the standard deviation or standard error of the mean
-    depending on the `std_or_std_mean` parameter.
-
-    Example
-    --------
-    >>> import numpy as np
-    >>> from numba import jit, prange
-
-    >>> @jit(nopython=True, parallel=True)
-    ... def mean_manual(xpar, ypar, what='mean', std_or_std_mean=True, nbins=100, loglog=True, upper_percentile=95, remove_upper_percentile=False):
-    ...     # (Your function implementation here)
-
-    >>> x_values = np.random.rand(1000)
-    >>> y_values = np.random.randn(1000)
-
-    >>> x_mean, y_mean, y_std = mean_manual(x_values, y_values)
-    >>> print(x_mean)
-    >>> print(y_mean)
-    >>> print(y_std)
-    """
+#     percentiles = None
+#     if return_percentiles:
+#         percentile_25, _, _ = stats.binned_statistic(
+#             x, y, 
+#             statistic=lambda arr: np.percentile(arr, lower_percentile), 
+#             bins=bin_edges
+#         )
+#         percentile_75, _, _ = stats.binned_statistic(
+#             x, y, 
+#             statistic=lambda arr: np.percentile(arr, higher_percentile), 
+#             bins=bin_edges
+#         )
+#         percentiles = (percentile_25, percentile_75)
     
-    xpar = np.array(xpar)
-    ypar = np.array(ypar)
-    ind = (ypar > -1e10) & (xpar > -1e10) & (~np.isinf(xpar)) & (~np.isinf(ypar))
+#     result = (bin_centers, stat_vals, err_vals)
+#     if return_counts:
+#         result += (counts,)
+#     if return_percentiles:
+#         result += (percentiles,)
+    
+#     return result
 
-    xpar = xpar[ind]
-    ypar = ypar[ind]
-
-    if loglog:
-        bins = np.logspace(np.log10(np.nanmin(xpar)), np.log10(np.nanmax(xpar)), nbins)
-    else:
-        bins = np.linspace(np.nanmin(xpar), np.nanmax(xpar), nbins)
-
-    res1 = np.digitize(xpar, bins)
-
-    bin_counts = np.bincount(res1)
-
-    ypar_mean  = np.zeros(nbins)
-    ypar_std   = np.zeros(nbins)
-    xpar_mean  = np.zeros(nbins)
-    ypar_count = np.zeros(nbins)
-
-    for i in prange(len(bin_counts)):
-        if bin_counts[i] == 0:
-            continue
-
-        xvalues1 = xpar[res1 == i]
-        yvalues1 = ypar[res1 == i]
-
-        if remove_upper_percentile:
-            percentile = np.percentile(yvalues1, upper_percentile)
-            xvalues1 = xvalues1[yvalues1 < percentile]
-            yvalues1 = yvalues1[yvalues1 < percentile]
-
-        if what == 'mean':
-            ypar_mean[i] = np.nanmean(yvalues1)
-            xpar_mean[i] = np.nanmean(xvalues1)
-        else:
-            ypar_mean[i] = np.nanmedian(yvalues1)
-            xpar_mean[i] = np.nanmedian(xvalues1)
-
-        ypar_std[i] = np.nanstd(yvalues1)
-        ypar_count[i] = bin_counts[i]
-
-    if std_or_std_mean == 0:
-        z_b = ypar_std / np.sqrt(ypar_count)
-    else:
-        z_b = ypar_std
-
-    return xpar_mean, ypar_mean, z_b
 
 
 
@@ -3085,7 +3867,7 @@ def mov_fit_func_joblib(xx,
         x0 = xx[i]
         xf = x0 * w_size
 
-        if xf < 0.98 * xmax:
+        if xf < 0.95 * xmax:
             fit, s, e, x1, y1 = find_fit(xx, yy, x0, xf)
             if len(np.shape(x1)) > 0:
                 err = np.sqrt(fit[1][1][1])
@@ -3576,7 +4358,7 @@ def saveparquet(df, path_to_save, filename, column_names=None):
     # Save the DataFrame (or the subset) to a Parquet file
     df_to_save.to_parquet(full_file_path)
     
-import pandas as pd
+# import pandas as pd
 
 def load_parquet(path_to_save, filename= None, column_names= None, engine='pyarrow'):
     """
@@ -3602,6 +4384,44 @@ def load_parquet(path_to_save, filename= None, column_names= None, engine='pyarr
     
     return df
 
+
+
+# def load_parquet(path: str,
+#                       *,
+#                       columns: list[str] | None = None,
+#                       memory_map: bool          = True,
+#                       threads: bool             = True):
+#     md  = pq.read_metadata(path).metadata
+#     idx = []
+#     if b"pandas" in md:
+#         meta = json.loads(md[b"pandas"].decode())
+#         idx_descr = meta.get("index_columns", [])
+#         if idx_descr and isinstance(idx_descr[0], str):
+#             idx = idx_descr
+
+#     proj_cols = None
+#     if columns is not None:
+#         proj_cols = list(columns)
+#         for c in idx:
+#             if c not in proj_cols:
+#                 proj_cols.append(c)
+
+#     table = pq.read_table(
+#         path,
+#         columns=proj_cols,
+#         memory_map=memory_map,
+#         use_threads=threads
+#     )
+
+#     df = table.to_pandas(
+#         types_mapper=pd.ArrowDtype,
+#         use_threads=threads
+#     )
+
+#     if columns is not None:
+#         df = df[columns]
+
+#     return df
 
 def replace_filename_extension(oldfilename, newextension, addon=False):
     """
@@ -3873,33 +4693,44 @@ def find_closest_values_of_2_arrays(a, b):
     return np.column_stack((uni, ret_b))
 
 
-def find_cadence(df, mean_or_median_cadence='median'):
+
+
+def find_cadence(df, method="mode", round_ns=1000, max_gap_factor=10.0):
     """
-    Find the cadence (time interval) between successive timestamps in a DataFrame's index.
+    Robust cadence estimator using ONLY the DatetimeIndex (never a data column).
 
-    Parameters
-    ----------
-    df : pandas DataFrame
-        The input DataFrame.
-    mean_or_median_cadence : str, optional
-        The type of cadence to compute. It can be 'Mean' or 'Median'. The default is 'Mean'.
-
-    Returns
-    -------
-    float
-        The mean or median cadence in seconds between successive timestamps in the DataFrame's index.
-
-    Notes
-    -----
-    This function calculates the cadence (time interval) between successive timestamps in the DataFrame's index.
-    It drops any rows with missing values and computes either the mean or median cadence based on the `mean_or_median_cadence` parameter.
+    method:
+      - "mode": most common dt (recommended for instrument data with gaps)
+      - "median": median dt after excluding large gaps
+      - "mean": mean dt after excluding large gaps
     """
-    keys = list(df.keys())
-    if mean_or_median_cadence == 'mean':
-        return np.nanmean((df[keys[0]].dropna().index.to_series().diff() / np.timedelta64(1, 's')))
-    else:
-        return np.nanmedian((df[keys[0]].dropna().index.to_series().diff() / np.timedelta64(1, 's')))
+    if df is None or len(df) < 3:
+        return np.nan
 
+    idx = pd.DatetimeIndex(df.index).sort_values()
+    dt_ns = np.diff(idx.asi8)  # nanoseconds between successive samples
+    dt_ns = dt_ns[dt_ns > 0]
+
+    if dt_ns.size == 0:
+        return np.nan
+
+    # exclude huge gaps (dropouts) so they don't poison cadence
+    dt_med = np.median(dt_ns)
+    dt_ns = dt_ns[dt_ns <= max_gap_factor * dt_med]
+
+    if dt_ns.size == 0:
+        return np.nan
+
+    if method == "mode":
+        dt_r = (dt_ns / round_ns).round().astype(np.int64) * int(round_ns)
+        vals, counts = np.unique(dt_r, return_counts=True)
+        dt_mode_ns = vals[np.argmax(counts)]
+        return float(dt_mode_ns) / 1e9
+
+    if method == "mean":
+        return float(np.mean(dt_ns)) / 1e9
+
+    return float(np.median(dt_ns)) / 1e9
 
 
 
@@ -4081,7 +4912,7 @@ def resample_timeseries_estimate_gaps(df, resolution, large_gaps=5):
         
         # Make sure that you resample to a resolution that is lower than the initial df's resolution
         while init_dt > resolution * 1e-3:
-            resolution = 1.005 * resolution
+            resolution = 1.0001 * resolution
 
         # Estimate duration of interval selected in seconds
         interval_dur = (df.index[-1] - df.index[0]).total_seconds()
@@ -4096,7 +4927,7 @@ def resample_timeseries_estimate_gaps(df, resolution, large_gaps=5):
         total_gaps = 100 * (res[res > resolution * 1e-3].sum() / interval_dur)
 
         # Resample time-series to desired resolution
-        df_resampled = df.resample(f"{int(resolution)}ms").median().interpolate()
+        df_resampled = df.resample(f"{int(resolution)}ms").mean().interpolate()
 
 
     except:
