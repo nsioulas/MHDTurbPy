@@ -281,11 +281,14 @@ def build_3d_figure(
     au_to_re = (u.AU / const.R_earth).decompose().value
     pos_scale = au_to_re if (geocentric and gse_units == "RE") else 1.0
     coord_unit = "Re" if (geocentric and gse_units == "RE") else "AU"
+    # Approximate Earth-Sun Lagrange distances along GSE X (in chosen display units)
+    l1_dist = (0.01 * u.AU).to_value(u.AU) * pos_scale
+    l2_dist = (0.01 * u.AU).to_value(u.AU) * pos_scale
 
     if verbose:
         print(f"[3D] Building 3D figure in frame3d={frame3d} (positions in AU).")
         if geocentric:
-            print("[3D] GSE mode: single geocentric panel (no Sun backmapping inset).")
+            print("[3D] GSE mode: single geocentric panel with axis/sun-wind guides (no Sun backmapping inset).")
         else:
             print("[3D] Left panel: spacecraft/Earth trajectories + Sun-centered ecliptic plane.")
             print(f"[3D] Right panel: Sun-zoom inset (±{sun_zoom_au:.3f} AU) with ballistic backmapping.")
@@ -319,6 +322,7 @@ def build_3d_figure(
         fig.update_annotations(font_size=15)
 
     max_abs_extent = 0.0
+    gse_extent_samples = []
 
     # --- ecliptic plane patch (Sun-centered for heliocentric frames; Earth-centered for GSE) ---
     earth_df = _get_xyz_timeseries("399", start, stop, step, frame=frame3d)
@@ -350,26 +354,6 @@ def build_3d_figure(
     rss_au = (rss_rsun * const.R_sun).to_value(u.AU)
 
     if geocentric:
-        sun_df = _get_xyz_timeseries("10", start, stop, step, frame=frame3d)
-        max_abs_extent = max(
-            max_abs_extent,
-            float(np.nanmax(np.abs(sun_df[["x_au", "y_au", "z_au"]].to_numpy() * pos_scale))),
-        )
-
-        fig.add_trace(
-            go.Scatter3d(
-                x=sun_df["x_au"][::decimate] * pos_scale,
-                y=sun_df["y_au"][::decimate] * pos_scale,
-                z=sun_df["z_au"][::decimate] * pos_scale,
-                mode="lines",
-                name="Sun (traj)",
-                line=dict(width=3),
-                opacity=0.55,
-                hovertemplate="Sun trajectory (GSE)<extra></extra>",
-            ),
-            row=1,
-            col=1,
-        )
         fig.add_trace(
             go.Scatter3d(
                 x=[0.0], y=[0.0], z=[0.0],
@@ -478,10 +462,10 @@ def build_3d_figure(
             print(f"[3D] {name}: fetching ephemeris (SPKID={spkid}), building trajectory and footpoints...")
 
         sc_df = _get_xyz_timeseries(spkid, start, stop, step, frame=frame3d).iloc[::decimate]
-        max_abs_extent = max(
-            max_abs_extent,
-            float(np.nanmax(np.abs(sc_df[["x_au", "y_au", "z_au"]].to_numpy() * pos_scale))),
-        )
+        sc_xyz = sc_df[["x_au", "y_au", "z_au"]].to_numpy() * pos_scale
+        max_abs_extent = max(max_abs_extent, float(np.nanmax(np.abs(sc_xyz))))
+        if geocentric:
+            gse_extent_samples.append(sc_xyz)
 
         # AU-scale trajectory
         fig.add_trace(
@@ -573,9 +557,9 @@ def build_3d_figure(
                 # spokes (visual guide only): a few lines from sc -> R_sun footpoint (for the primary Vsw only)
                 if show_spokes and j == 0 and len(sc_df) > 3:
                     idx = np.linspace(0, len(sc_df) - 1, min(spoke_count, len(sc_df))).astype(int)
-                    x_sc = sc_df["x_au"].to_numpy()[idx]
-                    y_sc = sc_df["y_au"].to_numpy()[idx]
-                    z_sc = sc_df["z_au"].to_numpy()[idx]
+                    x_sc = (sc_df["x_au"].to_numpy() * pos_scale)[idx]
+                    y_sc = (sc_df["y_au"].to_numpy() * pos_scale)[idx]
+                    z_sc = (sc_df["z_au"].to_numpy() * pos_scale)[idx]
 
                     x_fp = np.array(x_su)[idx]
                     y_fp = np.array(y_su)[idx]
@@ -604,8 +588,87 @@ def build_3d_figure(
     # --- scene formatting: make it look like a real “orbital geometry” figure ---
     if geocentric:
         axis_title = f"[{coord_unit}] (GSE)"
-        max_abs_extent = max(max_abs_extent, (plane_span_au * pos_scale) * 0.8, 0.1)
-        lim = 1.05 * max_abs_extent
+
+        if gse_extent_samples:
+            arr = np.vstack(gse_extent_samples)
+            robust_extent = float(np.nanpercentile(np.abs(arr), 95.0))
+        else:
+            robust_extent = (plane_span_au * pos_scale) * 0.5
+
+        lim = max(0.1, 1.25 * robust_extent)
+        axis_len = 0.92 * lim
+
+        # Explicit GSE axis guides (X:red, Y:green, Z:blue)
+        for axis_name, vec, colr in [
+            ("+X (Sunward)", (axis_len, 0.0, 0.0), "#d62728"),
+            ("+Y (Dusk)", (0.0, axis_len, 0.0), "#2ca02c"),
+            ("+Z (North)", (0.0, 0.0, axis_len), "#1f77b4"),
+        ]:
+            vx, vy, vz = vec
+            fig.add_trace(
+                go.Scatter3d(
+                    x=[0.0, vx], y=[0.0, vy], z=[0.0, vz],
+                    mode="lines+text",
+                    line=dict(width=7, color=colr),
+                    text=["", axis_name],
+                    textposition="top center",
+                    name=f"GSE {axis_name}",
+                    showlegend=False,
+                    hoverinfo="skip",
+                ),
+                row=1,
+                col=1,
+            )
+
+        # Solar wind direction cue in GSE: approximately toward -X at Earth
+        sw_start = 0.92 * lim
+        sw_end = 0.15 * lim
+        fig.add_trace(
+            go.Scatter3d(
+                x=[sw_start, sw_end], y=[0.0, 0.0], z=[0.0, 0.0],
+                mode="lines+text",
+                line=dict(width=8, color="#ff7f0e", dash="dash"),
+                text=["", "Solar wind → Earth"],
+                textposition="top center",
+                name="Solar wind direction",
+                showlegend=False,
+                hoverinfo="skip",
+            ),
+            row=1,
+            col=1,
+        )
+
+        # Indicate Sunward side on +X boundary without forcing zoom-out with full Sun trajectory
+        fig.add_trace(
+            go.Scatter3d(
+                x=[0.96 * lim], y=[0.0], z=[0.0],
+                mode="markers+text",
+                marker=dict(size=5, color="#f2c14e", symbol="circle"),
+                text=["Sunward"],
+                textposition="top center",
+                name="Sunward boundary",
+                showlegend=False,
+                hoverinfo="skip",
+            ),
+            row=1,
+            col=1,
+        )
+
+        # Near-Earth Lagrange points (black dots)
+        fig.add_trace(
+            go.Scatter3d(
+                x=[l1_dist, -l2_dist], y=[0.0, 0.0], z=[0.0, 0.0],
+                mode="markers+text",
+                marker=dict(size=4, color="black", symbol="circle"),
+                text=["L1", "L2"],
+                textposition="top center",
+                name="Lagrange points",
+                showlegend=False,
+                hovertemplate="%{text}<extra></extra>",
+            ),
+            row=1,
+            col=1,
+        )
 
         fig.update_layout(
             scene=dict(
@@ -618,7 +681,7 @@ def build_3d_figure(
                 zaxis=dict(range=[-lim, lim], showspikes=False, gridcolor="rgba(0,0,0,0.10)", zeroline=True, zerolinecolor="rgba(80,80,80,0.4)"),
             ),
         )
-        fig.update_scenes(camera=dict(eye=dict(x=1.35, y=1.35, z=0.9)), row=1, col=1)
+        fig.update_scenes(camera=dict(eye=dict(x=1.05, y=1.0, z=0.7)), row=1, col=1)
     else:
         fig.update_layout(
             scene=dict(
