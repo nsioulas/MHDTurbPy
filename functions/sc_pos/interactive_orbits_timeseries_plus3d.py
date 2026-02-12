@@ -64,7 +64,7 @@ def build_timeseries_figure(
 ):
     colors = px.colors.qualitative.Plotly
     DASH = {"ACE": "solid", "Wind": "dash", "IMAP": "dot", "SOLAR-1": "dashdot", "SWFO-L1": "dashdot"}
-    SYM = {"ACE": "circle", "Wind": "square", "IMAP": "diamond", "SOLAR-1": "triangle-up", "SWFO-L1": "triangle-up"}
+    SYM = {"ACE": "circle", "Wind": "square", "IMAP": "diamond", "SOLAR-1": "diamond-open", "SWFO-L1": "triangle-up"}
 
     fig = make_subplots(
         rows=4,
@@ -266,9 +266,9 @@ def build_3d_figure(
         "ACE": "circle",
         "WIND": "square",
         "IMAP": "diamond",
-        "SOLAR-1": "triangle-up",
-        "SWFO-L1": "triangle-up",
-        "SWIFO-1": "triangle-up",
+        "SOLAR-1": "diamond-open",
+        "SWFO-L1": "diamond-open",
+        "SWIFO-1": "diamond-open",
         "DSCOVR": "x",
         "DISCOVER": "x",
         "ADITYA": "cross",
