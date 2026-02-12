@@ -217,17 +217,14 @@ def build_3d_figure(
     show_spokes: bool = True,
     spoke_count: int = 8,
     decimate: int = 1,
+    gse_axis_units: str = "Re",
     verbose: bool = True,
 ):
     """
-    Two-scene 3D visualization (all units in AU):
-      - Left: AU-scale heliocentric trajectories in `frame3d` + Sun-centered ecliptic plane.
-      - Right: Sun-zoom inset showing ballistic backmapped footpoints at r_ss and radial projection to R_sun.
+    3D visualization (all units in AU).
 
-    Backmapping assumptions:
-      1) Radial flow at constant Vsw from r_ss to r_sc (no acceleration profile).
-      2) Rigid solar rotation at constant Omega (deg/day).
-      3) Below r_ss, use radial projection from r_ss to R_sun at fixed (lon, lat).
+    - HEE/HCI: two panels (AU-scale trajectories + Sun-zoom ballistic backmapping inset).
+    - GSE: single geocentric panel only (no ballistic mapping to the Sun).
     """
     import numpy as np
     import plotly.express as px
@@ -276,21 +273,38 @@ def build_3d_figure(
         "PSP": "circle",
     }
 
+    geocentric = frame3d == "GSE"
+    gse_units = str(gse_axis_units).strip().upper()
+    if geocentric and gse_units not in {"AU", "RE"}:
+        raise ValueError("gse_axis_units must be 'AU' or 'Re'")
+
+    au_to_re = (u.AU / const.R_earth).decompose().value
+    pos_scale = au_to_re if (geocentric and gse_units == "RE") else 1.0
+    coord_unit = "Re" if (geocentric and gse_units == "RE") else "AU"
+
     if verbose:
         print(f"[3D] Building 3D figure in frame3d={frame3d} (positions in AU).")
-        print("[3D] Left panel: spacecraft/Earth trajectories + Sun-centered ecliptic plane.")
-        print(f"[3D] Right panel: Sun-zoom inset (±{sun_zoom_au:.3f} AU) with ballistic backmapping.")
-        print(f"[3D] Backmapping: r_ss={rss_rsun:.2f} R_sun, Ω={omega_deg_per_day:.4f} deg/day, Vsw={vsw_list} km/s.")
-        print("[3D] Assumptions: constant Vsw, rigid Ω, radial projection below r_ss.")
+        if geocentric:
+            print("[3D] GSE mode: single geocentric panel (no Sun backmapping inset).")
+        else:
+            print("[3D] Left panel: spacecraft/Earth trajectories + Sun-centered ecliptic plane.")
+            print(f"[3D] Right panel: Sun-zoom inset (±{sun_zoom_au:.3f} AU) with ballistic backmapping.")
+            print(f"[3D] Backmapping: r_ss={rss_rsun:.2f} R_sun, Ω={omega_deg_per_day:.4f} deg/day, Vsw={vsw_list} km/s.")
+            print("[3D] Assumptions: constant Vsw, rigid Ω, radial projection below r_ss.")
 
-    fig = make_subplots(
-        rows=1,
-        cols=2,
-        specs=[[{"type": "scene"}, {"type": "scene"}]],
-        column_widths=[0.66, 0.34],
-        horizontal_spacing=0.02,
-        subplot_titles=("AU-scale view", "Sun-zoom backmapping"),
-    )
+    if geocentric:
+        fig = make_subplots(rows=1, cols=1, specs=[[{"type": "scene"}]])
+        title_text = f"3D geocentric trajectories (frame={frame3d})"
+    else:
+        fig = make_subplots(
+            rows=1,
+            cols=2,
+            specs=[[{"type": "scene"}, {"type": "scene"}]],
+            column_widths=[0.66, 0.34],
+            horizontal_spacing=0.02,
+            subplot_titles=("AU-scale view", "Sun-zoom backmapping"),
+        )
+        title_text = f"3D orbits + ecliptic plane + ballistic backmapping (frame={frame3d})"
 
     fig.update_layout(
         template="plotly_white",
@@ -298,25 +312,24 @@ def build_3d_figure(
         height=height,
         margin=dict(l=0, r=0, t=85, b=0),
         font=dict(family="Arial", size=14),
-        title=dict(
-            text=f"3D orbits + ecliptic plane + ballistic backmapping (frame={frame3d})",
-            x=0.5,
-            xanchor="center",
-        ),
+        title=dict(text=title_text, x=0.5, xanchor="center"),
         legend=dict(groupclick="togglegroup"),
     )
-    fig.update_annotations(font_size=15)
+    if not geocentric:
+        fig.update_annotations(font_size=15)
 
-    geocentric = frame3d == "GSE"
+    max_abs_extent = 0.0
 
     # --- ecliptic plane patch (Sun-centered for heliocentric frames; Earth-centered for GSE) ---
     earth_df = _get_xyz_timeseries("399", start, stop, step, frame=frame3d)
     obstime_ref = earth_df.index[len(earth_df) // 2].to_pydatetime()
 
     if verbose:
-        print("[3D] Adding Sun-centered ecliptic plane patch (defined in HEE, transformed to target frame).")
+        print("[3D] Adding ecliptic plane patch in target frame.")
 
     Xp, Yp, Zp = _plane_patch_in_target_frame(obstime=obstime_ref, span_au=plane_span_au, target_frame=frame3d)
+    if geocentric and pos_scale != 1.0:
+        Xp, Yp, Zp = Xp * pos_scale, Yp * pos_scale, Zp * pos_scale
     fig.add_trace(
         go.Surface(
             x=Xp,
@@ -338,11 +351,16 @@ def build_3d_figure(
 
     if geocentric:
         sun_df = _get_xyz_timeseries("10", start, stop, step, frame=frame3d)
+        max_abs_extent = max(
+            max_abs_extent,
+            float(np.nanmax(np.abs(sun_df[["x_au", "y_au", "z_au"]].to_numpy() * pos_scale))),
+        )
+
         fig.add_trace(
             go.Scatter3d(
-                x=sun_df["x_au"][::decimate],
-                y=sun_df["y_au"][::decimate],
-                z=sun_df["z_au"][::decimate],
+                x=sun_df["x_au"][::decimate] * pos_scale,
+                y=sun_df["y_au"][::decimate] * pos_scale,
+                z=sun_df["z_au"][::decimate] * pos_scale,
                 mode="lines",
                 name="Sun (traj)",
                 line=dict(width=3),
@@ -381,36 +399,37 @@ def build_3d_figure(
         )
 
     theta = np.linspace(0, 2 * np.pi, 260)
-    # Sun ring in inset
-    fig.add_trace(
-        go.Scatter3d(
-            x=Rsun_au * np.cos(theta),
-            y=Rsun_au * np.sin(theta),
-            z=np.zeros_like(theta),
-            mode="lines",
-            line=dict(width=3),
-            opacity=0.75,
-            hoverinfo="skip",
-            showlegend=False,
-        ),
-        row=1,
-        col=2,
-    )
-    # Source surface ring in inset
-    fig.add_trace(
-        go.Scatter3d(
-            x=rss_au * np.cos(theta),
-            y=rss_au * np.sin(theta),
-            z=np.zeros_like(theta),
-            mode="lines",
-            line=dict(width=2, dash="dot"),
-            opacity=0.40,
-            hoverinfo="skip",
-            showlegend=False,
-        ),
-        row=1,
-        col=2,
-    )
+    if not geocentric:
+        # Sun ring in inset
+        fig.add_trace(
+            go.Scatter3d(
+                x=Rsun_au * np.cos(theta),
+                y=Rsun_au * np.sin(theta),
+                z=np.zeros_like(theta),
+                mode="lines",
+                line=dict(width=3),
+                opacity=0.75,
+                hoverinfo="skip",
+                showlegend=False,
+            ),
+            row=1,
+            col=2,
+        )
+        # Source surface ring in inset
+        fig.add_trace(
+            go.Scatter3d(
+                x=rss_au * np.cos(theta),
+                y=rss_au * np.sin(theta),
+                z=np.zeros_like(theta),
+                mode="lines",
+                line=dict(width=2, dash="dot"),
+                opacity=0.40,
+                hoverinfo="skip",
+                showlegend=False,
+            ),
+            row=1,
+            col=2,
+        )
 
     # --- Earth trajectory (heliocentric frames only) ---
     if not geocentric:
@@ -459,17 +478,21 @@ def build_3d_figure(
             print(f"[3D] {name}: fetching ephemeris (SPKID={spkid}), building trajectory and footpoints...")
 
         sc_df = _get_xyz_timeseries(spkid, start, stop, step, frame=frame3d).iloc[::decimate]
+        max_abs_extent = max(
+            max_abs_extent,
+            float(np.nanmax(np.abs(sc_df[["x_au", "y_au", "z_au"]].to_numpy() * pos_scale))),
+        )
 
         # AU-scale trajectory
         fig.add_trace(
             go.Scatter3d(
-                x=sc_df["x_au"],
-                y=sc_df["y_au"],
-                z=sc_df["z_au"],
+                x=sc_df["x_au"] * pos_scale,
+                y=sc_df["y_au"] * pos_scale,
+                z=sc_df["z_au"] * pos_scale,
                 mode="lines",
                 name=name,
                 line=dict(width=4, dash=dash, color=col),
-                hovertemplate=f"{name}<br>x=%{{x:.3f}} AU<br>y=%{{y:.3f}} AU<br>z=%{{z:.3f}} AU<extra></extra>",
+                hovertemplate=f"{name}<br>x=%{{x:.3f}} {coord_unit}<br>y=%{{y:.3f}} {coord_unit}<br>z=%{{z:.3f}} {coord_unit}<extra></extra>",
             ),
             row=1,
             col=1,
@@ -478,9 +501,9 @@ def build_3d_figure(
         # end marker label
         fig.add_trace(
             go.Scatter3d(
-                x=[float(sc_df["x_au"].iloc[-1])],
-                y=[float(sc_df["y_au"].iloc[-1])],
-                z=[float(sc_df["z_au"].iloc[-1])],
+                x=[float(sc_df["x_au"].iloc[-1] * pos_scale)],
+                y=[float(sc_df["y_au"].iloc[-1] * pos_scale)],
+                z=[float(sc_df["z_au"].iloc[-1] * pos_scale)],
                 mode="markers+text",
                 marker=dict(size=5, color=col, symbol=sym),
                 text=[name],
@@ -492,118 +515,134 @@ def build_3d_figure(
             col=1,
         )
 
-        # backmapping: for each vsw
-        for j, vsw in enumerate(vsw_list):
-            t_arr, carr, fp_ss, fp_sun = _carrington_and_footpoints(
-                spkid=spkid,
-                start=start,
-                stop=stop,
-                step=step,
-                rss_rsun=rss_rsun,
-                omega_deg_per_day=omega_deg_per_day,
-                vsw_kms=vsw,
-            )
+        if not geocentric:
+            # backmapping: for each vsw
+            for j, vsw in enumerate(vsw_list):
+                _, _, fp_ss, fp_sun = _carrington_and_footpoints(
+                    spkid=spkid,
+                    start=start,
+                    stop=stop,
+                    step=step,
+                    rss_rsun=rss_rsun,
+                    omega_deg_per_day=omega_deg_per_day,
+                    vsw_kms=vsw,
+                )
 
-            # decimate to match main trajectory density
-            t_sel = t_arr[::decimate]
-            fp_ss_sel = fp_ss[::decimate]
-            fp_sun_sel = fp_sun[::decimate]
+                fp_ss_sel = fp_ss[::decimate]
+                fp_sun_sel = fp_sun[::decimate]
 
-            x_ss, y_ss, z_ss = _to_xyz_in_frame(fp_ss_sel, frame3d)
-            x_su, y_su, z_su = _to_xyz_in_frame(fp_sun_sel, frame3d)
+                x_ss, y_ss, z_ss = _to_xyz_in_frame(fp_ss_sel, frame3d)
+                x_su, y_su, z_su = _to_xyz_in_frame(fp_sun_sel, frame3d)
 
-            # style: first Vsw = solid family, second Vsw = dashed family
-            ss_dash = "solid" if j == 0 else "dash"
-            su_dash = "dot" if j == 0 else "dashdot"
-            alpha = 0.90 if j == 0 else 0.55
+                # style: first Vsw = solid family, second Vsw = dashed family
+                ss_dash = "solid" if j == 0 else "dash"
+                su_dash = "dot" if j == 0 else "dashdot"
+                alpha = 0.90 if j == 0 else 0.55
 
-            # source-surface footpoints
-            fig.add_trace(
-                go.Scatter3d(
-                    x=x_ss,
-                    y=y_ss,
-                    z=z_ss,
-                    mode="lines",
-                    line=dict(width=3, dash=ss_dash, color=col),
-                    opacity=alpha,
-                    showlegend=False,
-                    hoverinfo="skip",
-                ),
-                row=1,
-                col=2,
-            )
-            # photospheric projection
-            fig.add_trace(
-                go.Scatter3d(
-                    x=x_su,
-                    y=y_su,
-                    z=z_su,
-                    mode="lines",
-                    line=dict(width=5, dash=su_dash, color=col),
-                    opacity=min(0.95, alpha + 0.1),
-                    showlegend=False,
-                    hoverinfo="skip",
-                ),
-                row=1,
-                col=2,
-            )
-
-            # spokes (visual guide only): a few lines from sc -> R_sun footpoint (for the primary Vsw only)
-            if show_spokes and j == 0 and len(sc_df) > 3:
-                idx = np.linspace(0, len(sc_df) - 1, min(spoke_count, len(sc_df))).astype(int)
-                x_sc = sc_df["x_au"].to_numpy()[idx]
-                y_sc = sc_df["y_au"].to_numpy()[idx]
-                z_sc = sc_df["z_au"].to_numpy()[idx]
-
-                x_fp = np.array(x_su)[idx]
-                y_fp = np.array(y_su)[idx]
-                z_fp = np.array(z_su)[idx]
-
-                Xl = np.empty(3 * len(idx))
-                Yl = np.empty(3 * len(idx))
-                Zl = np.empty(3 * len(idx))
-                Xl[0::3], Yl[0::3], Zl[0::3] = x_sc, y_sc, z_sc
-                Xl[1::3], Yl[1::3], Zl[1::3] = x_fp, y_fp, z_fp
-                Xl[2::3], Yl[2::3], Zl[2::3] = np.nan, np.nan, np.nan
-
+                # source-surface footpoints
                 fig.add_trace(
                     go.Scatter3d(
-                        x=Xl, y=Yl, z=Zl,
+                        x=x_ss,
+                        y=y_ss,
+                        z=z_ss,
                         mode="lines",
-                        line=dict(width=2, color=col),
-                        opacity=0.18,
+                        line=dict(width=3, dash=ss_dash, color=col),
+                        opacity=alpha,
                         showlegend=False,
                         hoverinfo="skip",
                     ),
                     row=1,
-                    col=1,
+                    col=2,
+                )
+                # photospheric projection
+                fig.add_trace(
+                    go.Scatter3d(
+                        x=x_su,
+                        y=y_su,
+                        z=z_su,
+                        mode="lines",
+                        line=dict(width=5, dash=su_dash, color=col),
+                        opacity=min(0.95, alpha + 0.1),
+                        showlegend=False,
+                        hoverinfo="skip",
+                    ),
+                    row=1,
+                    col=2,
                 )
 
-    # --- scene formatting: make it look like a real “orbital geometry” figure ---
-    fig.update_layout(
-        scene=dict(
-            xaxis_title="x [AU]",
-            yaxis_title="y [AU]",
-            zaxis_title="z [AU]",
-            aspectmode="data",
-            xaxis=dict(showspikes=False, gridcolor="rgba(0,0,0,0.10)"),
-            yaxis=dict(showspikes=False, gridcolor="rgba(0,0,0,0.10)"),
-            zaxis=dict(showspikes=False, gridcolor="rgba(0,0,0,0.10)"),
-        ),
-        scene2=dict(
-            xaxis_title="x [AU]",
-            yaxis_title="y [AU]",
-            zaxis_title="z [AU]",
-            aspectmode="cube",
-            xaxis=dict(range=[-sun_zoom_au, sun_zoom_au], showspikes=False),
-            yaxis=dict(range=[-sun_zoom_au, sun_zoom_au], showspikes=False),
-            zaxis=dict(range=[-sun_zoom_au, sun_zoom_au], showspikes=False),
-        ),
-    )
+                # spokes (visual guide only): a few lines from sc -> R_sun footpoint (for the primary Vsw only)
+                if show_spokes and j == 0 and len(sc_df) > 3:
+                    idx = np.linspace(0, len(sc_df) - 1, min(spoke_count, len(sc_df))).astype(int)
+                    x_sc = sc_df["x_au"].to_numpy()[idx]
+                    y_sc = sc_df["y_au"].to_numpy()[idx]
+                    z_sc = sc_df["z_au"].to_numpy()[idx]
 
-    # Cameras (stable defaults)
-    fig.update_scenes(camera=dict(eye=dict(x=1.55, y=1.35, z=0.85)), row=1, col=1)
-    fig.update_scenes(camera=dict(eye=dict(x=1.75, y=1.20, z=0.75)), row=1, col=2)
+                    x_fp = np.array(x_su)[idx]
+                    y_fp = np.array(y_su)[idx]
+                    z_fp = np.array(z_su)[idx]
+
+                    Xl = np.empty(3 * len(idx))
+                    Yl = np.empty(3 * len(idx))
+                    Zl = np.empty(3 * len(idx))
+                    Xl[0::3], Yl[0::3], Zl[0::3] = x_sc, y_sc, z_sc
+                    Xl[1::3], Yl[1::3], Zl[1::3] = x_fp, y_fp, z_fp
+                    Xl[2::3], Yl[2::3], Zl[2::3] = np.nan, np.nan, np.nan
+
+                    fig.add_trace(
+                        go.Scatter3d(
+                            x=Xl, y=Yl, z=Zl,
+                            mode="lines",
+                            line=dict(width=2, color=col),
+                            opacity=0.18,
+                            showlegend=False,
+                            hoverinfo="skip",
+                        ),
+                        row=1,
+                        col=1,
+                    )
+
+    # --- scene formatting: make it look like a real “orbital geometry” figure ---
+    if geocentric:
+        axis_title = f"[{coord_unit}] (GSE)"
+        max_abs_extent = max(max_abs_extent, (plane_span_au * pos_scale) * 0.8, 0.1)
+        lim = 1.05 * max_abs_extent
+
+        fig.update_layout(
+            scene=dict(
+                xaxis_title=f"X {axis_title}",
+                yaxis_title=f"Y {axis_title}",
+                zaxis_title=f"Z {axis_title}",
+                aspectmode="cube",
+                xaxis=dict(range=[-lim, lim], showspikes=False, gridcolor="rgba(0,0,0,0.10)", zeroline=True, zerolinecolor="rgba(80,80,80,0.4)"),
+                yaxis=dict(range=[-lim, lim], showspikes=False, gridcolor="rgba(0,0,0,0.10)", zeroline=True, zerolinecolor="rgba(80,80,80,0.4)"),
+                zaxis=dict(range=[-lim, lim], showspikes=False, gridcolor="rgba(0,0,0,0.10)", zeroline=True, zerolinecolor="rgba(80,80,80,0.4)"),
+            ),
+        )
+        fig.update_scenes(camera=dict(eye=dict(x=1.35, y=1.35, z=0.9)), row=1, col=1)
+    else:
+        fig.update_layout(
+            scene=dict(
+                xaxis_title="x [AU]",
+                yaxis_title="y [AU]",
+                zaxis_title="z [AU]",
+                aspectmode="data",
+                xaxis=dict(showspikes=False, gridcolor="rgba(0,0,0,0.10)"),
+                yaxis=dict(showspikes=False, gridcolor="rgba(0,0,0,0.10)"),
+                zaxis=dict(showspikes=False, gridcolor="rgba(0,0,0,0.10)"),
+            ),
+            scene2=dict(
+                xaxis_title="x [AU]",
+                yaxis_title="y [AU]",
+                zaxis_title="z [AU]",
+                aspectmode="cube",
+                xaxis=dict(range=[-sun_zoom_au, sun_zoom_au], showspikes=False),
+                yaxis=dict(range=[-sun_zoom_au, sun_zoom_au], showspikes=False),
+                zaxis=dict(range=[-sun_zoom_au, sun_zoom_au], showspikes=False),
+            ),
+        )
+        # Cameras (stable defaults)
+        fig.update_scenes(camera=dict(eye=dict(x=1.55, y=1.35, z=0.85)), row=1, col=1)
+        fig.update_scenes(camera=dict(eye=dict(x=1.75, y=1.20, z=0.75)), row=1, col=2)
 
     return fig
 
@@ -654,6 +693,7 @@ def main():
     p.add_argument("--plane-span-au", type=float, default=1.2)
 
     p.add_argument("--no-spokes", action="store_true")
+    p.add_argument("--gse-axis-units", choices=["AU", "Re", "RE", "au", "re"], default="Re")
 
     args = p.parse_args()
 
@@ -689,6 +729,7 @@ def main():
         sun_zoom_au=args.sun_zoom_au,
         plane_span_au=args.plane_span_au,
         show_spokes=(not args.no_spokes),
+        gse_axis_units=args.gse_axis_units,
     )
 
     write_combined_html(fig_ts, fig_3d, args.html)
