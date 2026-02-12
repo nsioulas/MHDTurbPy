@@ -591,6 +591,37 @@ def build_3d_figure(
                         col=1,
                     )
 
+                # spokes (visual guide only): a few lines from sc -> R_sun footpoint (for the primary Vsw only)
+                if show_spokes and j == 0 and len(sc_df) > 3:
+                    idx = np.linspace(0, len(sc_df) - 1, min(spoke_count, len(sc_df))).astype(int)
+                    x_sc = (sc_df["x_au"].to_numpy() * pos_scale)[idx]
+                    y_sc = (sc_df["y_au"].to_numpy() * pos_scale)[idx]
+                    z_sc = (sc_df["z_au"].to_numpy() * pos_scale)[idx]
+
+                    x_fp = np.array(x_su)[idx]
+                    y_fp = np.array(y_su)[idx]
+                    z_fp = np.array(z_su)[idx]
+
+                    Xl = np.empty(3 * len(idx))
+                    Yl = np.empty(3 * len(idx))
+                    Zl = np.empty(3 * len(idx))
+                    Xl[0::3], Yl[0::3], Zl[0::3] = x_sc, y_sc, z_sc
+                    Xl[1::3], Yl[1::3], Zl[1::3] = x_fp, y_fp, z_fp
+                    Xl[2::3], Yl[2::3], Zl[2::3] = np.nan, np.nan, np.nan
+
+                    fig.add_trace(
+                        go.Scatter3d(
+                            x=Xl, y=Yl, z=Zl,
+                            mode="lines",
+                            line=dict(width=2, color=col),
+                            opacity=0.18,
+                            showlegend=False,
+                            hoverinfo="skip",
+                        ),
+                        row=1,
+                        col=1,
+                    )
+
     # --- scene formatting: make it look like a real “orbital geometry” figure ---
     if geocentric:
         axis_title = f"[{coord_unit}] (GSE)"
