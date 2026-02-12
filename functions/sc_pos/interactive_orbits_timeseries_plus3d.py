@@ -17,6 +17,7 @@ from astropy.coordinates import SkyCoord, CartesianRepresentation
 
 from sunpy.coordinates import get_horizons_coord, get_body_heliographic_stonyhurst
 from sunpy.coordinates.frames import (
+    GeocentricSolarEcliptic,
     HeliocentricEarthEcliptic,
     HeliocentricInertial,
     HeliographicStonyhurst,
@@ -34,8 +35,10 @@ def _get_xyz_timeseries(target_id: str, start: str, stop: str, step: str, frame:
         fr = HeliocentricEarthEcliptic(obstime=coord0.obstime)
     elif frame.upper() == "HCI":
         fr = HeliocentricInertial(obstime=coord0.obstime)
+    elif frame.upper() == "GSE":
+        fr = GeocentricSolarEcliptic(obstime=coord0.obstime)
     else:
-        raise ValueError("frame must be 'HEE' or 'HCI'")
+        raise ValueError("frame must be 'HEE', 'HCI' or 'GSE'")
 
     c = coord0.transform_to(fr)
 
@@ -61,7 +64,7 @@ def build_timeseries_figure(
 ):
     colors = px.colors.qualitative.Plotly
     DASH = {"ACE": "solid", "Wind": "dash", "IMAP": "dot", "SOLAR-1": "dashdot", "SWFO-L1": "dashdot"}
-    SYM = {"ACE": "circle", "Wind": "square", "IMAP": "diamond", "SOLAR-1": "triangle-up", "SWFO-L1": "triangle-up"}
+    SYM = {"ACE": "circle", "Wind": "square", "IMAP": "diamond", "SOLAR-1": "diamond-open", "SWFO-L1": "triangle-up"}
 
     fig = make_subplots(
         rows=4,
@@ -122,16 +125,19 @@ def _plane_patch_in_target_frame(
     X, Y = np.meshgrid(grid, grid)
     Z = np.zeros_like(X)
 
-    hee = HeliocentricEarthEcliptic(obstime=obstime)
     rep = CartesianRepresentation(X.ravel() * u.AU, Y.ravel() * u.AU, Z.ravel() * u.AU)
-    c = SkyCoord(rep, frame=hee)
+    tf = target_frame.upper()
 
-    if target_frame.upper() == "HEE":
-        ct = c
-    elif target_frame.upper() == "HCI":
-        ct = c.transform_to(HeliocentricInertial(obstime=obstime))
+    if tf == "GSE":
+        ct = SkyCoord(rep, frame=GeocentricSolarEcliptic(obstime=obstime))
     else:
-        raise ValueError("target_frame must be 'HEE' or 'HCI'")
+        c_hee = SkyCoord(rep, frame=HeliocentricEarthEcliptic(obstime=obstime))
+        if tf == "HEE":
+            ct = c_hee
+        elif tf == "HCI":
+            ct = c_hee.transform_to(HeliocentricInertial(obstime=obstime))
+        else:
+            raise ValueError("target_frame must be 'HEE', 'HCI' or 'GSE'")
 
     Xt = ct.cartesian.x.to_value(u.AU).reshape(X.shape)
     Yt = ct.cartesian.y.to_value(u.AU).reshape(X.shape)
@@ -181,8 +187,10 @@ def _to_xyz_in_frame(coord: SkyCoord, frame: str):
         fr = HeliocentricEarthEcliptic(obstime=coord.obstime)
     elif frame.upper() == "HCI":
         fr = HeliocentricInertial(obstime=coord.obstime)
+    elif frame.upper() == "GSE":
+        fr = GeocentricSolarEcliptic(obstime=coord.obstime)
     else:
-        raise ValueError("frame must be 'HEE' or 'HCI'")
+        raise ValueError("frame must be 'HEE', 'HCI' or 'GSE'")
     c = coord.transform_to(fr)
     return (
         c.cartesian.x.to_value(u.AU),
@@ -200,6 +208,8 @@ def build_3d_figure(
     rss_rsun: float = 2.5,
     omega_deg_per_day: float = 14.1844,
     vsw_kms: tuple[float, float | None] = (300.0, 700.0),
+    vsw1_kms: float | None = None,
+    vsw2_kms: float | None = None,
     width: int = 1800,
     height: int = 900,
     sun_zoom_au: float = 0.06,
@@ -225,19 +235,46 @@ def build_3d_figure(
     from plotly.subplots import make_subplots
 
     frame3d = frame3d.upper()
-    if frame3d not in {"HEE", "HCI"}:
-        raise ValueError("frame3d must be 'HEE' or 'HCI'")
+    if frame3d not in {"HEE", "HCI", "GSE"}:
+        raise ValueError("frame3d must be 'HEE', 'HCI' or 'GSE'")
 
     if decimate < 1:
         decimate = 1
+
+    if (vsw1_kms is not None) or (vsw2_kms is not None):
+        vsw_kms = (vsw1_kms if vsw1_kms is not None else 300.0, vsw2_kms)
 
     vsw_list = [float(v) for v in vsw_kms if v is not None]
     if len(vsw_list) == 0:
         raise ValueError("Provide at least one Vsw in vsw_kms")
 
     colors = px.colors.qualitative.Plotly
-    dash_map = {"ACE": "solid", "Wind": "dash", "IMAP": "dot", "SOLAR-1": "dashdot", "SWFO-L1": "dashdot", "PSP": "solid"}
-    sym_map = {"ACE": "circle", "Wind": "square", "IMAP": "diamond", "SOLAR-1": "triangle-up", "SWFO-L1": "triangle-up", "PSP": "circle"}
+    dash_map = {
+        "ACE": "solid",
+        "WIND": "dash",
+        "IMAP": "dot",
+        "SOLAR-1": "dashdot",
+        "SWFO-L1": "dashdot",
+        "SWIFO-1": "dashdot",
+        "DSCOVR": "longdash",
+        "DISCOVER": "longdash",
+        "ADITYA": "longdashdot",
+        "ADITYA-L1": "longdashdot",
+        "PSP": "solid",
+    }
+    sym_map = {
+        "ACE": "circle",
+        "WIND": "square",
+        "IMAP": "diamond",
+        "SOLAR-1": "diamond-open",
+        "SWFO-L1": "diamond-open",
+        "SWIFO-1": "diamond-open",
+        "DSCOVR": "x",
+        "DISCOVER": "x",
+        "ADITYA": "cross",
+        "ADITYA-L1": "cross",
+        "PSP": "circle",
+    }
 
     if verbose:
         print(f"[3D] Building 3D figure in frame3d={frame3d} (positions in AU).")
@@ -270,7 +307,9 @@ def build_3d_figure(
     )
     fig.update_annotations(font_size=15)
 
-    # --- ecliptic plane wrt Sun: define as z=0 in HEE, then transform into chosen frame ---
+    geocentric = frame3d == "GSE"
+
+    # --- ecliptic plane patch (Sun-centered for heliocentric frames; Earth-centered for GSE) ---
     earth_df = _get_xyz_timeseries("399", start, stop, step, frame=frame3d)
     obstime_ref = earth_df.index[len(earth_df) // 2].to_pydatetime()
 
@@ -297,19 +336,49 @@ def build_3d_figure(
     Rsun_au = const.R_sun.to_value(u.AU)
     rss_au = (rss_rsun * const.R_sun).to_value(u.AU)
 
-    fig.add_trace(
-        go.Scatter3d(
-            x=[0.0], y=[0.0], z=[0.0],
-            mode="markers+text",
-            name="Sun",
-            marker=dict(size=6, symbol="circle"),
-            text=["Sun"],
-            textposition="top center",
-            hovertemplate=f"Sun (R_sun={Rsun_au:.5f} AU)<extra></extra>",
-        ),
-        row=1,
-        col=1,
-    )
+    if geocentric:
+        sun_df = _get_xyz_timeseries("10", start, stop, step, frame=frame3d)
+        fig.add_trace(
+            go.Scatter3d(
+                x=sun_df["x_au"][::decimate],
+                y=sun_df["y_au"][::decimate],
+                z=sun_df["z_au"][::decimate],
+                mode="lines",
+                name="Sun (traj)",
+                line=dict(width=3),
+                opacity=0.55,
+                hovertemplate="Sun trajectory (GSE)<extra></extra>",
+            ),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter3d(
+                x=[0.0], y=[0.0], z=[0.0],
+                mode="markers+text",
+                name="Earth",
+                marker=dict(size=6, symbol="circle"),
+                text=["Earth"],
+                textposition="top center",
+                hovertemplate="Earth at origin (GSE)<extra></extra>",
+            ),
+            row=1,
+            col=1,
+        )
+    else:
+        fig.add_trace(
+            go.Scatter3d(
+                x=[0.0], y=[0.0], z=[0.0],
+                mode="markers+text",
+                name="Sun",
+                marker=dict(size=6, symbol="circle"),
+                text=["Sun"],
+                textposition="top center",
+                hovertemplate=f"Sun (R_sun={Rsun_au:.5f} AU)<extra></extra>",
+            ),
+            row=1,
+            col=1,
+        )
 
     theta = np.linspace(0, 2 * np.pi, 260)
     # Sun ring in inset
@@ -343,46 +412,48 @@ def build_3d_figure(
         col=2,
     )
 
-    # --- Earth trajectory (AU-scale); Earth physical radius is tiny in AU so show as marker+label ---
-    if verbose:
-        print("[3D] Adding Earth trajectory (AU-scale).")
+    # --- Earth trajectory (heliocentric frames only) ---
+    if not geocentric:
+        if verbose:
+            print("[3D] Adding Earth trajectory (AU-scale).")
 
-    fig.add_trace(
-        go.Scatter3d(
-            x=earth_df["x_au"][::decimate],
-            y=earth_df["y_au"][::decimate],
-            z=earth_df["z_au"][::decimate],
-            mode="lines",
-            name="Earth (traj)",
-            line=dict(width=3),
-            opacity=0.55,
-            hovertemplate="Earth trajectory<extra></extra>",
-        ),
-        row=1,
-        col=1,
-    )
-    fig.add_trace(
-        go.Scatter3d(
-            x=[float(earth_df["x_au"].iloc[-1])],
-            y=[float(earth_df["y_au"].iloc[-1])],
-            z=[float(earth_df["z_au"].iloc[-1])],
-            mode="markers+text",
-            marker=dict(size=5),
-            text=["Earth"],
-            textposition="top center",
-            showlegend=False,
-            hovertemplate="Earth (marker shown; physical R_earth is tiny in AU)<extra></extra>",
-        ),
-        row=1,
-        col=1,
-    )
+        fig.add_trace(
+            go.Scatter3d(
+                x=earth_df["x_au"][::decimate],
+                y=earth_df["y_au"][::decimate],
+                z=earth_df["z_au"][::decimate],
+                mode="lines",
+                name="Earth (traj)",
+                line=dict(width=3),
+                opacity=0.55,
+                hovertemplate="Earth trajectory<extra></extra>",
+            ),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter3d(
+                x=[float(earth_df["x_au"].iloc[-1])],
+                y=[float(earth_df["y_au"].iloc[-1])],
+                z=[float(earth_df["z_au"].iloc[-1])],
+                mode="markers+text",
+                marker=dict(size=5),
+                text=["Earth"],
+                textposition="top center",
+                showlegend=False,
+                hovertemplate="Earth (marker shown; physical R_earth is tiny in AU)<extra></extra>",
+            ),
+            row=1,
+            col=1,
+        )
 
     # --- spacecraft trajectories + backmapping traces (in inset) ---
     for i, name in enumerate(targets):
         spkid = resolve_spacecraft_spkid(name)
         col = colors[i % len(colors)]
-        dash = dash_map.get(name, "solid")
-        sym = sym_map.get(name, "circle")
+        alias = str(name).strip().upper()
+        dash = dash_map.get(alias, "solid")
+        sym = sym_map.get(alias, "circle")
 
         if verbose:
             print(f"[3D] {name}: fetching ephemeris (SPKID={spkid}), building trajectory and footpoints...")
@@ -574,7 +645,7 @@ def main():
     p.add_argument("--width3d", type=int, default=1800)
     p.add_argument("--height3d", type=int, default=900)
 
-    p.add_argument("--frame3d", choices=["HEE", "HCI"], default="HEE")
+    p.add_argument("--frame3d", choices=["HEE", "HCI", "GSE"], default="HEE")
 
     p.add_argument("--vsw1-kms", type=float, default=300.0)
     p.add_argument("--vsw2-kms", type=float, default=700.0)
