@@ -340,7 +340,7 @@ def build_3d_figure(
             y=Yp,
             z=Zp,
             showscale=False,
-            opacity=0.10,
+            opacity=(0.03 if geocentric else 0.10),
             hoverinfo="skip",
             name="Ecliptic plane",
             showlegend=False,
@@ -450,6 +450,12 @@ def build_3d_figure(
             col=1,
         )
 
+    # label-position cycling to reduce overlap of endpoint names
+    text_positions = [
+        "top center", "middle right", "middle left", "bottom center",
+        "top right", "top left", "bottom right", "bottom left",
+    ]
+
     # --- spacecraft trajectories + backmapping traces (in inset) ---
     for i, name in enumerate(targets):
         spkid = resolve_spacecraft_spkid(name)
@@ -491,7 +497,7 @@ def build_3d_figure(
                 mode="markers+text",
                 marker=dict(size=5, color=col, symbol=sym),
                 text=[name],
-                textposition="top center",
+                textposition=text_positions[i % len(text_positions)],
                 showlegend=False,
                 hovertemplate=f"{name} (end)<extra></extra>",
             ),
@@ -585,6 +591,37 @@ def build_3d_figure(
                         col=1,
                     )
 
+                # spokes (visual guide only): a few lines from sc -> R_sun footpoint (for the primary Vsw only)
+                if show_spokes and j == 0 and len(sc_df) > 3:
+                    idx = np.linspace(0, len(sc_df) - 1, min(spoke_count, len(sc_df))).astype(int)
+                    x_sc = (sc_df["x_au"].to_numpy() * pos_scale)[idx]
+                    y_sc = (sc_df["y_au"].to_numpy() * pos_scale)[idx]
+                    z_sc = (sc_df["z_au"].to_numpy() * pos_scale)[idx]
+
+                    x_fp = np.array(x_su)[idx]
+                    y_fp = np.array(y_su)[idx]
+                    z_fp = np.array(z_su)[idx]
+
+                    Xl = np.empty(3 * len(idx))
+                    Yl = np.empty(3 * len(idx))
+                    Zl = np.empty(3 * len(idx))
+                    Xl[0::3], Yl[0::3], Zl[0::3] = x_sc, y_sc, z_sc
+                    Xl[1::3], Yl[1::3], Zl[1::3] = x_fp, y_fp, z_fp
+                    Xl[2::3], Yl[2::3], Zl[2::3] = np.nan, np.nan, np.nan
+
+                    fig.add_trace(
+                        go.Scatter3d(
+                            x=Xl, y=Yl, z=Zl,
+                            mode="lines",
+                            line=dict(width=2, color=col),
+                            opacity=0.18,
+                            showlegend=False,
+                            hoverinfo="skip",
+                        ),
+                        row=1,
+                        col=1,
+                    )
+
     # --- scene formatting: make it look like a real “orbital geometry” figure ---
     if geocentric:
         axis_title = f"[{coord_unit}] (GSE)"
@@ -598,18 +635,18 @@ def build_3d_figure(
         lim = max(0.1, 1.25 * robust_extent)
         axis_len = 0.92 * lim
 
-        # Explicit GSE axis guides (X:red, Y:green, Z:blue)
+        # Explicit GSE axis guides (black, subtle)
         for axis_name, vec, colr in [
-            ("+X (Sunward)", (axis_len, 0.0, 0.0), "#d62728"),
-            ("+Y (Dusk)", (0.0, axis_len, 0.0), "#2ca02c"),
-            ("+Z (North)", (0.0, 0.0, axis_len), "#1f77b4"),
+            ("+X (Sunward)", (axis_len, 0.0, 0.0), "rgba(0,0,0,0.6)"),
+            ("+Y (Dusk)", (0.0, axis_len, 0.0), "rgba(0,0,0,0.6)"),
+            ("+Z (North)", (0.0, 0.0, axis_len), "rgba(0,0,0,0.6)"),
         ]:
             vx, vy, vz = vec
             fig.add_trace(
                 go.Scatter3d(
                     x=[0.0, vx], y=[0.0, vy], z=[0.0, vz],
                     mode="lines+text",
-                    line=dict(width=7, color=colr),
+                    line=dict(width=5, color=colr), opacity=0.65,
                     text=["", axis_name],
                     textposition="top center",
                     name=f"GSE {axis_name}",
@@ -627,7 +664,7 @@ def build_3d_figure(
             go.Scatter3d(
                 x=[sw_start, sw_end], y=[0.0, 0.0], z=[0.0, 0.0],
                 mode="lines+text",
-                line=dict(width=8, color="#ff7f0e", dash="dash"),
+                line=dict(width=5, color="#ff7f0e", dash="dash"), opacity=0.6,
                 text=["", "Solar wind → Earth"],
                 textposition="top center",
                 name="Solar wind direction",
@@ -676,9 +713,39 @@ def build_3d_figure(
                 yaxis_title=f"Y {axis_title}",
                 zaxis_title=f"Z {axis_title}",
                 aspectmode="cube",
-                xaxis=dict(range=[-lim, lim], showspikes=False, gridcolor="rgba(0,0,0,0.10)", zeroline=True, zerolinecolor="rgba(80,80,80,0.4)"),
-                yaxis=dict(range=[-lim, lim], showspikes=False, gridcolor="rgba(0,0,0,0.10)", zeroline=True, zerolinecolor="rgba(80,80,80,0.4)"),
-                zaxis=dict(range=[-lim, lim], showspikes=False, gridcolor="rgba(0,0,0,0.10)", zeroline=True, zerolinecolor="rgba(80,80,80,0.4)"),
+                xaxis=dict(
+                    range=[-lim, lim],
+                    showspikes=False,
+                    showbackground=False,
+                    gridcolor="rgba(0,0,0,0.04)",
+                    zeroline=True,
+                    zerolinecolor="rgba(0,0,0,0.35)",
+                    linecolor="rgba(0,0,0,0.55)",
+                    ticks="outside",
+                    tickcolor="rgba(0,0,0,0.55)",
+                ),
+                yaxis=dict(
+                    range=[-lim, lim],
+                    showspikes=False,
+                    showbackground=False,
+                    gridcolor="rgba(0,0,0,0.04)",
+                    zeroline=True,
+                    zerolinecolor="rgba(0,0,0,0.35)",
+                    linecolor="rgba(0,0,0,0.55)",
+                    ticks="outside",
+                    tickcolor="rgba(0,0,0,0.55)",
+                ),
+                zaxis=dict(
+                    range=[-lim, lim],
+                    showspikes=False,
+                    showbackground=False,
+                    gridcolor="rgba(0,0,0,0.04)",
+                    zeroline=True,
+                    zerolinecolor="rgba(0,0,0,0.35)",
+                    linecolor="rgba(0,0,0,0.55)",
+                    ticks="outside",
+                    tickcolor="rgba(0,0,0,0.55)",
+                ),
             ),
         )
         fig.update_scenes(camera=dict(eye=dict(x=1.05, y=1.0, z=0.7)), row=1, col=1)
