@@ -795,6 +795,21 @@ def _pairwise_metrics(xyz: np.ndarray, flow_hat: np.ndarray):
     return np.asarray(perp_vals), np.asarray(par_vals)
 
 
+def _flow_basis(flow_hat: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build orthonormal basis (e_par, e_perp1, e_perp2) aligned with flow_hat."""
+    e_par = np.asarray(flow_hat, dtype=float)
+    e_par = e_par / np.linalg.norm(e_par)
+
+    seed = np.array([0.0, 0.0, 1.0])
+    if np.abs(np.dot(seed, e_par)) > 0.9:
+        seed = np.array([0.0, 1.0, 0.0])
+
+    e_perp1 = np.cross(e_par, seed)
+    e_perp1 = e_perp1 / np.linalg.norm(e_perp1)
+    e_perp2 = np.cross(e_par, e_perp1)
+    return e_par, e_perp1, e_perp2
+
+
 def find_best_stream_aligned_intervals(
     targets: list[str],
     start: str,
@@ -805,7 +820,9 @@ def find_best_stream_aligned_intervals(
     frame: str = "GSE",
     flow_dir_gse: tuple[float, float, float] = (-1.0, 0.0, 0.0),
     vsw_kms: float = 400.0,
-    along_weight: float = 0.25,
+    along_weight: float = 0.15,
+    perp_scale: float = 0.35,
+    lag_tolerance: float = 0.5,
     min_coverage: float = 0.75,
     verbose: bool = True,
 ):
@@ -813,9 +830,14 @@ def find_best_stream_aligned_intervals(
     Identify windows where spacecraft are closest to sampling the same solar-wind stream.
 
     Physics-driven metric (dimensionless):
-      J = median(d_perp) / L_adv + along_weight * median(|d_parallel|) / L_adv,
-    where L_adv = Vsw * window_duration and d_perp / d_parallel are pairwise
-    separations perpendicular / parallel to the assumed flow direction.
+      J = 1 - [median(exp(-(d_perp/L_perp)^2) * exp(-(tau/tau0)^2))
+               - along_weight * median(|d_parallel|/L_adv)],
+    where tau = |d_parallel| / Vsw, L_perp = perp_scale * L_adv,
+    tau0 = lag_tolerance * window_duration, and L_adv = Vsw * window_duration.
+
+    Lower J is better. The exponential term approximates the chance that two
+    spacecraft sample the same parcel (small cross-flow offset and plausible
+    advection lag), while the parallel-distance penalty is weak and secondary.
     """
     if frame.upper() != "GSE":
         raise ValueError("This interval-selection metric is implemented for GSE only.")
@@ -823,6 +845,10 @@ def find_best_stream_aligned_intervals(
         raise ValueError("window_hours must be > 0")
     if top_n < 1:
         raise ValueError("top_n must be >= 1")
+    if perp_scale <= 0:
+        raise ValueError("perp_scale must be > 0")
+    if lag_tolerance <= 0:
+        raise ValueError("lag_tolerance must be > 0")
 
     flow_hat = np.asarray(flow_dir_gse, dtype=float)
     if np.linalg.norm(flow_hat) == 0:
@@ -844,17 +870,25 @@ def find_best_stream_aligned_intervals(
 
     l_adv_au = ((vsw_kms * u.km / u.s) * (window_hours * u.hour)).to_value(u.AU)
 
+    tau0_h = lag_tolerance * window_hours
+    l_perp_au = perp_scale * l_adv_au
+
     rows = []
     for ts in time_index:
         xyz = np.array([[tracks[t].loc[ts, "x_au"], tracks[t].loc[ts, "y_au"], tracks[t].loc[ts, "z_au"]] for t in targets])
         perp, par = _pairwise_metrics(xyz, flow_hat)
         if len(perp) == 0:
             continue
+        tau_h = ((par * u.AU) / (vsw_kms * u.km / u.s)).to_value(u.hour)
+        same_flow_pair_score = np.exp(-((perp / l_perp_au) ** 2)) * np.exp(-((tau_h / tau0_h) ** 2))
         rows.append(
             {
                 "time": ts,
                 "median_perp_au": np.median(perp),
                 "median_par_au": np.median(par),
+                "median_tau_h": np.median(tau_h),
+                "median_same_flow_score": np.median(same_flow_pair_score),
+                "p75_same_flow_score": np.percentile(same_flow_pair_score, 75),
                 "max_perp_au": np.max(perp),
                 "max_par_au": np.max(par),
             }
@@ -879,7 +913,8 @@ def find_best_stream_aligned_intervals(
 
         median_perp = g["median_perp_au"].median()
         median_par = g["median_par_au"].median()
-        metric = (median_perp / l_adv_au) + along_weight * (median_par / l_adv_au)
+        same_flow_score = g["median_same_flow_score"].median()
+        metric = 1.0 - (same_flow_score - along_weight * (median_par / l_adv_au))
 
         score_rows.append(
             {
@@ -889,9 +924,13 @@ def find_best_stream_aligned_intervals(
                 "coverage": coverage,
                 "median_perp_au": median_perp,
                 "median_par_au": median_par,
+                "median_tau_h": g["median_tau_h"].median(),
+                "same_flow_score": same_flow_score,
                 "max_perp_au": g["max_perp_au"].median(),
                 "max_par_au": g["max_par_au"].median(),
                 "adv_length_au": l_adv_au,
+                "perp_length_au": l_perp_au,
+                "tau0_h": tau0_h,
                 "alignment_metric": metric,
             }
         )
@@ -908,7 +947,9 @@ def find_best_stream_aligned_intervals(
         print(f"  2) Constant flow direction in GSE: {tuple(flow_hat.round(3))}.")
         print(f"  3) Constant Vsw = {vsw_kms:.1f} km/s for normalization only.")
         print(f"  4) Interval duration = {window_hours:g} h, L_adv = {l_adv_au:.4f} AU.")
-        print(f"  5) Score = d_perp/L_adv + {along_weight:g} * d_parallel/L_adv.")
+        print(f"  5) Same-flow likelihood kernel = exp(-(d_perp/{l_perp_au:.4f})^2) * exp(-(tau/{tau0_h:.2f} h)^2).")
+        print(f"  6) tau = |d_parallel|/Vsw and along-flow penalty weight = {along_weight:g}.")
+        print("  7) Final minimized metric: J = 1 - (median(kernel) - along_weight * median(|d_parallel|/L_adv)).")
 
     return {
         "scores": scores,
@@ -925,12 +966,19 @@ def plot_stream_alignment_interval(
     window_end,
     flow_hat: np.ndarray,
     summary_row: pd.Series | None = None,
-    width: int = 1000,
-    height: int = 750,
+    width: int = 1200,
+    height: int = 760,
 ):
-    """3D plot for a single selected interval in GSE coordinates."""
+    """3D + flow-aligned diagnostic plot for a selected GSE interval."""
     colors = px.colors.qualitative.Plotly
-    fig = go.Figure()
+    fig = make_subplots(
+        rows=1,
+        cols=2,
+        specs=[[{"type": "scene"}, {"type": "xy"}]],
+        column_widths=[0.66, 0.34],
+        horizontal_spacing=0.06,
+        subplot_titles=("3D spacecraft trajectories", "Flow-aligned separation view"),
+    )
 
     # Keep axis ranges consistent and centered around interval centroid.
     xyz_all = []
@@ -944,11 +992,17 @@ def plot_stream_alignment_interval(
     xyz_all = np.vstack(xyz_all)
     center = xyz_all.mean(axis=0)
 
+    e_par, e_perp1, _ = _flow_basis(flow_hat)
+
     for i, t in enumerate(targets):
         seg = tracks[t].loc[(tracks[t].index >= window_start) & (tracks[t].index < window_end)]
         if len(seg) == 0:
             continue
         color = colors[i % len(colors)]
+        xyz = seg[["x_au", "y_au", "z_au"]].values - center
+        par = xyz @ e_par
+        perp1 = xyz @ e_perp1
+
         fig.add_trace(
             go.Scatter3d(
                 x=seg["x_au"],
@@ -958,7 +1012,22 @@ def plot_stream_alignment_interval(
                 marker=dict(size=3, color=color),
                 line=dict(color=color, width=5),
                 name=t,
-            )
+            ),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=par,
+                y=perp1,
+                mode="lines+markers",
+                marker=dict(size=6, color=color, line=dict(width=0.8, color="white")),
+                line=dict(color=color, width=2),
+                name=f"{t} (flow frame)",
+                showlegend=False,
+            ),
+            row=1,
+            col=2,
         )
 
     arrow_len = max(np.linalg.norm(xyz_all - center, axis=1).max(), 0.02)
@@ -972,28 +1041,31 @@ def plot_stream_alignment_interval(
             mode="lines",
             line=dict(color="black", width=8, dash="dash"),
             name="Assumed flow dir",
-        )
+        ),
+        row=1,
+        col=1,
     )
 
     title = f"GSE stream-alignment interval: {pd.Timestamp(window_start)} to {pd.Timestamp(window_end)}"
     if summary_row is not None:
         title += (
             f"<br><sup>metric={summary_row['alignment_metric']:.4f}, "
+            f"same-flow score={summary_row['same_flow_score']:.3f}, "
             f"median d⊥={summary_row['median_perp_au']:.4f} AU, "
-            f"median |d∥|={summary_row['median_par_au']:.4f} AU</sup>"
+            f"median |d∥|={summary_row['median_par_au']:.4f} AU, "
+            f"median lag={summary_row['median_tau_h']:.2f} h</sup>"
         )
+
+    fig.update_xaxes(title_text="parallel offset to flow [AU]", zeroline=True, row=1, col=2)
+    fig.update_yaxes(title_text="cross-flow offset [AU]", zeroline=True, row=1, col=2)
 
     fig.update_layout(
         title=title,
         template="plotly_white",
         width=width,
         height=height,
-        scene=dict(
-            xaxis_title="X [AU]",
-            yaxis_title="Y [AU]",
-            zaxis_title="Z [AU]",
-            aspectmode="data",
-        ),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.0),
+        scene=dict(xaxis_title="X [AU]", yaxis_title="Y [AU]", zaxis_title="Z [AU]", aspectmode="data"),
     )
     return fig
 
@@ -1006,7 +1078,9 @@ def build_best_alignment_interval_figures(
     window_hours: float = 12.0,
     top_n: int = 3,
     vsw_kms: float = 400.0,
-    along_weight: float = 0.25,
+    along_weight: float = 0.15,
+    perp_scale: float = 0.35,
+    lag_tolerance: float = 0.5,
     min_coverage: float = 0.75,
     verbose: bool = True,
 ):
@@ -1021,6 +1095,8 @@ def build_best_alignment_interval_figures(
         frame="GSE",
         vsw_kms=vsw_kms,
         along_weight=along_weight,
+        perp_scale=perp_scale,
+        lag_tolerance=lag_tolerance,
         min_coverage=min_coverage,
         verbose=verbose,
     )
