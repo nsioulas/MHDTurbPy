@@ -2,6 +2,11 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 from pathlib import Path
+
+try:
+    from .path_setup import ensure_project_paths
+except ImportError:
+    from path_setup import ensure_project_paths
 import os
 
 
@@ -24,7 +29,8 @@ import sys
 
 _FUNCTIONS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _FUNCTIONS_DIR.parent
-sys.path.insert(1, str(_FUNCTIONS_DIR))
+
+ensure_project_paths(start=Path(__file__).resolve(), include_downloading_helpers=True)
 
 #from  CUSIA.Colors.CUSIA_Colors import mycmap
 
@@ -866,7 +872,6 @@ from matplotlib.colors import LinearSegmentedColormap
 plt.rcParams['text.usetex'] = True
 
 import sys
-sys.path.insert(1, str(_FUNCTIONS_DIR))
 
 #from  CUSIA.Colors.CUSIA_Colors import mycmap
 

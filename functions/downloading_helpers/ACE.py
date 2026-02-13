@@ -4,10 +4,21 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import importlib.util
 from pathlib import Path
 
 _MODULE_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _MODULE_DIR.parents[1]
+
+_PATH_SETUP = _REPO_ROOT / "functions" / "path_setup.py"
+_spec = importlib.util.spec_from_file_location("mhdturbpy_path_setup", _PATH_SETUP)
+if _spec is None or _spec.loader is None:
+    raise RuntimeError(f"Could not load path setup from {_PATH_SETUP}")
+_path_setup = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_path_setup)
+ensure_project_paths = _path_setup.ensure_project_paths
+
+ensure_project_paths(start=Path(__file__).resolve(), include_downloading_helpers=True, include_anisotropy_toolbox=True)
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -78,7 +89,6 @@ def LoadTimeSeriesACE(
         os.environ["SPEDAS_DATA_DIR"] = str(Path(data_path).expanduser().resolve())
 
     # Local pyspedas import (repo-local)
-    sys.path.insert(0, str(_REPO_ROOT / "pyspedas"))
     import pyspedas  # type: ignore
     from pytplot import del_data, get_data, tplot_names  # type: ignore
 

@@ -11,8 +11,15 @@ import os
 import sys
 from pathlib import Path
 
+try:
+    from .path_setup import ensure_project_paths
+except ImportError:
+    from path_setup import ensure_project_paths
+
 _FUNCTIONS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _FUNCTIONS_DIR.parent
+
+ensure_project_paths(start=Path(__file__).resolve(), include_downloading_helpers=True)
 import traceback
 from pathlib import Path
 from datetime import datetime
@@ -29,7 +36,6 @@ from tqdm import tqdm
 
 import ssqueezepy
 
-sys.path.insert(1, str(_FUNCTIONS_DIR))
 import TurbPy as turb
 import general_functions as func
 
@@ -1832,8 +1838,7 @@ def run_coh_pipeline(
 
 # import ssqueezepy
 
-# sys.path.insert(1, str(_FUNCTIONS_DIR))
-# import TurbPy as turb
+# # import TurbPy as turb
 # import general_functions as func
 
 

@@ -9,6 +9,11 @@ import gc
 import logging
 import traceback
 from pathlib import Path
+
+try:
+    from .path_setup import ensure_project_paths
+except ImportError:
+    from path_setup import ensure_project_paths
 from copy import deepcopy
 from typing import Any, Dict, Optional
 
@@ -21,10 +26,11 @@ from scipy import constants
 _FUNCTIONS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _FUNCTIONS_DIR.parent
 
+ensure_project_paths(start=Path(__file__).resolve(), include_downloading_helpers=True)
+
 # ============================================================
 # Local SPEDAS (repo-local)
 # ============================================================
-sys.path.insert(0, str(_REPO_ROOT / "pyspedas"))
 import pyspedas  # noqa: F401
 
 # ============================================================
