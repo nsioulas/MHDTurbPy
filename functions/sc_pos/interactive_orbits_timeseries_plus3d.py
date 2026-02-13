@@ -13,7 +13,7 @@ from plotly.subplots import make_subplots
 
 import astropy.units as u
 import astropy.constants as const
-from astropy.coordinates import SkyCoord, CartesianRepresentation
+from astropy.coordinates import SkyCoord, CartesianRepresentation, get_sun
 
 from sunpy.coordinates import get_horizons_coord, get_body_heliographic_stonyhurst
 from sunpy.coordinates.frames import (
@@ -25,7 +25,12 @@ from sunpy.coordinates.frames import (
 )
 
 import helpers
-from horizons_sun_lonlat import get_repo_style_orbit_df, resolve_spacecraft_spkid
+from horizons_sun_lonlat import (
+    canonicalize_spacecraft_target,
+    get_repo_style_orbit_df,
+    resolve_spacecraft_spkid,
+    validate_time_window,
+)
 
 
 AU_IN_RE = (1 * u.AU).to_value(u.Rearth)
@@ -218,6 +223,15 @@ def _carrington_and_footpoints(
     return t, carr, fp_ss, fp_sun
 
 
+
+
+def _sunward_sign_in_gse(obstime) -> float:
+    """Return +1/-1 depending on whether Sun is at +X/-X in SunPy GSE."""
+    sun_gse = get_sun(obstime).transform_to(GeocentricSolarEcliptic(obstime=obstime))
+    x = float(sun_gse.cartesian.x.to_value(u.AU))
+    return 1.0 if x >= 0.0 else -1.0
+
+
 def _to_xyz_in_frame(coord: SkyCoord, frame: str):
     if frame.upper() == "HEE":
         fr = HeliocentricEarthEcliptic(obstime=coord.obstime)
@@ -270,6 +284,8 @@ def build_3d_figure(
     frame3d = frame3d.upper()
     if frame3d not in {"HEE", "HCI", "GSE"}:
         raise ValueError("frame3d must be 'HEE', 'HCI' or 'GSE'")
+
+    start, stop = validate_time_window(start, stop)
 
     if decimate < 1:
         decimate = 1
@@ -494,7 +510,7 @@ def build_3d_figure(
 
     # --- spacecraft trajectories + backmapping traces (in inset) ---
     for i, name in enumerate(targets):
-        canonical_name = _canonicalize_target_name(name)
+        canonical_name = canonicalize_spacecraft_target(name)
         spkid = resolve_spacecraft_spkid(canonical_name)
         col = colors[i % len(colors)]
         alias = str(canonical_name).strip().upper()
@@ -665,6 +681,10 @@ def build_3d_figure(
     # --- scene formatting: make it look like a real “orbital geometry” figure ---
     if geocentric:
         axis_title = f"[{coord_unit}] (GSE)"
+        sunward_sign = _sunward_sign_in_gse(obstime_ref)
+        sunward_label = f"{'+X' if sunward_sign > 0 else '-X'} (Sunward)"
+        dusk_label = "+Y (Dusk)"
+        north_label = "+Z (North)"
 
         if gse_extent_samples:
             arr = np.vstack(gse_extent_samples)
@@ -677,9 +697,9 @@ def build_3d_figure(
 
         # Explicit GSE axis guides (black, subtle)
         for axis_name, vec, colr in [
-            ("+X (Sunward)", (axis_len, 0.0, 0.0), "rgba(0,0,0,0.6)"),
-            ("+Y (Dusk)", (0.0, axis_len, 0.0), "rgba(0,0,0,0.6)"),
-            ("+Z (North)", (0.0, 0.0, axis_len), "rgba(0,0,0,0.6)"),
+            (sunward_label, (sunward_sign * axis_len, 0.0, 0.0), "rgba(0,0,0,0.6)"),
+            (dusk_label, (0.0, axis_len, 0.0), "rgba(0,0,0,0.6)"),
+            (north_label, (0.0, 0.0, axis_len), "rgba(0,0,0,0.6)"),
         ]:
             vx, vy, vz = vec
             fig.add_trace(
@@ -718,7 +738,7 @@ def build_3d_figure(
         # Indicate Sunward side on +X boundary without forcing zoom-out with full Sun trajectory
         fig.add_trace(
             go.Scatter3d(
-                x=[0.96 * lim], y=[0.0], z=[0.0],
+                x=[sunward_sign * 0.96 * lim], y=[0.0], z=[0.0],
                 mode="markers+text",
                 marker=dict(size=5, color="#f2c14e", symbol="circle"),
                 text=["Sunward"],
@@ -734,7 +754,7 @@ def build_3d_figure(
         # Near-Earth Lagrange points (black dots)
         fig.add_trace(
             go.Scatter3d(
-                x=[l1_dist, -l2_dist], y=[0.0, 0.0], z=[0.0, 0.0],
+                x=[sunward_sign * l1_dist, -sunward_sign * l2_dist], y=[0.0, 0.0], z=[0.0, 0.0],
                 mode="markers+text",
                 marker=dict(size=4, color="black", symbol="circle"),
                 text=["L1", "L2"],

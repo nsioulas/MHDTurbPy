@@ -41,6 +41,65 @@ KNOWN_SPKID: Dict[str, str] = {
 }
 
 
+def canonicalize_spacecraft_target(target: str) -> str:
+    """Normalize common spacecraft aliases/typos to canonical mission labels."""
+    s = str(target).strip()
+    if re.fullmatch(r"-?\d+", s):
+        return s
+
+    cleaned = " ".join(s.upper().replace("_", " ").split())
+    compact = cleaned.replace(" ", "").replace("-", "")
+
+    alias_map = {
+        "ACE": "ACE",
+        "WIND": "WIND",
+        "IMAP": "IMAP",
+        "SWFOL1": "SWFO-L1",
+        "SWIFOL1": "SWIFO-1",
+        "SOLAR1": "SOLAR-1",
+        "DSCOVR": "DSCOVR",
+        "DISCOVR": "DSCOVR",
+        "DISCOVER": "DSCOVR",
+        "ADITYA": "ADITYA-L1",
+        "ADITYAL1": "ADITYA-L1",
+        "AIDTYA": "ADITYA-L1",
+        "AIDTYAL1": "ADITYA-L1",
+        "SOHO": "SOHO",
+        "PSP": "PSP",
+        "PARKERSOLARPROBE": "PSP",
+        "SOLARORBITER": "SOLO",
+        "SOLO": "SOLO",
+    }
+    return alias_map.get(compact, cleaned)
+
+
+def validate_time_window(start: str, stop: str) -> tuple[str, str]:
+    """Validate and normalize ISO-like start/stop strings for Horizons calls."""
+
+    def _parse_one(label: str, value: str) -> pd.Timestamp:
+        txt = str(value).strip()
+        year_token = txt.split("-", 1)[0]
+        if year_token.isdigit() and len(year_token) != 4:
+            raise ValueError(
+                f"{label} must begin with a 4-digit year (got {value!r}). "
+                "Example: '2025-12-10T00:00:00'."
+            )
+        try:
+            return pd.to_datetime(txt, utc=False)
+        except Exception as exc:
+            raise ValueError(
+                f"Invalid {label} datetime {value!r}. Use ISO-like format, "
+                "e.g. '2025-10-01T00:00:00'."
+            ) from exc
+
+    t_start = _parse_one("start", start)
+    t_stop = _parse_one("stop", stop)
+    if t_stop <= t_start:
+        raise ValueError(f"stop must be later than start (start={start!r}, stop={stop!r}).")
+
+    return t_start.isoformat(), t_stop.isoformat()
+
+
 def _require_sunpy():
     try:
         import sunpy  # noqa: F401
@@ -52,11 +111,12 @@ def _require_sunpy():
 
 
 def resolve_spacecraft_spkid(target: str) -> str:
-    s = str(target).strip()
+    s_raw = str(target).strip()
 
-    if re.fullmatch(r"-?\d+", s):
-        return s
+    if re.fullmatch(r"-?\d+", s_raw):
+        return s_raw
 
+    s = canonicalize_spacecraft_target(s_raw)
     key = s.upper()
     if key in KNOWN_SPKID:
         return KNOWN_SPKID[key]
@@ -81,9 +141,10 @@ def resolve_spacecraft_spkid(target: str) -> str:
         return str(results[0]["spkid"])
 
     s_low = s.lower()
+    s_raw_low = s_raw.lower()
     for item in results:
         name = str(item.get("name", "")).strip().lower()
-        if name == s_low:
+        if name == s_low or name == s_raw_low:
             return str(item["spkid"])
 
     msg_lines = [f"Ambiguous spacecraft name {s!r}. Pick one SPKID and use that as --targets <ID>:"]
@@ -109,7 +170,9 @@ def get_lonlat_xyz_timeseries(
         HeliocentricEarthEcliptic,
     )
 
-    spkid = resolve_spacecraft_spkid(target)
+    start, stop = validate_time_window(start, stop)
+    canonical_target = canonicalize_spacecraft_target(target)
+    spkid = resolve_spacecraft_spkid(canonical_target)
 
     coord0 = get_horizons_coord(
         spkid,
@@ -147,7 +210,7 @@ def get_lonlat_xyz_timeseries(
         out["hgc_lat_deg"] = coord_hgc.lat.to_value(u.deg)
         out["hgc_r_au"] = _dist_to_au(coord_hgc)
 
-    return TrajResult(target=str(target), spkid=str(spkid), df=out)
+    return TrajResult(target=str(canonical_target), spkid=str(spkid), df=out)
 
 
 
@@ -208,7 +271,9 @@ def get_repo_style_orbit_df(
 
     import helpers as helpers_mod
 
-    spkid = resolve_spacecraft_spkid(target)
+    start, stop = validate_time_window(start, stop)
+    canonical_target = canonicalize_spacecraft_target(target)
+    spkid = resolve_spacecraft_spkid(canonical_target)
 
     coord0 = get_horizons_coord(
         spkid,
@@ -243,7 +308,7 @@ def get_repo_style_orbit_df(
     )
     df.index.name = "time_utc"
 
-    return TrajResult(target=str(target), spkid=str(spkid), df=df)
+    return TrajResult(target=str(canonical_target), spkid=str(spkid), df=df)
 
 
 
