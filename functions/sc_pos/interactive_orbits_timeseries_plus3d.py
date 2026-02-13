@@ -1022,6 +1022,8 @@ def plot_stream_alignment_interval(
 
     e_par, e_perp1, _ = _flow_basis(flow_hat)
 
+    e_par, e_perp1, _ = _flow_basis(flow_hat)
+
     for i, t in enumerate(targets):
         seg = tracks[t].loc[(tracks[t].index >= window_start) & (tracks[t].index < window_end)]
         if len(seg) == 0:
