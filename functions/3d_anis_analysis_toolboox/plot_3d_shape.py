@@ -6,6 +6,11 @@ import scipy.io
 import os
 import sys
 from pathlib import Path
+
+_ANIS_DIR = Path(__file__).resolve().parent
+_FUNCTIONS_DIR = _ANIS_DIR.parent
+_REPO_ROOT = _FUNCTIONS_DIR.parent
+
 import pickle
 from gc import collect
 from glob import glob
@@ -20,7 +25,7 @@ from scipy.optimize import fsolve
 
 
 # Make sure to use the local spedas
-sys.path.insert(0, os.path.join(os.getcwd(), 'pyspedas'))
+sys.path.insert(0, str(_REPO_ROOT / 'pyspedas'))
 import pyspedas
 from pyspedas.utilities import time_string
 from pytplot import get_data
@@ -28,13 +33,13 @@ from pytplot import get_data
 
 """ Import manual functions """
 
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+sys.path.insert(0, str(_FUNCTIONS_DIR))
 import calc_diagnostics as calc
 import TurbPy as turb
 import general_functions as func
 import three_D_funcs as threeD
 
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions','3d_anis_analysis_toolboox'))
+sys.path.insert(0, str(_ANIS_DIR))
 import collect_wave_coeffs 
 
 

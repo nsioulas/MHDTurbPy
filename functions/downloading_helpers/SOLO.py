@@ -6,6 +6,11 @@ import time
 import logging
 import traceback
 from pathlib import Path
+
+_HELPERS_DIR = Path(__file__).resolve().parent
+_FUNCTIONS_DIR = _HELPERS_DIR.parent
+_REPO_ROOT = _FUNCTIONS_DIR.parent
+
 from typing import Dict, List, Optional, Tuple, Any
 
 import numpy as np
@@ -25,7 +30,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # Local SPEDAS
 # ============================================================
-sys.path.insert(0, os.path.join(os.getcwd(), "pyspedas"))
+sys.path.insert(0, str(_REPO_ROOT / "pyspedas"))
 import pyspedas
 from pyspedas.utilities import time_string
 from pytplot import get_data
@@ -33,16 +38,16 @@ from pytplot import get_data
 # ============================================================
 # Your helper functions
 # ============================================================
-sys.path.insert(1, os.path.join(os.getcwd(), "functions"))
+sys.path.insert(0, str(_FUNCTIONS_DIR))
 import general_functions as func
 import TurbPy as turb
 
 
-sys.path.insert(1, os.path.join(os.getcwd(), "functions/downloading_helpers"))
+sys.path.insert(0, str(_HELPERS_DIR))
 # ------------------------------------------------------------
 # Shared utilities (lightweight, single authority)
 # ------------------------------------------------------------
-from shared_utils import (
+from functions.downloading_helpers.shared_utils import (
     diag_default,
     keep_diag_keys,
     ensure_datetime_index,
