@@ -31,6 +31,39 @@ from horizons_sun_lonlat import get_repo_style_orbit_df, resolve_spacecraft_spki
 AU_IN_RE = (1 * u.AU).to_value(u.Rearth)
 
 
+def _canonicalize_target_name(target: str) -> str:
+    """
+    Normalize common spacecraft aliases/typos to a canonical target label.
+
+    This prevents accidental Horizons lookups against an unintended target when
+    users provide small typos (e.g., "Aidtya -L1").
+    """
+    cleaned = " ".join(str(target).strip().upper().replace("_", " ").split())
+    compact = cleaned.replace(" ", "").replace("-", "")
+
+    alias_map = {
+        "ACE": "ACE",
+        "WIND": "WIND",
+        "IMAP": "IMAP",
+        "SWFOL1": "SWFO-L1",
+        "SWIFOL1": "SWIFO-1",
+        "SOLAR1": "SOLAR-1",
+        "DSCOVR": "DSCOVR",
+        "DISCOVR": "DSCOVR",
+        "DISCOVER": "DSCOVR",
+        "ADITYA": "ADITYA-L1",
+        "ADITYAL1": "ADITYA-L1",
+        "AIDTYA": "ADITYA-L1",
+        "AIDTYAL1": "ADITYA-L1",
+        "SOHO": "SOHO",
+        "PSP": "PSP",
+        "PARKERSOLARPROBE": "PSP",
+        "SOLARORBITER": "SOLO",
+        "SOLO": "SOLO",
+    }
+    return alias_map.get(compact, cleaned)
+
+
 def _get_xyz_timeseries(target_id: str, start: str, stop: str, step: str, frame: str) -> pd.DataFrame:
     coord0 = get_horizons_coord(target_id, {"start": start, "stop": stop, "step": step})
 
@@ -461,14 +494,18 @@ def build_3d_figure(
 
     # --- spacecraft trajectories + backmapping traces (in inset) ---
     for i, name in enumerate(targets):
-        spkid = resolve_spacecraft_spkid(name)
+        canonical_name = _canonicalize_target_name(name)
+        spkid = resolve_spacecraft_spkid(canonical_name)
         col = colors[i % len(colors)]
-        alias = str(name).strip().upper()
+        alias = str(canonical_name).strip().upper()
         dash = dash_map.get(alias, "solid")
         sym = sym_map.get(alias, "circle")
 
         if verbose:
-            print(f"[3D] {name}: fetching ephemeris (SPKID={spkid}), building trajectory and footpoints...")
+            print(
+                f"[3D] {name} -> {canonical_name}: fetching ephemeris "
+                f"(SPKID={spkid}), building trajectory and footpoints..."
+            )
 
         sc_df = _get_xyz_timeseries(spkid, start, stop, step, frame=frame3d).iloc[::decimate]
         sc_xyz = sc_df[["x_au", "y_au", "z_au"]].to_numpy() * pos_scale
@@ -483,9 +520,9 @@ def build_3d_figure(
                 y=sc_df["y_au"] * pos_scale,
                 z=sc_df["z_au"] * pos_scale,
                 mode="lines",
-                name=name,
+                name=canonical_name,
                 line=dict(width=4, dash=dash, color=col),
-                hovertemplate=f"{name}<br>x=%{{x:.3f}} {coord_unit}<br>y=%{{y:.3f}} {coord_unit}<br>z=%{{z:.3f}} {coord_unit}<extra></extra>",
+                hovertemplate=f"{canonical_name}<br>x=%{{x:.3f}} {coord_unit}<br>y=%{{y:.3f}} {coord_unit}<br>z=%{{z:.3f}} {coord_unit}<extra></extra>",
             ),
             row=1,
             col=1,
@@ -499,10 +536,10 @@ def build_3d_figure(
                 z=[float(sc_df["z_au"].iloc[-1] * pos_scale)],
                 mode="markers+text",
                 marker=dict(size=5, color=col, symbol=sym),
-                text=[name],
+                text=[canonical_name],
                 textposition=text_positions[i % len(text_positions)],
                 showlegend=False,
-                hovertemplate=f"{name} (end)<extra></extra>",
+                hovertemplate=f"{canonical_name} (end)<extra></extra>",
             ),
             row=1,
             col=1,
