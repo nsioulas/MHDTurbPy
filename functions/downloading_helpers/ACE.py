@@ -5,6 +5,9 @@ import logging
 import os
 import sys
 from pathlib import Path
+
+_MODULE_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _MODULE_DIR.parents[1]
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -75,7 +78,7 @@ def LoadTimeSeriesACE(
         os.environ["SPEDAS_DATA_DIR"] = str(Path(data_path).expanduser().resolve())
 
     # Local pyspedas import (repo-local)
-    sys.path.insert(0, os.path.join(os.getcwd(), "pyspedas"))
+    sys.path.insert(0, str(_REPO_ROOT / "pyspedas"))
     import pyspedas  # type: ignore
     from pytplot import del_data, get_data, tplot_names  # type: ignore
 

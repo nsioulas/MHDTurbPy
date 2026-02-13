@@ -5,6 +5,10 @@ of Octave m-file source code.
 
 import os
 import sys
+from pathlib import Path
+
+_FUNCTIONS_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _FUNCTIONS_DIR.parent
 import fractions
 import numpy
 import numpy as np
@@ -17,7 +21,7 @@ from scipy.interpolate import interp1d
 
 
 """ Import manual functions """
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+sys.path.insert(1, str(_FUNCTIONS_DIR))
 import general_functions as func
 
 

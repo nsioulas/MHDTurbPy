@@ -18,6 +18,9 @@ import statistics
 from statistics import mode
 #import orderedstructs
 import sys
+
+_FUNCTIONS_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _FUNCTIONS_DIR.parent
 import pytplot
 
 import warnings
@@ -26,7 +29,7 @@ import polars as pl
 
 
 # Import urbPy
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+sys.path.insert(1, str(_FUNCTIONS_DIR))
 
 
 from plasma_params import*

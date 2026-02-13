@@ -24,7 +24,10 @@ from statistics import mode
 #import orderedstructs
 import sys
 
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+_FUNCTIONS_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _FUNCTIONS_DIR.parent
+
+sys.path.insert(1, str(_FUNCTIONS_DIR))
 import calc_diagnostics as calc
 import TurbPy as turb
 import general_functions as func

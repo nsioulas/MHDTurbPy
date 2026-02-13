@@ -21,7 +21,10 @@ from matplotlib.colors import LinearSegmentedColormap
 plt.rcParams['text.usetex'] = True
 
 import sys
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+
+_FUNCTIONS_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _FUNCTIONS_DIR.parent
+sys.path.insert(1, str(_FUNCTIONS_DIR))
 
 #from  CUSIA.Colors.CUSIA_Colors import mycmap
 
@@ -863,7 +866,7 @@ from matplotlib.colors import LinearSegmentedColormap
 plt.rcParams['text.usetex'] = True
 
 import sys
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+sys.path.insert(1, str(_FUNCTIONS_DIR))
 
 #from  CUSIA.Colors.CUSIA_Colors import mycmap
 
