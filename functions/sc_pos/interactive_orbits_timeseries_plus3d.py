@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 from pathlib import Path
 
@@ -13,8 +11,7 @@ from plotly.subplots import make_subplots
 
 import astropy.units as u
 import astropy.constants as const
-from astropy.coordinates import SkyCoord, CartesianRepresentation, get_sun
-from astropy.time import Time
+from astropy.coordinates import SkyCoord, CartesianRepresentation
 
 from sunpy.coordinates import get_horizons_coord, get_body_heliographic_stonyhurst
 from sunpy.coordinates.frames import (
@@ -26,67 +23,21 @@ from sunpy.coordinates.frames import (
 )
 
 import helpers
-from horizons_sun_lonlat import (
-    canonicalize_spacecraft_target,
-    get_repo_style_orbit_df,
-    resolve_spacecraft_spkid,
-    validate_time_window,
-)
+from horizons_sun_lonlat import get_repo_style_orbit_df, resolve_spacecraft_spkid
 
 
 AU_IN_RE = (1 * u.AU).to_value(u.Rearth)
 
 
-def _coerce_obstime_to_time(obstime) -> Time:
-    """Normalize supported obstime inputs to ``astropy.time.Time``."""
-    if isinstance(obstime, Time):
-        return obstime
-    if isinstance(obstime, pd.Timestamp):
-        obstime = obstime.to_pydatetime()
-    return Time(obstime)
-
-
-def _canonicalize_target_name(target: str) -> str:
-    """
-    Normalize common spacecraft aliases/typos to a canonical target label.
-
-    This prevents accidental Horizons lookups against an unintended target when
-    users provide small typos (e.g., "Aidtya -L1").
-    """
-    cleaned = " ".join(str(target).strip().upper().replace("_", " ").split())
-    compact = cleaned.replace(" ", "").replace("-", "")
-
-    alias_map = {
-        "ACE": "ACE",
-        "WIND": "WIND",
-        "IMAP": "IMAP",
-        "SWFOL1": "SWFO-L1",
-        "SWIFOL1": "SWIFO-1",
-        "SOLAR1": "SOLAR-1",
-        "DSCOVR": "DSCOVR",
-        "DISCOVR": "DSCOVR",
-        "DISCOVER": "DSCOVR",
-        "ADITYA": "ADITYA-L1",
-        "ADITYAL1": "ADITYA-L1",
-        "AIDTYA": "ADITYA-L1",
-        "AIDTYAL1": "ADITYA-L1",
-        "SOHO": "SOHO",
-        "PSP": "PSP",
-        "PARKERSOLARPROBE": "PSP",
-        "SOLARORBITER": "SOLO",
-        "SOLO": "SOLO",
-    }
-    return alias_map.get(compact, cleaned)
-
-
-def _get_xyz_timeseries(target_id: str, start: str, stop: str, step: str, frame: str) -> pd.DataFrame:
+def _get_xyz_timeseries(target_id, start, stop, step, frame):
     coord0 = get_horizons_coord(target_id, {"start": start, "stop": stop, "step": step})
 
-    if frame.upper() == "HEE":
+    fr_name = str(frame).upper()
+    if fr_name == "HEE":
         fr = HeliocentricEarthEcliptic(obstime=coord0.obstime)
-    elif frame.upper() == "HCI":
+    elif fr_name == "HCI":
         fr = HeliocentricInertial(obstime=coord0.obstime)
-    elif frame.upper() == "GSE":
+    elif fr_name == "GSE":
         fr = GeocentricSolarEcliptic(obstime=coord0.obstime)
     else:
         raise ValueError("frame must be 'HEE', 'HCI' or 'GSE'")
@@ -104,14 +55,14 @@ def _get_xyz_timeseries(target_id: str, start: str, stop: str, step: str, frame:
 
 
 def build_timeseries_figure(
-    targets: list[str],
-    start: str,
-    stop: str,
-    step: str,
-    rss_rsun: float,
-    omega_deg_per_day: float,
-    width: int,
-    height: int,
+    targets,
+    start,
+    stop,
+    step,
+    rss_rsun,
+    omega_deg_per_day,
+    width,
+    height,
 ):
     colors = px.colors.qualitative.Plotly
     DASH = {"ACE": "solid", "Wind": "dash", "IMAP": "dot", "SOLAR-1": "dashdot", "SWFO-L1": "dashdot"}
@@ -168,18 +119,16 @@ def build_timeseries_figure(
 
 def _plane_patch_in_target_frame(
     obstime,
-    span_au: float,
-    target_frame: str,
-    n: int = 35,
+    span_au,
+    target_frame,
+    n=35,
 ):
     grid = np.linspace(-span_au, span_au, n)
     X, Y = np.meshgrid(grid, grid)
     Z = np.zeros_like(X)
 
     rep = CartesianRepresentation(X.ravel() * u.AU, Y.ravel() * u.AU, Z.ravel() * u.AU)
-    tf = target_frame.upper()
-
-    obstime = _coerce_obstime_to_time(obstime)
+    tf = str(target_frame).upper()
 
     if tf == "GSE":
         ct = SkyCoord(rep, frame=GeocentricSolarEcliptic(obstime=obstime))
@@ -199,13 +148,13 @@ def _plane_patch_in_target_frame(
 
 
 def _carrington_and_footpoints(
-    spkid: str,
-    start: str,
-    stop: str,
-    step: str,
-    rss_rsun: float,
-    omega_deg_per_day: float,
-    vsw_kms: float,
+    spkid,
+    start,
+    stop,
+    step,
+    rss_rsun,
+    omega_deg_per_day,
+    vsw_kms,
 ):
     coord0 = get_horizons_coord(spkid, {"start": start, "stop": stop, "step": step})
     hgs = coord0.transform_to(HeliographicStonyhurst(obstime=coord0.obstime))
@@ -235,22 +184,13 @@ def _carrington_and_footpoints(
     return t, carr, fp_ss, fp_sun
 
 
-
-
-def _sunward_sign_in_gse(obstime) -> float:
-    """Return +1/-1 depending on whether Sun is at +X/-X in SunPy GSE."""
-    obstime_astropy = _coerce_obstime_to_time(obstime)
-    sun_gse = get_sun(obstime_astropy).transform_to(GeocentricSolarEcliptic(obstime=obstime_astropy))
-    x = float(sun_gse.cartesian.x.to_value(u.AU))
-    return 1.0 if x >= 0.0 else -1.0
-
-
-def _to_xyz_in_frame(coord: SkyCoord, frame: str):
-    if frame.upper() == "HEE":
+def _to_xyz_in_frame(coord, frame):
+    fr_name = str(frame).upper()
+    if fr_name == "HEE":
         fr = HeliocentricEarthEcliptic(obstime=coord.obstime)
-    elif frame.upper() == "HCI":
+    elif fr_name == "HCI":
         fr = HeliocentricInertial(obstime=coord.obstime)
-    elif frame.upper() == "GSE":
+    elif fr_name == "GSE":
         fr = GeocentricSolarEcliptic(obstime=coord.obstime)
     else:
         raise ValueError("frame must be 'HEE', 'HCI' or 'GSE'")
@@ -263,42 +203,29 @@ def _to_xyz_in_frame(coord: SkyCoord, frame: str):
 
 
 def build_3d_figure(
-    targets: list[str],
-    start: str,
-    stop: str,
-    step: str,
-    frame3d: str = "HEE",
-    rss_rsun: float = 2.5,
-    omega_deg_per_day: float = 14.1844,
-    vsw_kms: tuple[float, float | None] = (300.0, 700.0),
-    vsw1_kms: float | None = None,
-    vsw2_kms: float | None = None,
-    width: int = 1800,
-    height: int = 900,
-    sun_zoom_au: float = 0.06,
-    plane_span_au: float = 1.2,
-    show_spokes: bool = True,
-    spoke_count: int = 8,
-    decimate: int = 1,
-    gse_axis_units: str = "Re",
-    verbose: bool = True,
+    targets,
+    start,
+    stop,
+    step,
+    frame3d="HEE",
+    rss_rsun=2.5,
+    omega_deg_per_day=14.1844,
+    vsw_kms=(300.0, 700.0),
+    vsw1_kms=None,
+    vsw2_kms=None,
+    width=1800,
+    height=900,
+    sun_zoom_au=0.06,
+    plane_span_au=1.2,
+    show_spokes=True,
+    spoke_count=8,
+    decimate=1,
+    gse_axis_units="Re",
+    verbose=True,
 ):
-    """
-    3D visualization (all units in AU).
-
-    - HEE/HCI: two panels (AU-scale trajectories + Sun-zoom ballistic backmapping inset).
-    - GSE: single geocentric panel only (no ballistic mapping to the Sun).
-    """
-    import numpy as np
-    import plotly.express as px
-    import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
-
-    frame3d = frame3d.upper()
+    frame3d = str(frame3d).upper()
     if frame3d not in {"HEE", "HCI", "GSE"}:
         raise ValueError("frame3d must be 'HEE', 'HCI' or 'GSE'")
-
-    start, stop = validate_time_window(start, stop)
 
     if decimate < 1:
         decimate = 1
@@ -346,19 +273,18 @@ def build_3d_figure(
     au_to_re = (u.AU / const.R_earth).decompose().value
     pos_scale = au_to_re if (geocentric and gse_units == "RE") else 1.0
     coord_unit = "Re" if (geocentric and gse_units == "RE") else "AU"
-    # Approximate Earth-Sun Lagrange distances along GSE X (in chosen display units)
+
     l1_dist = (0.01 * u.AU).to_value(u.AU) * pos_scale
     l2_dist = (0.01 * u.AU).to_value(u.AU) * pos_scale
 
     if verbose:
-        print(f"[3D] Building 3D figure in frame3d={frame3d} (positions in AU).")
+        print(f"[3D] Building 3D figure in frame3d={frame3d}.")
         if geocentric:
-            print("[3D] GSE mode: single geocentric panel with axis/sun-wind guides (no Sun backmapping inset).")
+            print("[3D] GSE mode: single geocentric panel (no Sun backmapping inset).")
         else:
-            print("[3D] Left panel: spacecraft/Earth trajectories + Sun-centered ecliptic plane.")
+            print("[3D] Left panel: AU-scale trajectories + ecliptic plane.")
             print(f"[3D] Right panel: Sun-zoom inset (±{sun_zoom_au:.3f} AU) with ballistic backmapping.")
             print(f"[3D] Backmapping: r_ss={rss_rsun:.2f} R_sun, Ω={omega_deg_per_day:.4f} deg/day, Vsw={vsw_list} km/s.")
-            print("[3D] Assumptions: constant Vsw, rigid Ω, radial projection below r_ss.")
 
     if geocentric:
         fig = make_subplots(rows=1, cols=1, specs=[[{"type": "scene"}]])
@@ -386,12 +312,10 @@ def build_3d_figure(
     if not geocentric:
         fig.update_annotations(font_size=15)
 
-    max_abs_extent = 0.0
     gse_extent_samples = []
 
-    # --- ecliptic plane patch (Sun-centered for heliocentric frames; Earth-centered for GSE) ---
     earth_df = _get_xyz_timeseries("399", start, stop, step, frame=frame3d)
-    obstime_ref = _coerce_obstime_to_time(earth_df.index[len(earth_df) // 2])
+    obstime_ref = earth_df.index[len(earth_df) // 2].to_pydatetime()
 
     if verbose:
         print("[3D] Adding ecliptic plane patch in target frame.")
@@ -414,7 +338,6 @@ def build_3d_figure(
         col=1,
     )
 
-    # --- Sun markers/rings (realistic AU units) ---
     Rsun_au = const.R_sun.to_value(u.AU)
     rss_au = (rss_rsun * const.R_sun).to_value(u.AU)
 
@@ -449,7 +372,6 @@ def build_3d_figure(
 
     theta = np.linspace(0, 2 * np.pi, 260)
     if not geocentric:
-        # Sun ring in inset
         fig.add_trace(
             go.Scatter3d(
                 x=Rsun_au * np.cos(theta),
@@ -464,7 +386,6 @@ def build_3d_figure(
             row=1,
             col=2,
         )
-        # Source surface ring in inset
         fig.add_trace(
             go.Scatter3d(
                 x=rss_au * np.cos(theta),
@@ -480,7 +401,6 @@ def build_3d_figure(
             col=2,
         )
 
-    # --- Earth trajectory (heliocentric frames only) ---
     if not geocentric:
         if verbose:
             print("[3D] Adding Earth trajectory (AU-scale).")
@@ -515,49 +435,40 @@ def build_3d_figure(
             col=1,
         )
 
-    # label-position cycling to reduce overlap of endpoint names
     text_positions = [
         "top center", "middle right", "middle left", "bottom center",
         "top right", "top left", "bottom right", "bottom left",
     ]
 
-    # --- spacecraft trajectories + backmapping traces (in inset) ---
     for i, name in enumerate(targets):
-        canonical_name = canonicalize_spacecraft_target(name)
-        spkid = resolve_spacecraft_spkid(canonical_name)
+        spkid = resolve_spacecraft_spkid(name)
         col = colors[i % len(colors)]
-        alias = str(canonical_name).strip().upper()
+        alias = str(name).strip().upper()
         dash = dash_map.get(alias, "solid")
         sym = sym_map.get(alias, "circle")
 
         if verbose:
-            print(
-                f"[3D] {name} -> {canonical_name}: fetching ephemeris "
-                f"(SPKID={spkid}), building trajectory and footpoints..."
-            )
+            print(f"[3D] {name}: fetching ephemeris (SPKID={spkid}), building trajectory and footpoints...")
 
         sc_df = _get_xyz_timeseries(spkid, start, stop, step, frame=frame3d).iloc[::decimate]
         sc_xyz = sc_df[["x_au", "y_au", "z_au"]].to_numpy() * pos_scale
-        max_abs_extent = max(max_abs_extent, float(np.nanmax(np.abs(sc_xyz))))
         if geocentric:
             gse_extent_samples.append(sc_xyz)
 
-        # AU-scale trajectory
         fig.add_trace(
             go.Scatter3d(
                 x=sc_df["x_au"] * pos_scale,
                 y=sc_df["y_au"] * pos_scale,
                 z=sc_df["z_au"] * pos_scale,
                 mode="lines",
-                name=canonical_name,
+                name=name,
                 line=dict(width=4, dash=dash, color=col),
-                hovertemplate=f"{canonical_name}<br>x=%{{x:.3f}} {coord_unit}<br>y=%{{y:.3f}} {coord_unit}<br>z=%{{z:.3f}} {coord_unit}<extra></extra>",
+                hovertemplate=f"{name}<br>x=%{{x:.3f}} {coord_unit}<br>y=%{{y:.3f}} {coord_unit}<br>z=%{{z:.3f}} {coord_unit}<extra></extra>",
             ),
             row=1,
             col=1,
         )
 
-        # end marker label
         fig.add_trace(
             go.Scatter3d(
                 x=[float(sc_df["x_au"].iloc[-1] * pos_scale)],
@@ -565,17 +476,16 @@ def build_3d_figure(
                 z=[float(sc_df["z_au"].iloc[-1] * pos_scale)],
                 mode="markers+text",
                 marker=dict(size=5, color=col, symbol=sym),
-                text=[canonical_name],
+                text=[name],
                 textposition=text_positions[i % len(text_positions)],
                 showlegend=False,
-                hovertemplate=f"{canonical_name} (end)<extra></extra>",
+                hovertemplate=f"{name} (end)<extra></extra>",
             ),
             row=1,
             col=1,
         )
 
         if not geocentric:
-            # backmapping: for each vsw
             for j, vsw in enumerate(vsw_list):
                 _, _, fp_ss, fp_sun = _carrington_and_footpoints(
                     spkid=spkid,
@@ -593,17 +503,13 @@ def build_3d_figure(
                 x_ss, y_ss, z_ss = _to_xyz_in_frame(fp_ss_sel, frame3d)
                 x_su, y_su, z_su = _to_xyz_in_frame(fp_sun_sel, frame3d)
 
-                # style: first Vsw = solid family, second Vsw = dashed family
                 ss_dash = "solid" if j == 0 else "dash"
                 su_dash = "dot" if j == 0 else "dashdot"
                 alpha = 0.90 if j == 0 else 0.55
 
-                # source-surface footpoints
                 fig.add_trace(
                     go.Scatter3d(
-                        x=x_ss,
-                        y=y_ss,
-                        z=z_ss,
+                        x=x_ss, y=y_ss, z=z_ss,
                         mode="lines",
                         line=dict(width=3, dash=ss_dash, color=col),
                         opacity=alpha,
@@ -613,12 +519,9 @@ def build_3d_figure(
                     row=1,
                     col=2,
                 )
-                # photospheric projection
                 fig.add_trace(
                     go.Scatter3d(
-                        x=x_su,
-                        y=y_su,
-                        z=z_su,
+                        x=x_su, y=y_su, z=z_su,
                         mode="lines",
                         line=dict(width=5, dash=su_dash, color=col),
                         opacity=min(0.95, alpha + 0.1),
@@ -629,16 +532,15 @@ def build_3d_figure(
                     col=2,
                 )
 
-                # spokes (visual guide only): a few lines from sc -> R_sun footpoint (for the primary Vsw only)
                 if show_spokes and j == 0 and len(sc_df) > 3:
                     idx = np.linspace(0, len(sc_df) - 1, min(spoke_count, len(sc_df))).astype(int)
                     x_sc = (sc_df["x_au"].to_numpy() * pos_scale)[idx]
                     y_sc = (sc_df["y_au"].to_numpy() * pos_scale)[idx]
                     z_sc = (sc_df["z_au"].to_numpy() * pos_scale)[idx]
 
-                    x_fp = np.array(x_su)[idx]
-                    y_fp = np.array(y_su)[idx]
-                    z_fp = np.array(z_su)[idx]
+                    x_fp = np.asarray(x_su)[idx]
+                    y_fp = np.asarray(y_su)[idx]
+                    z_fp = np.asarray(z_su)[idx]
 
                     Xl = np.empty(3 * len(idx))
                     Yl = np.empty(3 * len(idx))
@@ -660,44 +562,8 @@ def build_3d_figure(
                         col=1,
                     )
 
-                # spokes (visual guide only): a few lines from sc -> R_sun footpoint (for the primary Vsw only)
-                if show_spokes and j == 0 and len(sc_df) > 3:
-                    idx = np.linspace(0, len(sc_df) - 1, min(spoke_count, len(sc_df))).astype(int)
-                    x_sc = (sc_df["x_au"].to_numpy() * pos_scale)[idx]
-                    y_sc = (sc_df["y_au"].to_numpy() * pos_scale)[idx]
-                    z_sc = (sc_df["z_au"].to_numpy() * pos_scale)[idx]
-
-                    x_fp = np.array(x_su)[idx]
-                    y_fp = np.array(y_su)[idx]
-                    z_fp = np.array(z_su)[idx]
-
-                    Xl = np.empty(3 * len(idx))
-                    Yl = np.empty(3 * len(idx))
-                    Zl = np.empty(3 * len(idx))
-                    Xl[0::3], Yl[0::3], Zl[0::3] = x_sc, y_sc, z_sc
-                    Xl[1::3], Yl[1::3], Zl[1::3] = x_fp, y_fp, z_fp
-                    Xl[2::3], Yl[2::3], Zl[2::3] = np.nan, np.nan, np.nan
-
-                    fig.add_trace(
-                        go.Scatter3d(
-                            x=Xl, y=Yl, z=Zl,
-                            mode="lines",
-                            line=dict(width=2, color=col),
-                            opacity=0.18,
-                            showlegend=False,
-                            hoverinfo="skip",
-                        ),
-                        row=1,
-                        col=1,
-                    )
-
-    # --- scene formatting: make it look like a real “orbital geometry” figure ---
     if geocentric:
         axis_title = f"[{coord_unit}] (GSE)"
-        sunward_sign = _sunward_sign_in_gse(obstime_ref)
-        sunward_label = f"{'+X' if sunward_sign > 0 else '-X'} (Sunward)"
-        dusk_label = "+Y (Dusk)"
-        north_label = "+Z (North)"
 
         if gse_extent_samples:
             arr = np.vstack(gse_extent_samples)
@@ -708,11 +574,10 @@ def build_3d_figure(
         lim = max(0.1, 1.5 * robust_extent)
         axis_len = 0.92 * lim
 
-        # Explicit GSE axis guides (black, subtle)
         for axis_name, vec, colr in [
-            (sunward_label, (sunward_sign * axis_len, 0.0, 0.0), "rgba(0,0,0,0.6)"),
-            (dusk_label, (0.0, axis_len, 0.0), "rgba(0,0,0,0.6)"),
-            (north_label, (0.0, 0.0, axis_len), "rgba(0,0,0,0.6)"),
+            ("+X (Sunward)", (axis_len, 0.0, 0.0), "rgba(0,0,0,0.6)"),
+            ("+Y (Dusk)", (0.0, axis_len, 0.0), "rgba(0,0,0,0.6)"),
+            ("+Z (North)", (0.0, 0.0, axis_len), "rgba(0,0,0,0.6)"),
         ]:
             vx, vy, vz = vec
             fig.add_trace(
@@ -730,28 +595,9 @@ def build_3d_figure(
                 col=1,
             )
 
-        # # Solar wind direction cue in GSE: approximately toward -X at Earth
-        # sw_start = 0.92 * lim
-        # sw_end = 0.15 * lim
-        # fig.add_trace(
-        #     go.Scatter3d(
-        #         x=[sw_start, sw_end], y=[0.0, 0.0], z=[0.0, 0.0],
-        #         mode="lines+text",
-        #         line=dict(width=5, color="#ff7f0e", dash="dash"), opacity=0.6,
-        #         text=["", "Solar wind → Earth"],
-        #         textposition="top center",
-        #         name="Solar wind direction",
-        #         showlegend=False,
-        #         hoverinfo="skip",
-        #     ),
-        #     row=1,
-        #     col=1,
-        # )
-
-        # Indicate Sunward side on +X boundary without forcing zoom-out with full Sun trajectory
         fig.add_trace(
             go.Scatter3d(
-                x=[sunward_sign * 0.96 * lim], y=[0.0], z=[0.0],
+                x=[0.96 * lim], y=[0.0], z=[0.0],
                 mode="markers+text",
                 marker=dict(size=5, color="#f2c14e", symbol="circle"),
                 text=["Sunward"],
@@ -764,10 +610,9 @@ def build_3d_figure(
             col=1,
         )
 
-        # Near-Earth Lagrange points (black dots)
         fig.add_trace(
             go.Scatter3d(
-                x=[sunward_sign * l1_dist, -sunward_sign * l2_dist], y=[0.0, 0.0], z=[0.0, 0.0],
+                x=[l1_dist, -l2_dist], y=[0.0, 0.0], z=[0.0, 0.0],
                 mode="markers+text",
                 marker=dict(size=4, color="black", symbol="circle"),
                 text=["L1", "L2"],
@@ -786,39 +631,9 @@ def build_3d_figure(
                 yaxis_title=f"Y {axis_title}",
                 zaxis_title=f"Z {axis_title}",
                 aspectmode="cube",
-                xaxis=dict(
-                    range=[-lim, lim],
-                    showspikes=False,
-                    showbackground=False,
-                    gridcolor="rgba(0,0,0,0.04)",
-                    zeroline=True,
-                    zerolinecolor="rgba(0,0,0,0.35)",
-                    linecolor="rgba(0,0,0,0.55)",
-                    ticks="outside",
-                    tickcolor="rgba(0,0,0,0.55)",
-                ),
-                yaxis=dict(
-                    range=[-lim, lim],
-                    showspikes=False,
-                    showbackground=False,
-                    gridcolor="rgba(0,0,0,0.04)",
-                    zeroline=True,
-                    zerolinecolor="rgba(0,0,0,0.35)",
-                    linecolor="rgba(0,0,0,0.55)",
-                    ticks="outside",
-                    tickcolor="rgba(0,0,0,0.55)",
-                ),
-                zaxis=dict(
-                    range=[-lim, lim],
-                    showspikes=False,
-                    showbackground=False,
-                    gridcolor="rgba(0,0,0,0.04)",
-                    zeroline=True,
-                    zerolinecolor="rgba(0,0,0,0.35)",
-                    linecolor="rgba(0,0,0,0.55)",
-                    ticks="outside",
-                    tickcolor="rgba(0,0,0,0.55)",
-                ),
+                xaxis=dict(range=[-lim, lim], showspikes=False, showbackground=False),
+                yaxis=dict(range=[-lim, lim], showspikes=False, showbackground=False),
+                zaxis=dict(range=[-lim, lim], showspikes=False, showbackground=False),
             ),
         )
         fig.update_scenes(camera=dict(eye=dict(x=1.05, y=1.0, z=0.7)), row=1, col=1)
@@ -843,132 +658,87 @@ def build_3d_figure(
                 zaxis=dict(range=[-sun_zoom_au, sun_zoom_au], showspikes=False),
             ),
         )
-        # Cameras (stable defaults)
         fig.update_scenes(camera=dict(eye=dict(x=1.55, y=1.35, z=0.85)), row=1, col=1)
         fig.update_scenes(camera=dict(eye=dict(x=1.75, y=1.20, z=0.75)), row=1, col=2)
 
     return fig
 
 
-def _pairwise_metrics(xyz: np.ndarray, flow_hat: np.ndarray):
-    """Return pairwise perpendicular and signed/absolute parallel separations."""
-    n_sc = xyz.shape[0]
-    if n_sc < 2:
+def _pairwise_separations(xyz, flow_hat):
+    xyz = np.asarray(xyz, dtype=float)
+    n = xyz.shape[0]
+    if n < 2:
         return np.array([]), np.array([]), np.array([])
 
-    perp_vals = []
-    par_abs_vals = []
-    par_signed_vals = []
-    for i in range(n_sc):
-        for j in range(i + 1, n_sc):
-            dr = xyz[i] - xyz[j]
-            par = np.dot(dr, flow_hat)
-            perp = np.linalg.norm(dr - par * flow_hat)
-            perp_vals.append(perp)
-            par_abs_vals.append(np.abs(par))
-            par_signed_vals.append(par)
-    return np.asarray(perp_vals), np.asarray(par_abs_vals), np.asarray(par_signed_vals)
+    flow_hat = np.asarray(flow_hat, dtype=float)
+    flow_hat = flow_hat / np.linalg.norm(flow_hat)
+
+    dr = xyz[:, None, :] - xyz[None, :, :]
+    dpar = np.tensordot(dr, flow_hat, axes=([2], [0]))
+    dpar_abs = np.abs(dpar)
+
+    dr_perp = dr - dpar[..., None] * flow_hat[None, None, :]
+    dperp = np.linalg.norm(dr_perp, axis=2)
+
+    iu = np.triu_indices(n, k=1)
+    return dperp[iu], dpar_abs[iu], dpar[iu]
 
 
-def _pairwise_stream_probability(
-    perp_au: np.ndarray,
-    par_au: np.ndarray,
-    vsw_kms: float,
-    l_perp_au: float,
-    tau0_h: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return pairwise same-stream probabilities and advection lags in hours."""
-    tau_h = ((par_au * u.AU) / (vsw_kms * u.km / u.s)).to_value(u.hour)
-    exponent = -((perp_au / l_perp_au) ** 2) - ((tau_h / tau0_h) ** 2)
-    p_pair = np.exp(exponent)
-    return np.clip(p_pair, 1e-12, 1.0), tau_h
+def _pair_prob_same_stream(dperp_au, dpar_abs_au, vsw_kms, lperp_au, tau0_h):
+    tau_h = ((dpar_abs_au * u.AU) / (vsw_kms * u.km / u.s)).to_value(u.hour)
+    exponent = - (dperp_au / lperp_au) ** 2 - (tau_h / tau0_h) ** 2
+    p = np.exp(exponent)
+    return np.clip(p, 1e-12, 1.0), tau_h
 
 
-def _all_sc_same_stream_probability(
-    perp_au: np.ndarray,
-    par_au: np.ndarray,
-    vsw_kms: float,
-    l_perp_au: float,
-    tau0_h: float,
-) -> tuple[float, float]:
-    """
-    Conservative first-principles probability that *all* spacecraft sample one parcel.
+def _all_prob_same_stream_worst_pair(dperp_au, dpar_abs_au, vsw_kms, lperp_au, tau0_h):
+    if dperp_au.size == 0:
+        return 1.0, 0.0, 0.0, 0.0
 
-    Necessary condition: every pair must remain inside decorrelation scales. We therefore
-    use the worst pair in cross-flow and advection lag:
-
-      p_all = exp(-(max(d_perp)/L_perp)^2 - (max(tau)/tau0)^2)
-    """
-    tau_h = ((par_au * u.AU) / (vsw_kms * u.km / u.s)).to_value(u.hour)
-    max_perp = float(np.max(perp_au))
+    tau_h = ((dpar_abs_au * u.AU) / (vsw_kms * u.km / u.s)).to_value(u.hour)
+    max_dperp = float(np.max(dperp_au))
+    max_dpar = float(np.max(dpar_abs_au))
     max_tau = float(np.max(tau_h))
-    exponent = -((max_perp / l_perp_au) ** 2) - ((max_tau / tau0_h) ** 2)
-    return float(np.clip(np.exp(exponent), 1e-12, 1.0)), max_tau
 
-
-def _flow_basis(flow_hat: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Build orthonormal basis (e_par, e_perp1, e_perp2) aligned with flow_hat."""
-    e_par = np.asarray(flow_hat, dtype=float)
-    e_par = e_par / np.linalg.norm(e_par)
-
-    seed = np.array([0.0, 0.0, 1.0])
-    if np.abs(np.dot(seed, e_par)) > 0.9:
-        seed = np.array([0.0, 1.0, 0.0])
-
-    e_perp1 = np.cross(e_par, seed)
-    e_perp1 = e_perp1 / np.linalg.norm(e_perp1)
-    e_perp2 = np.cross(e_par, e_perp1)
-    return e_par, e_perp1, e_perp2
+    exponent = - (max_dperp / lperp_au) ** 2 - (max_tau / tau0_h) ** 2
+    p_all = float(np.clip(np.exp(exponent), 1e-12, 1.0))
+    return p_all, max_dperp, max_dpar, max_tau
 
 
 def find_best_stream_aligned_intervals(
-    targets: list[str],
-    start: str,
-    stop: str,
-    step: str = "1h",
-    window_hours: float = 12.0,
-    top_n: int = 3,
-    frame: str = "GSE",
-    flow_dir_gse: tuple[float, float, float] = (-1.0, 0.0, 0.0),
-    vsw_kms: float = 400.0,
-    along_weight: float = 0.20,
-    perp_scale: float = 0.35,
-    lag_tolerance: float = 0.5,
-    vsw_rel_unc: float = 0.15,
-    decorrelation_rel_unc: float = 0.25,
-    min_coverage: float = 0.75,
-    verbose: bool = True,
+    targets,
+    start,
+    stop,
+    step="1h",
+    window_hours=12.0,
+    top_n=3,
+    frame="GSE",
+    flow_dir_gse=(-1.0, 0.0, 0.0),
+    vsw_kms=400.0,
+    along_weight=0.20,
+    perp_scale=0.35,
+    lag_tolerance=0.5,
+    vsw_rel_unc=0.15,
+    decorrelation_rel_unc=0.25,
+    min_coverage=0.75,
+    verbose=True,
 ):
-    """
-    Identify windows where spacecraft are least likely to sample the same plasma stream.
-
-    First-principles model:
-      p_pair = exp(-(d_perp/L_perp)^2 - (tau/tau0)^2), tau = |d_parallel|/Vsw
-
-    For N spacecraft to sample one stream, every pair must satisfy the same condition.
-    We use a conservative all-spacecraft necessary-condition likelihood via the worst pair:
-      p_all = exp(-(max_pair(d_perp)/L_perp)^2 - (max_pair(tau)/tau0)^2)
-
-    Window score minimized:
-      J = P84_window(p_all) + along_weight * median_window(IQR_pair(p_pair))
-
-    Lower J => lower and more stable all-spacecraft same-stream likelihood.
-    """
-    if frame.upper() != "GSE":
+    if str(frame).upper() != "GSE":
         raise ValueError("This interval-selection metric is implemented for GSE only.")
-    if window_hours <= 0:
+    if float(window_hours) <= 0:
         raise ValueError("window_hours must be > 0")
-    if top_n < 1:
+    if int(top_n) < 1:
         raise ValueError("top_n must be >= 1")
-    if perp_scale <= 0:
+    if float(perp_scale) <= 0:
         raise ValueError("perp_scale must be > 0")
-    if lag_tolerance <= 0:
+    if float(lag_tolerance) <= 0:
         raise ValueError("lag_tolerance must be > 0")
 
     flow_hat = np.asarray(flow_dir_gse, dtype=float)
-    if np.linalg.norm(flow_hat) == 0:
+    nrm = np.linalg.norm(flow_hat)
+    if nrm == 0:
         raise ValueError("flow_dir_gse must be non-zero")
-    flow_hat = flow_hat / np.linalg.norm(flow_hat)
+    flow_hat = flow_hat / nrm
 
     tracks = {}
     for t in targets:
@@ -983,110 +753,118 @@ def find_best_stream_aligned_intervals(
     if len(time_index) == 0:
         raise RuntimeError("No overlapping timestamps were found across spacecraft.")
 
-    l_adv_au = ((vsw_kms * u.km / u.s) * (window_hours * u.hour)).to_value(u.AU)
+    l_adv_au = ((float(vsw_kms) * u.km / u.s) * (float(window_hours) * u.hour)).to_value(u.AU)
+    tau0_h = float(lag_tolerance) * float(window_hours)
+    l_perp_au = float(perp_scale) * float(l_adv_au)
 
-    tau0_h = lag_tolerance * window_hours
-    l_perp_au = perp_scale * l_adv_au
+    T = len(time_index)
+    N = len(targets)
+    xyz = np.empty((T, N, 3), dtype=float)
+    for j, name in enumerate(targets):
+        df = tracks[name].loc[time_index]
+        xyz[:, j, 0] = df["x_au"].to_numpy(dtype=float)
+        xyz[:, j, 1] = df["y_au"].to_numpy(dtype=float)
+        xyz[:, j, 2] = df["z_au"].to_numpy(dtype=float)
+
+    lo_vsw = max(float(vsw_kms) * (1.0 - float(vsw_rel_unc)), 1e-3)
+    hi_vsw = float(vsw_kms) * (1.0 + float(vsw_rel_unc))
+    lo_lperp = max(l_perp_au * (1.0 - float(decorrelation_rel_unc)), 1e-9)
+    hi_lperp = l_perp_au * (1.0 + float(decorrelation_rel_unc))
+    lo_tau0 = max(tau0_h * (1.0 - float(decorrelation_rel_unc)), 1e-9)
+    hi_tau0 = tau0_h * (1.0 + float(decorrelation_rel_unc))
 
     rows = []
-    for ts in time_index:
-        xyz = np.array([[tracks[t].loc[ts, "x_au"], tracks[t].loc[ts, "y_au"], tracks[t].loc[ts, "z_au"]] for t in targets])
-        perp, par, _ = _pairwise_metrics(xyz, flow_hat)
-        if len(perp) == 0:
+    for k, ts in enumerate(time_index):
+        dperp, dpar_abs, dpar_signed = _pairwise_separations(xyz[k], flow_hat)
+        if dperp.size == 0:
             continue
-        p_pair, tau_h = _pairwise_stream_probability(perp, par, vsw_kms=vsw_kms, l_perp_au=l_perp_au, tau0_h=tau0_h)
-        p_all_ref, max_tau_h = _all_sc_same_stream_probability(perp, par, vsw_kms=vsw_kms, l_perp_au=l_perp_au, tau0_h=tau0_h)
 
-        lo_vsw = max(vsw_kms * (1.0 - vsw_rel_unc), 1e-3)
-        hi_vsw = vsw_kms * (1.0 + vsw_rel_unc)
-        lo_lperp = max(l_perp_au * (1.0 - decorrelation_rel_unc), 1e-6)
-        hi_lperp = l_perp_au * (1.0 + decorrelation_rel_unc)
-        lo_tau0 = max(tau0_h * (1.0 - decorrelation_rel_unc), 1e-6)
-        hi_tau0 = tau0_h * (1.0 + decorrelation_rel_unc)
-
-        p_all_lo, _ = _all_sc_same_stream_probability(perp, par, vsw_kms=lo_vsw, l_perp_au=lo_lperp, tau0_h=lo_tau0)
-        p_all_hi, _ = _all_sc_same_stream_probability(perp, par, vsw_kms=hi_vsw, l_perp_au=hi_lperp, tau0_h=hi_tau0)
+        p_pair, tau_h = _pair_prob_same_stream(dperp, dpar_abs, vsw_kms=float(vsw_kms), lperp_au=l_perp_au, tau0_h=tau0_h)
+        p_all_ref, max_dperp, max_dpar, max_tau_h = _all_prob_same_stream_worst_pair(
+            dperp, dpar_abs, vsw_kms=float(vsw_kms), lperp_au=l_perp_au, tau0_h=tau0_h
+        )
+        p_all_lo, _, _, _ = _all_prob_same_stream_worst_pair(dperp, dpar_abs, vsw_kms=lo_vsw, lperp_au=lo_lperp, tau0_h=lo_tau0)
+        p_all_hi, _, _, _ = _all_prob_same_stream_worst_pair(dperp, dpar_abs, vsw_kms=hi_vsw, lperp_au=hi_lperp, tau0_h=hi_tau0)
 
         pair_iqr = float(np.percentile(p_pair, 75) - np.percentile(p_pair, 25))
+
         rows.append(
             {
                 "time": ts,
-                "median_perp_au": np.median(perp),
-                "median_par_au": np.median(par),
-                "median_tau_h": np.median(tau_h),
-                "median_pair_probability": np.median(p_pair),
-                "all_pair_p_ref": p_all_ref,
-                "all_pair_p_ref_p16": min(p_all_lo, p_all_hi),
-                "all_pair_p_ref_p84": max(p_all_lo, p_all_hi),
+                "median_perp_au": float(np.median(dperp)),
+                "median_par_au": float(np.median(dpar_abs)),
+                "median_tau_h": float(np.median(tau_h)),
+                "median_pair_probability": float(np.median(p_pair)),
+                "all_pair_p_ref": float(p_all_ref),
+                "all_pair_p_ref_p16": float(min(p_all_lo, p_all_hi)),
+                "all_pair_p_ref_p84": float(max(p_all_lo, p_all_hi)),
                 "pairwise_prob_iqr": pair_iqr,
-                "p75_pair_probability": np.percentile(p_pair, 75),
-                "max_perp_au": np.max(perp),
-                "max_par_au": np.max(par),
-                "max_tau_h": max_tau_h,
+                "p75_pair_probability": float(np.percentile(p_pair, 75)),
+                "max_perp_au": float(max_dperp),
+                "max_par_au": float(max_dpar),
+                "max_tau_h": float(max_tau_h),
             }
         )
 
     metric_df = pd.DataFrame(rows).set_index("time").sort_index()
+    if len(metric_df) == 0:
+        raise RuntimeError("No metric samples were produced.")
 
-    win = f"{float(window_hours):g}h"
-    grouped = metric_df.groupby(pd.Grouper(freq=win))
+    w = pd.Timedelta(hours=float(window_hours))
+    t0 = metric_df.index[0]
+    win_id = ((metric_df.index - t0) // w).astype(int)
+    metric_df["_win_id"] = win_id
+
+    step_td = pd.to_timedelta(step)
+    expected_per_window = max(int(np.floor(w / step_td)), 1)
 
     score_rows = []
-    for t0, g in grouped:
+    for wid, g in metric_df.groupby("_win_id"):
         if len(g) == 0:
             continue
 
-        # Require enough cadence coverage in the interval.
-        t1 = t0 + pd.Timedelta(hours=window_hours)
-        expected = metric_df.loc[(metric_df.index >= t0) & (metric_df.index < t1)]
-        coverage = len(g) / max(len(expected), 1)
-        if coverage < min_coverage:
+        ws = t0 + wid * w
+        we = ws + w
+
+        coverage = float(len(g)) / float(expected_per_window)
+        if coverage < float(min_coverage):
             continue
 
-        median_perp = g["median_perp_au"].median()
-        median_par = g["median_par_au"].median()
         p_ref = g["all_pair_p_ref"].to_numpy()
         p_ref_p16 = g["all_pair_p_ref_p16"].to_numpy()
         p_ref_p84 = g["all_pair_p_ref_p84"].to_numpy()
-        same_stream_prob = np.median(p_ref)
+
+        same_stream_prob = float(np.median(p_ref))
         pair_iqr_med = float(np.median(g["pairwise_prob_iqr"].to_numpy()))
-        metric = float(np.percentile(p_ref, 84) + along_weight * pair_iqr_med)
-        j_p16 = float(np.percentile(p_ref_p16, 84) + along_weight * pair_iqr_med)
-        j_p84 = float(np.percentile(p_ref_p84, 84) + along_weight * pair_iqr_med)
-        dperp_p16, dperp_p84 = np.percentile(g["median_perp_au"], [16, 84])
-        dpar_p16, dpar_p84 = np.percentile(g["median_par_au"], [16, 84])
-        tau_p16, tau_p84 = np.percentile(g["median_tau_h"], [16, 84])
+
+        metric = float(np.percentile(p_ref, 84) + float(along_weight) * pair_iqr_med)
+        j_p16 = float(np.percentile(p_ref_p16, 84) + float(along_weight) * pair_iqr_med)
+        j_p84 = float(np.percentile(p_ref_p84, 84) + float(along_weight) * pair_iqr_med)
 
         score_rows.append(
             {
-                "window_start": t0,
-                "window_end": t1,
-                "n_samples": len(g),
+                "window_start": ws,
+                "window_end": we,
+                "n_samples": int(len(g)),
                 "coverage": coverage,
-                "median_perp_au": median_perp,
-                "median_par_au": median_par,
-                "median_tau_h": g["median_tau_h"].median(),
-                "same_flow_score": 1.0 - same_stream_prob,
-                "same_flow_score_p16": 1.0 - np.percentile(p_ref, 84),
-                "same_flow_score_p84": 1.0 - np.percentile(p_ref, 16),
+                "median_perp_au": float(g["median_perp_au"].median()),
+                "median_par_au": float(g["median_par_au"].median()),
+                "median_tau_h": float(g["median_tau_h"].median()),
+                "same_flow_score": float(1.0 - same_stream_prob),
+                "same_flow_score_p16": float(1.0 - np.percentile(p_ref, 84)),
+                "same_flow_score_p84": float(1.0 - np.percentile(p_ref, 16)),
                 "same_stream_prob": same_stream_prob,
-                "same_stream_prob_p16": np.percentile(p_ref_p16, 16),
-                "same_stream_prob_p84": np.percentile(p_ref_p84, 84),
-                "max_perp_au": g["max_perp_au"].median(),
-                "max_par_au": g["max_par_au"].median(),
-                "max_tau_h": g["max_tau_h"].median(),
-                "median_perp_p16_au": dperp_p16,
-                "median_perp_p84_au": dperp_p84,
-                "median_par_p16_au": dpar_p16,
-                "median_par_p84_au": dpar_p84,
-                "median_tau_p16_h": tau_p16,
-                "median_tau_p84_h": tau_p84,
-                "adv_length_au": l_adv_au,
-                "perp_length_au": l_perp_au,
-                "tau0_h": tau0_h,
-                "vsw_kms": vsw_kms,
-                "vsw_rel_unc": vsw_rel_unc,
-                "decorrelation_rel_unc": decorrelation_rel_unc,
+                "same_stream_prob_p16": float(np.percentile(p_ref_p16, 16)),
+                "same_stream_prob_p84": float(np.percentile(p_ref_p84, 84)),
+                "max_perp_au": float(g["max_perp_au"].median()),
+                "max_par_au": float(g["max_par_au"].median()),
+                "max_tau_h": float(g["max_tau_h"].median()),
+                "adv_length_au": float(l_adv_au),
+                "perp_length_au": float(l_perp_au),
+                "tau0_h": float(tau0_h),
+                "vsw_kms": float(vsw_kms),
+                "vsw_rel_unc": float(vsw_rel_unc),
+                "decorrelation_rel_unc": float(decorrelation_rel_unc),
                 "alignment_metric": metric,
                 "alignment_metric_p16": j_p16,
                 "alignment_metric_p84": j_p84,
@@ -1097,141 +875,148 @@ def find_best_stream_aligned_intervals(
     if len(scores) == 0:
         raise RuntimeError("No valid windows found. Try reducing min_coverage or window_hours.")
 
-    best = scores.head(top_n).copy()
+    best = scores.head(int(top_n)).copy()
 
     if verbose:
-        print("[alignment] First-principles stream-separation model (GSE):")
-        print("  1) Assumption: Taylor frozen-in flow with bulk speed Vsw.")
-        print("  2) Pair physics: two spacecraft sample the same parcel with probability")
-        print("       p_pair = exp(-(d_perp/L_perp)^2 - (tau/tau0)^2), tau=|d_parallel|/Vsw.")
-        print("  3) All-spacecraft logic (first-principles necessary condition):")
-        print("       p_all = exp(-(max_pair(d_perp)/L_perp)^2 - (max_pair(tau)/tau0)^2).")
-        print("  4) Optimization target (lower is better):")
-        print(f"       J = P84_window(p_all) + {along_weight:g}*median_window(IQR_pair(p_pair)).")
-        print("  5) Interpretation: minimizing J minimizes the chance all selected spacecraft")
-        print("     observe the same stream while preferring temporally stable windows.")
-        print(f"  6) Scales: L_adv={l_adv_au:.4f} AU ({l_adv_au * AU_IN_RE:.1f} Re),")
-        print(f"     L_perp={l_perp_au:.4f} AU ({l_perp_au * AU_IN_RE:.1f} Re), tau0={tau0_h:.2f} h.")
-        print("  7) Uncertainty envelope for default error bars:")
-        print(f"       Vsw ±{100*vsw_rel_unc:.0f}%, L_perp and tau0 ±{100*decorrelation_rel_unc:.0f}%.")
-        print("  8) To improve with real data: use measured Vsw(t), local Parker-spiral direction,")
-        print("       and turbulence anisotropy to make L_perp and tau0 time dependent.")
-        print("  9) All reported central values include default 16-84% error bars.")
+        print("[alignment] Stream-separation model (GSE):")
+        print("  - Uses |d_parallel| for lags (fixes signed-max bug).")
+        print(f"  - L_adv={l_adv_au:.4f} AU ({l_adv_au * AU_IN_RE:.1f} Re), "
+              f"L_perp={l_perp_au:.4f} AU ({l_perp_au * AU_IN_RE:.1f} Re), tau0={tau0_h:.2f} h.")
 
-        if len(best) > 0:
-            ref = best.iloc[0]
-            tmask = (metric_df.index >= ref["window_start"]) & (metric_df.index < ref["window_end"])
-            sample_times = metric_df.index[tmask]
-            pair_stats = {}
-            for ts in sample_times:
-                xyz = np.array([[tracks[t].loc[ts, "x_au"], tracks[t].loc[ts, "y_au"], tracks[t].loc[ts, "z_au"]] for t in targets])
-                for i in range(len(targets)):
-                    for j in range(i + 1, len(targets)):
-                        dr = xyz[i] - xyz[j]
-                        dpar = float(np.dot(dr, flow_hat))
-                        dperp = float(np.linalg.norm(dr - dpar * flow_hat))
-                        key = f"{targets[i]}-{targets[j]}"
-                        pair_stats.setdefault(key, {"dpar": [], "dperp": []})
-                        pair_stats[key]["dpar"].append(np.abs(dpar))
-                        pair_stats[key]["dperp"].append(dperp)
-
-            print("[alignment] Best-window pairwise separations (median [P16, P84]):")
-            for pair_name in sorted(pair_stats):
-                dpar_arr = np.asarray(pair_stats[pair_name]["dpar"]) * AU_IN_RE
-                dperp_arr = np.asarray(pair_stats[pair_name]["dperp"]) * AU_IN_RE
-                dpar_q = np.percentile(dpar_arr, [16, 50, 84])
-                dperp_q = np.percentile(dperp_arr, [16, 50, 84])
-                print(
-                    f"  - {pair_name}: |d_parallel|={dpar_q[1]:.1f} [{dpar_q[0]:.1f}, {dpar_q[2]:.1f}] Re, "
-                    f"d_perp={dperp_q[1]:.1f} [{dperp_q[0]:.1f}, {dperp_q[2]:.1f}] Re"
-                )
+    metric_df = metric_df.drop(columns=["_win_id"])
 
     return {
         "scores": scores,
         "best": best,
         "tracks": tracks,
         "flow_hat": flow_hat,
+        "metric_df": metric_df,
     }
 
 
 def plot_stream_alignment_interval(
-    tracks: dict[str, pd.DataFrame],
-    targets: list[str],
+    tracks,
+    targets,
     window_start,
     window_end,
-    flow_hat: np.ndarray,
-    summary_row: pd.Series | None = None,
-    width: int = 1200,
-    height: int = 760,
+    flow_hat,
+    summary_row=None,
+    width=1250,
+    height=820,
 ):
-    """3D + probability-space diagnostic plot for a selected GSE interval (axes in Re)."""
     colors = px.colors.qualitative.Plotly
+
+    w0 = pd.Timestamp(window_start)
+    w1 = pd.Timestamp(window_end)
+
+    idx = None
+    for t in targets:
+        seg = tracks[t].loc[(tracks[t].index >= w0) & (tracks[t].index < w1)]
+        idx = seg.index if idx is None else idx.intersection(seg.index)
+    idx = pd.DatetimeIndex(sorted(idx))
+    if len(idx) == 0:
+        raise RuntimeError("No overlapping samples inside the requested interval.")
+
+    T = len(idx)
+    N = len(targets)
+    xyz = np.empty((T, N, 3), dtype=float)
+    for j, name in enumerate(targets):
+        df = tracks[name].loc[idx]
+        xyz[:, j, 0] = df["x_au"].to_numpy(dtype=float)
+        xyz[:, j, 1] = df["y_au"].to_numpy(dtype=float)
+        xyz[:, j, 2] = df["z_au"].to_numpy(dtype=float)
+
+    xyz_re = xyz * AU_IN_RE
+
+    if summary_row is not None:
+        vsw_kms = float(summary_row.get("vsw_kms", 400.0))
+        lperp_au = float(summary_row.get("perp_length_au", np.nan))
+        tau0_h = float(summary_row.get("tau0_h", np.nan))
+        vsw_rel_unc = float(summary_row.get("vsw_rel_unc", 0.15))
+        decor_rel_unc = float(summary_row.get("decorrelation_rel_unc", 0.25))
+    else:
+        vsw_kms = 400.0
+        vsw_rel_unc = 0.15
+        decor_rel_unc = 0.25
+        tau0_h = 0.5 * (w1 - w0).total_seconds() / 3600.0
+        lperp_au = 0.35 * ((vsw_kms * u.km / u.s) * (tau0_h * u.hour)).to_value(u.AU)
+
+    if not np.isfinite(tau0_h) or tau0_h <= 0:
+        tau0_h = 0.5 * (w1 - w0).total_seconds() / 3600.0
+    if not np.isfinite(lperp_au) or lperp_au <= 0:
+        lperp_au = 0.35 * ((vsw_kms * u.km / u.s) * (tau0_h * u.hour)).to_value(u.AU)
+
+    lo_vsw = max(vsw_kms * (1.0 - vsw_rel_unc), 1e-3)
+    hi_vsw = vsw_kms * (1.0 + vsw_rel_unc)
+    lo_lperp = max(lperp_au * (1.0 - decor_rel_unc), 1e-9)
+    hi_lperp = lperp_au * (1.0 + decor_rel_unc)
+    lo_tau0 = max(tau0_h * (1.0 - decor_rel_unc), 1e-9)
+    hi_tau0 = tau0_h * (1.0 + decor_rel_unc)
+
+    max_dperp_re = np.empty(T, dtype=float)
+    max_dpar_re = np.empty(T, dtype=float)
+    max_tau_h = np.empty(T, dtype=float)
+    p_all = np.empty(T, dtype=float)
+    p16 = np.empty(T, dtype=float)
+    p84 = np.empty(T, dtype=float)
+
+    for k in range(T):
+        dperp, dpar_abs, _ = _pairwise_separations(xyz[k], flow_hat)
+        p0, mdp, mdpar, mtau = _all_prob_same_stream_worst_pair(dperp, dpar_abs, vsw_kms, lperp_au, tau0_h)
+        plo, _, _, _ = _all_prob_same_stream_worst_pair(dperp, dpar_abs, lo_vsw, lo_lperp, lo_tau0)
+        phi, _, _, _ = _all_prob_same_stream_worst_pair(dperp, dpar_abs, hi_vsw, hi_lperp, hi_tau0)
+
+        max_dperp_re[k] = mdp * AU_IN_RE
+        max_dpar_re[k] = mdpar * AU_IN_RE
+        max_tau_h[k] = mtau
+        p_all[k] = p0
+        p16[k] = min(plo, phi)
+        p84[k] = max(plo, phi)
+
     fig = make_subplots(
-        rows=1,
+        rows=3,
         cols=2,
-        specs=[[{"type": "scene"}, {"type": "xy"}]],
-        column_widths=[0.66, 0.34],
+        specs=[
+            [{"type": "scene", "rowspan": 3}, {"type": "xy"}],
+            [None, {"type": "xy"}],
+            [None, {"type": "xy"}],
+        ],
+        column_widths=[0.62, 0.38],
         horizontal_spacing=0.06,
-        subplot_titles=("3D spacecraft trajectories", "Pairwise stream-separation probability map"),
+        vertical_spacing=0.08,
+        subplot_titles=(
+            "3D GSE trajectories (Re)",
+            "Worst-pair cross-flow separation",
+            "Worst-pair along-flow separation and lag",
+            "All-spacecraft same-stream probability (worst-pair model)",
+        ),
     )
 
-    # Keep axis ranges consistent and centered around interval centroid.
-    xyz_all = []
-    for t in targets:
-        seg = tracks[t].loc[(tracks[t].index >= window_start) & (tracks[t].index < window_end)]
-        if len(seg) == 0:
-            continue
-        xyz_all.append(seg[["x_au", "y_au", "z_au"]].values)
-    if len(xyz_all) == 0:
-        raise RuntimeError("No samples in requested interval.")
-    xyz_all = np.vstack(xyz_all)
-    center = xyz_all.mean(axis=0)
-    xyz_all_re = xyz_all * AU_IN_RE
-    center_re = center * AU_IN_RE
-
-    e_par, e_perp1, _ = _flow_basis(flow_hat)
-
-    for i, t in enumerate(targets):
-        seg = tracks[t].loc[(tracks[t].index >= window_start) & (tracks[t].index < window_end)]
-        if len(seg) == 0:
-            continue
-        color = colors[i % len(colors)]
-        xyz = seg[["x_au", "y_au", "z_au"]].values
-        xyz_re = xyz * AU_IN_RE
-        xyz_centered_re = xyz_re - center_re
-        par_re = xyz_centered_re @ e_par
-        perp1_re = xyz_centered_re @ e_perp1
-
+    for i, name in enumerate(targets):
+        c = colors[i % len(colors)]
+        seg = tracks[name].loc[idx]
+        xr = seg["x_au"].to_numpy(dtype=float) * AU_IN_RE
+        yr = seg["y_au"].to_numpy(dtype=float) * AU_IN_RE
+        zr = seg["z_au"].to_numpy(dtype=float) * AU_IN_RE
         fig.add_trace(
             go.Scatter3d(
-                x=xyz_re[:, 0],
-                y=xyz_re[:, 1],
-                z=xyz_re[:, 2],
+                x=xr, y=yr, z=zr,
                 mode="lines+markers",
-                marker=dict(size=3, color=color),
-                line=dict(color=color, width=5),
-                name=t,
+                marker=dict(size=3, color=c),
+                line=dict(width=5, color=c),
+                name=name,
             ),
-            row=1,
-            col=1,
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=par_re,
-                y=perp1_re,
-                mode="lines+markers",
-                marker=dict(size=6, color=color, line=dict(width=0.8, color="white")),
-                line=dict(color=color, width=2),
-                name=f"{t} (flow frame)",
-                showlegend=False,
-            ),
-            row=1,
-            col=2,
+            row=1, col=1
         )
 
-    arrow_len_re = max(np.linalg.norm(xyz_all_re - center_re, axis=1).max(), 5.0)
-    p0 = center_re
-    p1 = center_re + flow_hat * arrow_len_re
+    center = xyz_re.reshape(-1, 3).mean(axis=0)
+    extent = np.linalg.norm(xyz_re.reshape(-1, 3) - center, axis=1)
+    arrow_len = max(float(np.nanmax(extent)), 10.0)
+    flow_hat = np.asarray(flow_hat, dtype=float)
+    flow_hat = flow_hat / np.linalg.norm(flow_hat)
+    p0 = center
+    p1 = center + flow_hat * arrow_len
+
     fig.add_trace(
         go.Scatter3d(
             x=[p0[0], p1[0]],
@@ -1239,209 +1024,81 @@ def plot_stream_alignment_interval(
             z=[p0[2], p1[2]],
             mode="lines",
             line=dict(color="black", width=8, dash="dash"),
-            name="Assumed flow dir",
+            name="Assumed flow",
         ),
-        row=1,
-        col=1,
+        row=1, col=1
+    )
+
+    fig.add_trace(
+        go.Scatter(x=idx, y=max_dperp_re, mode="lines+markers", showlegend=False),
+        row=1, col=2
+    )
+    fig.update_yaxes(title_text="max d⊥ [Re]", row=1, col=2)
+
+    fig.add_trace(
+        go.Scatter(x=idx, y=max_dpar_re, mode="lines+markers", showlegend=False),
+        row=2, col=2
     )
     fig.add_trace(
-        go.Cone(
-            x=[p1[0]],
-            y=[p1[1]],
-            z=[p1[2]],
-            u=[flow_hat[0]],
-            v=[flow_hat[1]],
-            w=[flow_hat[2]],
-            sizemode="absolute",
-            sizeref=arrow_len_re * 0.12,
-            colorscale=[[0, "black"], [1, "black"]],
-            showscale=False,
-            name="Flow arrowhead",
-            showlegend=False,
-        ),
-        row=1,
-        col=1,
+        go.Scatter(x=idx, y=max_tau_h, mode="lines", line=dict(dash="dot"), showlegend=False),
+        row=2, col=2
     )
+    fig.update_yaxes(title_text="max |d∥| [Re] and max lag [h]", row=2, col=2)
 
-    pair_par = []
-    pair_perp = []
-    pair_prob = []
-    l_perp_au = summary_row.get("perp_length_au", np.nan) if summary_row is not None else np.nan
-    tau0_h = summary_row.get("tau0_h", np.nan) if summary_row is not None else np.nan
-    inferred_vsw_kms = summary_row.get("vsw_kms", np.nan) if summary_row is not None else np.nan
-    if not np.isfinite(inferred_vsw_kms):
-        inferred_vsw_kms = 400.0
-    if not np.isfinite(tau0_h):
-        tau0_h = 0.5 * ((pd.Timestamp(window_end) - pd.Timestamp(window_start)).total_seconds() / 3600.0)
-    if not np.isfinite(l_perp_au):
-        l_perp_au = 0.35 * ((inferred_vsw_kms * u.km / u.s) * (tau0_h * u.hour)).to_value(u.AU)
-    for ts in sorted(set().union(*[set(tracks[t].loc[(tracks[t].index >= window_start) & (tracks[t].index < window_end)].index) for t in targets])):
-        points = []
-        for t in targets:
-            seg = tracks[t].loc[(tracks[t].index >= window_start) & (tracks[t].index < window_end)]
-            if ts in seg.index:
-                points.append(seg.loc[ts, ["x_au", "y_au", "z_au"]].to_numpy(dtype=float))
-        if len(points) < 2:
-            continue
-        xyz_t = np.vstack(points)
-        perp_t, par_t, par_signed_t = _pairwise_metrics(xyz_t, flow_hat)
-        pair_par.extend(par_signed_t * AU_IN_RE)
-        pair_perp.extend(perp_t * AU_IN_RE)
-        if np.isfinite(l_perp_au) and np.isfinite(tau0_h) and np.isfinite(inferred_vsw_kms):
-            p_pair_t, _ = _pairwise_stream_probability(perp_t, par_t, vsw_kms=inferred_vsw_kms, l_perp_au=l_perp_au, tau0_h=tau0_h)
-            pair_prob.extend(p_pair_t)
-
-    if len(pair_par) > 0:
-        pair_par = np.asarray(pair_par)
-        pair_perp = np.asarray(pair_perp)
-        x_med = np.median(pair_par)
-        y_med = np.median(pair_perp)
-        x_p16, x_p84 = np.percentile(pair_par, [16, 84])
-        y_p16, y_p84 = np.percentile(pair_perp, [16, 84])
-
-        marker_kwargs = dict(size=6, color="rgba(80,80,80,0.35)")
-        hovertemplate = "d∥=%{x:.2f} Re<br>d⊥=%{y:.2f} Re<extra></extra>"
-        if len(pair_prob) == len(pair_par) and len(pair_prob) > 0:
-            marker_kwargs = dict(
-                size=7,
-                color=1.0 - np.asarray(pair_prob),
-                colorscale="Viridis",
-                cmin=0,
-                cmax=1,
-                colorbar=dict(title="Distinct-stream probability", x=0.98, y=0.5, len=0.8),
-                line=dict(width=0.3, color="rgba(0,0,0,0.35)"),
-            )
-            hovertemplate = "d∥=%{x:.2f} Re<br>d⊥=%{y:.2f} Re<br>P(distinct)=%{marker.color:.2f}<extra></extra>"
-        fig.add_trace(
-            go.Scatter(
-                x=pair_par,
-                y=pair_perp,
-                mode="markers",
-                marker=marker_kwargs,
-                hovertemplate=hovertemplate,
-                name="Pairwise samples",
-                showlegend=False,
-            ),
-            row=1,
-            col=2,
-        )
-
-        if np.isfinite(l_perp_au) and np.isfinite(tau0_h) and np.isfinite(inferred_vsw_kms):
-            l_perp_re = l_perp_au * AU_IN_RE
-            tau0_re = ((inferred_vsw_kms * u.km / u.s) * (tau0_h * u.hour)).to_value(u.AU) * AU_IN_RE
-            theta = np.linspace(0, 2 * np.pi, 240)
-            for plevel, dash in [(0.50, "dot"), (0.10, "dash")]:
-                radius = np.sqrt(-np.log(plevel))
-                x_curve = radius * tau0_re * np.cos(theta)
-                y_curve = radius * l_perp_re * np.sin(theta)
-                fig.add_trace(
-                    go.Scatter(
-                        x=x_curve,
-                        y=y_curve,
-                        mode="lines",
-                        line=dict(color="black", width=1.6, dash=dash),
-                        name=f"P(same)={plevel:.2f}",
-                        showlegend=False,
-                        hovertemplate=f"Reference contour: P(same)={plevel:.2f}<extra></extra>",
-                    ),
-                    row=1,
-                    col=2,
-                )
-        fig.add_trace(
-            go.Scatter(
-                x=[x_med],
-                y=[y_med],
-                mode="markers",
-                marker=dict(size=11, color="black", symbol="x"),
-                error_x=dict(type="data", symmetric=False, array=[x_p84 - x_med], arrayminus=[x_med - x_p16]),
-                error_y=dict(type="data", symmetric=False, array=[y_p84 - y_med], arrayminus=[y_med - y_p16]),
-                name="Median pair sep (16-84%)",
-            ),
-            row=1,
-            col=2,
-        )
-
-    if len(pair_par) > 0:
-        x_lim = 1.10 * np.max(np.abs(pair_par))
-        y_lim = 1.10 * np.max(pair_perp)
-        x_lim = max(x_lim, 10.0)
-        y_lim = max(y_lim, 10.0)
-    else:
-        x_lim, y_lim = 30.0, 30.0
-
-    fig.update_xaxes(range=[-x_lim, x_lim], row=1, col=2)
-    fig.update_yaxes(range=[0, y_lim], row=1, col=2)
-
-    fig.add_annotation(
-        x=0.85 * x_lim,
-        y=0.08 * y_lim,
-        ax=0.35 * x_lim,
-        ay=0.08 * y_lim,
-        xref="x2",
-        yref="y2",
-        axref="x2",
-        ayref="y2",
-        arrowhead=3,
-        arrowsize=1.3,
-        arrowwidth=2.0,
-        arrowcolor="black",
-        text="+flow",
-        showarrow=True,
-        font=dict(size=11),
+    fig.add_trace(
+        go.Scatter(x=idx, y=p84, mode="lines", line=dict(width=0), hoverinfo="skip", showlegend=False),
+        row=3, col=2
     )
+    fig.add_trace(
+        go.Scatter(x=idx, y=p16, mode="lines", fill="tonexty", line=dict(width=0), showlegend=False),
+        row=3, col=2
+    )
+    fig.add_trace(
+        go.Scatter(x=idx, y=p_all, mode="lines+markers", showlegend=False),
+        row=3, col=2
+    )
+    fig.update_yaxes(title_text="p_all(t)", range=[0, 1.02], row=3, col=2)
 
-    title = f"GSE stream-alignment interval: {pd.Timestamp(window_start)} to {pd.Timestamp(window_end)}"
-    if summary_row is not None:
+    title = f"GSE window: {w0} to {w1}"
+    if summary_row is not None and "alignment_metric" in summary_row:
         title += (
-            f"<br><sup>metric={summary_row['alignment_metric']:.4f}, "
-            f"J_16-84=[{summary_row['alignment_metric_p16']:.4f}, {summary_row['alignment_metric_p84']:.4f}], "
-            f"P(all same stream)={summary_row['same_stream_prob']:.3f} "
-            f"[{summary_row['same_stream_prob_p16']:.3f}, {summary_row['same_stream_prob_p84']:.3f}], "
-            f"distinct-score={summary_row['same_flow_score']:.3f}, "
-            f"median d⊥={summary_row['median_perp_au'] * AU_IN_RE:.1f} Re, "
-            f"median |d∥|={summary_row['median_par_au'] * AU_IN_RE:.1f} Re, "
-            f"median lag={summary_row['median_tau_h']:.2f} h</sup>"
+            f"<br><sup>J={summary_row['alignment_metric']:.4f} "
+            f"[{summary_row['alignment_metric_p16']:.4f}, {summary_row['alignment_metric_p84']:.4f}], "
+            f"P(all same)={summary_row['same_stream_prob']:.3f} "
+            f"[{summary_row['same_stream_prob_p16']:.3f}, {summary_row['same_stream_prob_p84']:.3f}]</sup>"
         )
-
-    fig.update_xaxes(title_text="signed parallel separation d∥ [Re]", zeroline=True, row=1, col=2)
-    fig.update_yaxes(title_text="cross-flow separation d⊥ [Re]", zeroline=True, row=1, col=2)
-    fig.add_annotation(
-        x=0.02,
-        y=0.02,
-        xref="paper",
-        yref="paper",
-        text="Assumptions: fixed flow direction and Vsw; default uncertainty bands are reported as 16-84%",
-        showarrow=False,
-        font=dict(size=11, color="rgba(60,60,60,0.9)"),
-        bgcolor="rgba(255,255,255,0.8)",
-    )
 
     fig.update_layout(
-        title=title,
         template="plotly_white",
         width=width,
         height=height,
+        title=title,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.0),
         scene=dict(xaxis_title="X [Re]", yaxis_title="Y [Re]", zaxis_title="Z [Re]", aspectmode="data"),
+        margin=dict(l=10, r=10, t=90, b=10),
     )
+
+    fig.update_xaxes(title_text="time", row=1, col=2)
+    fig.update_xaxes(title_text="time", row=2, col=2)
+    fig.update_xaxes(title_text="time", row=3, col=2)
+
     return fig
 
 
 def build_best_alignment_interval_figures(
-    targets: list[str],
-    start: str,
-    stop: str,
-    step: str = "1h",
-    window_hours: float = 12.0,
-    top_n: int = 3,
-    vsw_kms: float = 400.0,
-    along_weight: float = 0.20,
-    perp_scale: float = 0.35,
-    lag_tolerance: float = 0.5,
-    min_coverage: float = 0.75,
-    verbose: bool = True,
+    targets,
+    start,
+    stop,
+    step="1h",
+    window_hours=12.0,
+    top_n=3,
+    vsw_kms=400.0,
+    along_weight=0.20,
+    perp_scale=0.35,
+    lag_tolerance=0.5,
+    min_coverage=0.75,
+    verbose=True,
 ):
-    """Convenience wrapper: score windows then return N best interval figures."""
     out = find_best_stream_aligned_intervals(
         targets=targets,
         start=start,
@@ -1474,8 +1131,7 @@ def build_best_alignment_interval_figures(
     return out["best"], figs, out["scores"]
 
 
-
-def write_combined_html(fig_ts: go.Figure, fig_3d: go.Figure, out_html: str):
+def write_combined_html(fig_ts, fig_3d, out_html):
     html_ts = pio.to_html(fig_ts, include_plotlyjs="cdn", full_html=False)
     html_3d = pio.to_html(fig_3d, include_plotlyjs=False, full_html=False)
 
