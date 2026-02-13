@@ -3,8 +3,12 @@ import pandas as pd
 from numba import jit,njit, prange
 import os
 import sys
+from pathlib import Path
+
+_FUNCTIONS_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _FUNCTIONS_DIR.parent
 from joblib import Parallel, delayed
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+sys.path.insert(1, str(_FUNCTIONS_DIR))
 import general_functions as func
 import TurbPy as turb
 import traceback

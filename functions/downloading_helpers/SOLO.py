@@ -6,6 +6,9 @@ import time
 import logging
 import traceback
 from pathlib import Path
+
+_MODULE_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _MODULE_DIR.parents[1]
 from typing import Dict, List, Optional, Tuple, Any
 
 import numpy as np
@@ -25,7 +28,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # Local SPEDAS
 # ============================================================
-sys.path.insert(0, os.path.join(os.getcwd(), "pyspedas"))
+sys.path.insert(0, str(_REPO_ROOT / "pyspedas"))
 import pyspedas
 from pyspedas.utilities import time_string
 from pytplot import get_data
@@ -33,12 +36,12 @@ from pytplot import get_data
 # ============================================================
 # Your helper functions
 # ============================================================
-sys.path.insert(1, os.path.join(os.getcwd(), "functions"))
+sys.path.insert(1, str(_REPO_ROOT / "functions"))
 import general_functions as func
 import TurbPy as turb
 
 
-sys.path.insert(1, os.path.join(os.getcwd(), "functions/downloading_helpers"))
+sys.path.insert(1, str(_REPO_ROOT / "functions" / "downloading_helpers"))
 # ------------------------------------------------------------
 # Shared utilities (lightweight, single authority)
 # ------------------------------------------------------------
@@ -704,7 +707,7 @@ def LoadTimeSeriesSOLO(
         settings = init_solo_settings(settings)
 
         os.chdir(settings["Data_path"])
-        solo_dir = Path(os.getcwd()) / "solar_orbiter_data"
+        solo_dir = _REPO_ROOT / "solar_orbiter_data"
         solo_dir.mkdir(parents=True, exist_ok=True)
 
         try:

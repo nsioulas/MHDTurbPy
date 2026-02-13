@@ -6,6 +6,9 @@ import scipy.io
 import os
 import sys
 from pathlib import Path
+
+_MODULE_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _MODULE_DIR.parents[1]
 import pickle
 import gc
 from glob import glob
@@ -20,7 +23,7 @@ from scipy.interpolate import interp1d
 
 
 # Make sure to use the local spedas
-sys.path.insert(0, os.path.join(os.getcwd(), 'pyspedas'))
+sys.path.insert(0, str(_REPO_ROOT / 'pyspedas'))
 import pyspedas
 from pyspedas.utilities import time_string
 from pytplot import get_data
@@ -28,7 +31,7 @@ from pytplot import get_data
 
 """ Import manual functions """
 
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+sys.path.insert(1, str(_REPO_ROOT / 'functions'))
 import calc_diagnostics as calc
 import TurbPy as turb
 import general_functions as func
@@ -36,7 +39,7 @@ import Figures as figs
 from   SEA import SEA
 import three_D_funcs as threeD
 
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions', 'downloading_helpers'))
+sys.path.insert(1, str(_REPO_ROOT / 'functions' / 'downloading_helpers'))
 from PSP import  download_ephemeris_PSP
 
 
@@ -2045,7 +2048,6 @@ def scanning_variance_analysis(index,
                                     sc              ='WIND',
                                     credentials     = None):
     
-    os.path.join(os.getcwd(), 'functions','downloading_helpers' )
     from WIND import  LoadHighResMagWind
     from PSP  import  download_MAG_FIELD_PSP
     from SOLO import  download_MAG_SOLO

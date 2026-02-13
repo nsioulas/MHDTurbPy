@@ -23,6 +23,10 @@
 import pandas 
 import numpy as np
 import sys
+from pathlib import Path
+
+_FUNCTIONS_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _FUNCTIONS_DIR.parent
 
 
 # Scipy
@@ -60,7 +64,7 @@ from distutils.log import warn
 from general_functions import *
 from three_D_funcs import *
 
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions/modwt/wmtsa'))
+sys.path.insert(1, str(_FUNCTIONS_DIR / 'modwt' / 'wmtsa'))
 import  modwt
 
 import astropy.units as u
@@ -6006,16 +6010,16 @@ def calculate_angle(which_perihelion,
                     use_span   =True):
     # Function to calculate the angle
     
-    sys.path.insert(1, os.path.join(os.getcwd(), 'functions/downloading_helpers'))
+    sys.path.insert(1, str(_FUNCTIONS_DIR / 'downloading_helpers'))
     import   PSP #$import  LoadTimeSeriesPSP
     au_to_km       = 1.496e8  # Conversion factor
     
     #Important!! Make sure your current directory is the MHDTurbPy folder!
-    os.chdir("/Users/nokni/work/MHDTurbPy/")
+    os.chdir(str(_REPO_ROOT))
 
 
     # Make sure to use the local spedas
-    sys.path.insert(0, os.path.join(os.getcwd(), 'pyspedas'))
+    sys.path.insert(0, str(_REPO_ROOT / 'pyspedas'))
 
 
     

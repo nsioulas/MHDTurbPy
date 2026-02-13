@@ -14,6 +14,9 @@ import pandas as pd
 #from numba import jit,njit,prange,objmode 
 import os
 from pathlib import Path
+
+_MODULE_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _MODULE_DIR.parents[1]
 from glob import glob
 from gc import collect
 import warnings
@@ -29,12 +32,12 @@ cdas = CdasWs()
 # SPEDAS API
 # make sure to use the local spedas
 import sys
-sys.path.insert(0,"../pyspedas")
+sys.path.insert(0, str(_REPO_ROOT / "pyspedas"))
 import pyspedas
 from pyspedas.utilities import time_string
 from pytplot import get_data
 
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+sys.path.insert(1, str(_REPO_ROOT / 'functions'))
 import calc_diagnostics as calc
 import TurbPy as turb
 import general_functions as func
