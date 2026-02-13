@@ -36,6 +36,39 @@ from horizons_sun_lonlat import (
 AU_IN_RE = (1 * u.AU).to_value(u.Rearth)
 
 
+def _canonicalize_target_name(target: str) -> str:
+    """
+    Normalize common spacecraft aliases/typos to a canonical target label.
+
+    This prevents accidental Horizons lookups against an unintended target when
+    users provide small typos (e.g., "Aidtya -L1").
+    """
+    cleaned = " ".join(str(target).strip().upper().replace("_", " ").split())
+    compact = cleaned.replace(" ", "").replace("-", "")
+
+    alias_map = {
+        "ACE": "ACE",
+        "WIND": "WIND",
+        "IMAP": "IMAP",
+        "SWFOL1": "SWFO-L1",
+        "SWIFOL1": "SWIFO-1",
+        "SOLAR1": "SOLAR-1",
+        "DSCOVR": "DSCOVR",
+        "DISCOVR": "DSCOVR",
+        "DISCOVER": "DSCOVR",
+        "ADITYA": "ADITYA-L1",
+        "ADITYAL1": "ADITYA-L1",
+        "AIDTYA": "ADITYA-L1",
+        "AIDTYAL1": "ADITYA-L1",
+        "SOHO": "SOHO",
+        "PSP": "PSP",
+        "PARKERSOLARPROBE": "PSP",
+        "SOLARORBITER": "SOLO",
+        "SOLO": "SOLO",
+    }
+    return alias_map.get(compact, cleaned)
+
+
 def _get_xyz_timeseries(target_id: str, start: str, stop: str, step: str, frame: str) -> pd.DataFrame:
     coord0 = get_horizons_coord(target_id, {"start": start, "stop": stop, "step": step})
 
