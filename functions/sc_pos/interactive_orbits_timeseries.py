@@ -10,7 +10,6 @@ import helpers
 from horizons_sun_lonlat import get_repo_style_orbit_df
 
 
-from __future__ import annotations
 
 import argparse
 from pathlib import Path
