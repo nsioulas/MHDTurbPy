@@ -17,34 +17,36 @@ import pandas as pd
 from joblib import Parallel, delayed
 from scipy import constants
 
+# Resolve repository paths from this file (independent of current working dir)
+_FUNCTIONS_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _FUNCTIONS_DIR.parent
+
 # ============================================================
 # Local SPEDAS (repo-local)
 # ============================================================
-sys.path.insert(0, os.path.join(os.getcwd(), "pyspedas"))
+sys.path.insert(0, str(_REPO_ROOT / "pyspedas"))
 import pyspedas  # noqa: F401
 
 # ============================================================
 # Repo utilities
 # ============================================================
-sys.path.insert(1, os.path.join(os.getcwd(), "functions"))
-import calc_diagnostics as calc
-import general_functions as func
-import TurbPy as turb
-import polarization_analysis
-import calibrate_efield as efield
-from calibrate_sc_potential import *  # noqa: F401,F403
+from functions import calc_diagnostics as calc
+from functions import general_functions as func
+from functions import TurbPy as turb
+from functions import polarization_analysis
+from functions import calibrate_efield as efield
+from functions.calibrate_sc_potential import *  # noqa: F401,F403
 
 # ============================================================
 # Spacecraft download helpers
 # ============================================================
-sys.path.insert(1, os.path.join(os.getcwd(), "functions/downloading_helpers"))
-from PSP import LoadTimeSeriesPSP, download_ephemeris_PSP  # noqa: F401
-from SOLO import LoadTimeSeriesSOLO
-from WIND import LoadTimeSeriesWIND
-from HELIOS_A import LoadTimeSeriesHELIOS_A
-from HELIOS_B import LoadTimeSeriesHELIOS_B
-from Ulysses import LoadTimeSeriesUlysses
-from ACE import LoadTimeSeriesACE
+from functions.downloading_helpers.PSP import LoadTimeSeriesPSP, download_ephemeris_PSP  # noqa: F401
+from functions.downloading_helpers.SOLO import LoadTimeSeriesSOLO
+from functions.downloading_helpers.WIND import LoadTimeSeriesWIND
+from functions.downloading_helpers.HELIOS_A import LoadTimeSeriesHELIOS_A
+from functions.downloading_helpers.HELIOS_B import LoadTimeSeriesHELIOS_B
+from functions.downloading_helpers.Ulysses import LoadTimeSeriesUlysses
+from functions.downloading_helpers.ACE import LoadTimeSeriesACE
 
 # ============================================================
 # Logging
