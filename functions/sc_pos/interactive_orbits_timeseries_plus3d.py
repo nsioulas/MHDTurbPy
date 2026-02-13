@@ -14,6 +14,7 @@ from plotly.subplots import make_subplots
 import astropy.units as u
 import astropy.constants as const
 from astropy.coordinates import SkyCoord, CartesianRepresentation, get_sun
+from astropy.time import Time
 
 from sunpy.coordinates import get_horizons_coord, get_body_heliographic_stonyhurst
 from sunpy.coordinates.frames import (
@@ -34,6 +35,15 @@ from horizons_sun_lonlat import (
 
 
 AU_IN_RE = (1 * u.AU).to_value(u.Rearth)
+
+
+def _coerce_obstime_to_time(obstime) -> Time:
+    """Normalize supported obstime inputs to ``astropy.time.Time``."""
+    if isinstance(obstime, Time):
+        return obstime
+    if isinstance(obstime, pd.Timestamp):
+        obstime = obstime.to_pydatetime()
+    return Time(obstime)
 
 
 def _canonicalize_target_name(target: str) -> str:
@@ -169,6 +179,8 @@ def _plane_patch_in_target_frame(
     rep = CartesianRepresentation(X.ravel() * u.AU, Y.ravel() * u.AU, Z.ravel() * u.AU)
     tf = target_frame.upper()
 
+    obstime = _coerce_obstime_to_time(obstime)
+
     if tf == "GSE":
         ct = SkyCoord(rep, frame=GeocentricSolarEcliptic(obstime=obstime))
     else:
@@ -227,7 +239,8 @@ def _carrington_and_footpoints(
 
 def _sunward_sign_in_gse(obstime) -> float:
     """Return +1/-1 depending on whether Sun is at +X/-X in SunPy GSE."""
-    sun_gse = get_sun(obstime).transform_to(GeocentricSolarEcliptic(obstime=obstime))
+    obstime_astropy = _coerce_obstime_to_time(obstime)
+    sun_gse = get_sun(obstime_astropy).transform_to(GeocentricSolarEcliptic(obstime=obstime_astropy))
     x = float(sun_gse.cartesian.x.to_value(u.AU))
     return 1.0 if x >= 0.0 else -1.0
 
@@ -378,7 +391,7 @@ def build_3d_figure(
 
     # --- ecliptic plane patch (Sun-centered for heliocentric frames; Earth-centered for GSE) ---
     earth_df = _get_xyz_timeseries("399", start, stop, step, frame=frame3d)
-    obstime_ref = earth_df.index[len(earth_df) // 2].to_pydatetime()
+    obstime_ref = _coerce_obstime_to_time(earth_df.index[len(earth_df) // 2])
 
     if verbose:
         print("[3D] Adding ecliptic plane patch in target frame.")
