@@ -2,6 +2,7 @@ from joblib import Parallel, delayed
 import numpy as np
 import pandas as pd
 import sys
+import importlib.util
 import scipy.io
 import os
 import sys
@@ -9,6 +10,16 @@ from pathlib import Path
 
 _MODULE_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _MODULE_DIR.parents[1]
+
+_PATH_SETUP = _REPO_ROOT / "functions" / "path_setup.py"
+_spec = importlib.util.spec_from_file_location("mhdturbpy_path_setup", _PATH_SETUP)
+if _spec is None or _spec.loader is None:
+    raise RuntimeError(f"Could not load path setup from {_PATH_SETUP}")
+_path_setup = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_path_setup)
+ensure_project_paths = _path_setup.ensure_project_paths
+
+ensure_project_paths(start=Path(__file__).resolve(), include_downloading_helpers=True, include_anisotropy_toolbox=True)
 import pickle
 import gc
 from glob import glob
@@ -23,7 +34,6 @@ from scipy.interpolate import interp1d
 
 
 # Make sure to use the local spedas
-sys.path.insert(0, str(_REPO_ROOT / 'pyspedas'))
 import pyspedas
 from pyspedas.utilities import time_string
 from pytplot import get_data
@@ -31,7 +41,6 @@ from pytplot import get_data
 
 """ Import manual functions """
 
-sys.path.insert(1, str(_REPO_ROOT / 'functions'))
 import calc_diagnostics as calc
 import TurbPy as turb
 import general_functions as func
@@ -39,7 +48,6 @@ import Figures as figs
 from   SEA import SEA
 import three_D_funcs as threeD
 
-sys.path.insert(1, str(_REPO_ROOT / 'functions' / 'downloading_helpers'))
 from PSP import  download_ephemeris_PSP
 
 

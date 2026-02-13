@@ -12,6 +12,11 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib.gridspec import GridSpec
 from datetime import datetime
 from pathlib import Path
+
+try:
+    from .path_setup import ensure_project_paths
+except ImportError:
+    from path_setup import ensure_project_paths
 import pickle
 from scipy import stats
 import numba
@@ -27,7 +32,8 @@ import sys
 _FUNCTIONS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _FUNCTIONS_DIR.parent
 
-sys.path.insert(1, str(_FUNCTIONS_DIR))
+ensure_project_paths(start=Path(__file__).resolve(), include_downloading_helpers=True)
+
 import calc_diagnostics as calc
 import TurbPy as turb
 import general_functions as func

@@ -25,8 +25,15 @@ import numpy as np
 import sys
 from pathlib import Path
 
+try:
+    from .path_setup import ensure_project_paths
+except ImportError:
+    from path_setup import ensure_project_paths
+
 _FUNCTIONS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _FUNCTIONS_DIR.parent
+
+ensure_project_paths(start=Path(__file__).resolve(), include_downloading_helpers=True)
 
 
 # Scipy
@@ -64,7 +71,6 @@ from distutils.log import warn
 from general_functions import *
 from three_D_funcs import *
 
-sys.path.insert(1, str(_FUNCTIONS_DIR / 'modwt' / 'wmtsa'))
 import  modwt
 
 import astropy.units as u
@@ -6010,7 +6016,6 @@ def calculate_angle(which_perihelion,
                     use_span   =True):
     # Function to calculate the angle
     
-    sys.path.insert(1, str(_FUNCTIONS_DIR / 'downloading_helpers'))
     import   PSP #$import  LoadTimeSeriesPSP
     au_to_km       = 1.496e8  # Conversion factor
     
@@ -6019,8 +6024,7 @@ def calculate_angle(which_perihelion,
 
 
     # Make sure to use the local spedas
-    sys.path.insert(0, str(_REPO_ROOT / 'pyspedas'))
-
+    
 
     
     print(f'Loading data for E{which_perihelion}')
