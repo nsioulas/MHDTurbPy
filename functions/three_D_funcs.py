@@ -1,10 +1,19 @@
+
+_FUNCTIONS_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _FUNCTIONS_DIR.parent
+
 import numpy as np
 import pandas as pd
 from numba import jit,njit, prange
 import os
 import sys
+from pathlib import Path
 from joblib import Parallel, delayed
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+
+_FUNCTIONS_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _FUNCTIONS_DIR.parent
+
+sys.path.insert(0, str(_FUNCTIONS_DIR))
 import general_functions as func
 import TurbPy as turb
 import traceback

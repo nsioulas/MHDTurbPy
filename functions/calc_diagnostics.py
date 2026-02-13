@@ -6,13 +6,17 @@ import time
 from numba import jit, njit, prange, objmode
 import os
 from pathlib import Path
+
+_FUNCTIONS_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _FUNCTIONS_DIR.parent
+
 from glob import glob
 from gc import collect
 import traceback
 import datetime
 
 # Import TurbPy
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+sys.path.insert(0, str(_FUNCTIONS_DIR))
 import TurbPy as turb
 import general_functions as func
 import plasma_params as plasma

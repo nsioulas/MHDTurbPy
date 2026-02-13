@@ -15,6 +15,10 @@ import os
 import sys
 import traceback
 from pathlib import Path
+
+_FUNCTIONS_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _FUNCTIONS_DIR.parent
+
 from datetime import datetime
 
 import numpy as np
@@ -28,7 +32,7 @@ from tqdm import tqdm
 
 import ssqueezepy
 
-sys.path.insert(1, os.path.join(os.getcwd(), "functions"))
+sys.path.insert(0, str(_FUNCTIONS_DIR))
 import TurbPy as turb
 import general_functions as func
 
@@ -2238,7 +2242,7 @@ def run_coh_pipeline(
 
 # import ssqueezepy
 
-# sys.path.insert(1, os.path.join(os.getcwd(), "functions"))
+# sys.path.insert(0, str(_FUNCTIONS_DIR))
 # import TurbPy as turb
 # import general_functions as func
 

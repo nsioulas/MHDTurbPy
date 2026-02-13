@@ -31,6 +31,11 @@ import sys
 import logging
 import traceback
 from pathlib import Path
+
+_HELPERS_DIR = Path(__file__).resolve().parent
+_FUNCTIONS_DIR = _HELPERS_DIR.parent
+_REPO_ROOT = _FUNCTIONS_DIR.parent
+
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -40,18 +45,18 @@ from scipy import constants
 # ------------------------------------------------------------
 # Local SPEDAS
 # ------------------------------------------------------------
-sys.path.insert(0, os.path.join(os.getcwd(), "pyspedas"))
+sys.path.insert(0, str(_REPO_ROOT / "pyspedas"))
 import pyspedas  # type: ignore
 from pytplot import get_data  # type: ignore
 
 # ------------------------------------------------------------
 # Your repo utilities (must exist)
 # ------------------------------------------------------------
-sys.path.insert(1, os.path.join(os.getcwd(), "functions"))
+sys.path.insert(0, str(_FUNCTIONS_DIR))
 import general_functions as func  # type: ignore
 import TurbPy as turb  # type: ignore
 
-sys.path.insert(1, os.path.join(os.getcwd(), "functions/downloading_helpers"))
+sys.path.insert(0, str(_HELPERS_DIR))
 
 # ------------------------------------------------------------
 # Shared utilities (single authority; already in your repo)
