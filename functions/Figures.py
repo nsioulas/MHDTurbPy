@@ -2,6 +2,10 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 from pathlib import Path
+
+_FUNCTIONS_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _FUNCTIONS_DIR.parent
+
 import os
 
 
@@ -21,7 +25,9 @@ from matplotlib.colors import LinearSegmentedColormap
 plt.rcParams['text.usetex'] = True
 
 import sys
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+sys.path.insert(0, str(_REPO_ROOT))
+sys.path.insert(0, str(_REPO_ROOT / 'pyspedas'))
+sys.path.insert(0, str(_FUNCTIONS_DIR))
 
 #from  CUSIA.Colors.CUSIA_Colors import mycmap
 
@@ -863,7 +869,7 @@ from matplotlib.colors import LinearSegmentedColormap
 plt.rcParams['text.usetex'] = True
 
 import sys
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+sys.path.insert(0, str(_FUNCTIONS_DIR))
 
 #from  CUSIA.Colors.CUSIA_Colors import mycmap
 

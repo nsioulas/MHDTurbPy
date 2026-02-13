@@ -12,6 +12,10 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib.gridspec import GridSpec
 from datetime import datetime
 from pathlib import Path
+
+_FUNCTIONS_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _FUNCTIONS_DIR.parent
+
 import pickle
 from scipy import stats
 import numba
@@ -24,7 +28,9 @@ from statistics import mode
 #import orderedstructs
 import sys
 
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+sys.path.insert(0, str(_REPO_ROOT))
+sys.path.insert(0, str(_REPO_ROOT / 'pyspedas'))
+sys.path.insert(0, str(_FUNCTIONS_DIR))
 import calc_diagnostics as calc
 import TurbPy as turb
 import general_functions as func

@@ -36,6 +36,10 @@ from scipy.fft import fft, fftfreq
 # Locate files
 import os
 from pathlib import Path
+
+_FUNCTIONS_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _FUNCTIONS_DIR.parent
+
 from glob import glob
 
 # Wavelets
@@ -60,7 +64,10 @@ from distutils.log import warn
 from general_functions import *
 from three_D_funcs import *
 
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions/modwt/wmtsa'))
+sys.path.insert(0, str(_REPO_ROOT))
+sys.path.insert(0, str(_REPO_ROOT / 'pyspedas'))
+sys.path.insert(0, str(_FUNCTIONS_DIR))
+sys.path.insert(0, str(_FUNCTIONS_DIR / 'modwt' / 'wmtsa'))
 import  modwt
 
 import astropy.units as u
@@ -6006,7 +6013,7 @@ def calculate_angle(which_perihelion,
                     use_span   =True):
     # Function to calculate the angle
     
-    sys.path.insert(1, os.path.join(os.getcwd(), 'functions/downloading_helpers'))
+    sys.path.insert(0, str(_FUNCTIONS_DIR / 'downloading_helpers'))
     import   PSP #$import  LoadTimeSeriesPSP
     au_to_km       = 1.496e8  # Conversion factor
     
@@ -6015,7 +6022,7 @@ def calculate_angle(which_perihelion,
 
 
     # Make sure to use the local spedas
-    sys.path.insert(0, os.path.join(os.getcwd(), 'pyspedas'))
+    sys.path.insert(0, str(_REPO_ROOT / 'pyspedas'))
 
 
     

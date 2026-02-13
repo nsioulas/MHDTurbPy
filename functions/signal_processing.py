@@ -6,6 +6,7 @@ of Octave m-file source code.
 import os
 import sys
 import fractions
+from pathlib import Path
 import numpy
 import numpy as np
 import pandas as pd
@@ -17,7 +18,12 @@ from scipy.interpolate import interp1d
 
 
 """ Import manual functions """
-sys.path.insert(1, os.path.join(os.getcwd(), 'functions'))
+_FUNCTIONS_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _FUNCTIONS_DIR.parent
+
+sys.path.insert(0, str(_REPO_ROOT))
+sys.path.insert(0, str(_REPO_ROOT / 'pyspedas'))
+sys.path.insert(0, str(_FUNCTIONS_DIR))
 import general_functions as func
 
 
