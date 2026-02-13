@@ -781,21 +781,23 @@ def build_3d_figure(
 
 
 def _pairwise_metrics(xyz: np.ndarray, flow_hat: np.ndarray):
-    """Return pairwise perpendicular/parallel separations for a single timestamp."""
+    """Return pairwise perpendicular and signed/absolute parallel separations."""
     n_sc = xyz.shape[0]
     if n_sc < 2:
-        return np.array([]), np.array([])
+        return np.array([]), np.array([]), np.array([])
 
     perp_vals = []
-    par_vals = []
+    par_abs_vals = []
+    par_signed_vals = []
     for i in range(n_sc):
         for j in range(i + 1, n_sc):
             dr = xyz[i] - xyz[j]
             par = np.dot(dr, flow_hat)
             perp = np.linalg.norm(dr - par * flow_hat)
             perp_vals.append(perp)
-            par_vals.append(np.abs(par))
-    return np.asarray(perp_vals), np.asarray(par_vals)
+            par_abs_vals.append(np.abs(par))
+            par_signed_vals.append(par)
+    return np.asarray(perp_vals), np.asarray(par_abs_vals), np.asarray(par_signed_vals)
 
 
 def _pairwise_stream_probability(
@@ -810,6 +812,28 @@ def _pairwise_stream_probability(
     exponent = -((perp_au / l_perp_au) ** 2) - ((tau_h / tau0_h) ** 2)
     p_pair = np.exp(exponent)
     return np.clip(p_pair, 1e-12, 1.0), tau_h
+
+
+def _all_sc_same_stream_probability(
+    perp_au: np.ndarray,
+    par_au: np.ndarray,
+    vsw_kms: float,
+    l_perp_au: float,
+    tau0_h: float,
+) -> tuple[float, float]:
+    """
+    Conservative first-principles probability that *all* spacecraft sample one parcel.
+
+    Necessary condition: every pair must remain inside decorrelation scales. We therefore
+    use the worst pair in cross-flow and advection lag:
+
+      p_all = exp(-(max(d_perp)/L_perp)^2 - (max(tau)/tau0)^2)
+    """
+    tau_h = ((par_au * u.AU) / (vsw_kms * u.km / u.s)).to_value(u.hour)
+    max_perp = float(np.max(perp_au))
+    max_tau = float(np.max(tau_h))
+    exponent = -((max_perp / l_perp_au) ** 2) - ((max_tau / tau0_h) ** 2)
+    return float(np.clip(np.exp(exponent), 1e-12, 1.0)), max_tau
 
 
 def _flow_basis(flow_hat: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -840,6 +864,8 @@ def find_best_stream_aligned_intervals(
     along_weight: float = 0.20,
     perp_scale: float = 0.35,
     lag_tolerance: float = 0.5,
+    vsw_rel_unc: float = 0.15,
+    decorrelation_rel_unc: float = 0.25,
     min_coverage: float = 0.75,
     verbose: bool = True,
 ):
@@ -847,19 +873,16 @@ def find_best_stream_aligned_intervals(
     Identify windows where spacecraft are least likely to sample the same plasma stream.
 
     First-principles model:
-      p_pair = exp(-(d_perp/L_perp)^2 - (tau/tau0)^2),   tau = |d_parallel|/Vsw
+      p_pair = exp(-(d_perp/L_perp)^2 - (tau/tau0)^2), tau = |d_parallel|/Vsw
 
-    At each cadence, convert pairwise probabilities to a conservative all-spacecraft
-    same-stream likelihood:
-      p_all_upper = min(p_pair)         # strict upper bound
-      p_all_indep = product(p_pair)     # independence approximation
-      p_all_ref   = sqrt(p_all_upper * p_all_indep)
+    For N spacecraft to sample one stream, every pair must satisfy the same condition.
+    We use a conservative all-spacecraft necessary-condition likelihood via the worst pair:
+      p_all = exp(-(max_pair(d_perp)/L_perp)^2 - (max_pair(tau)/tau0)^2)
 
     Window score minimized:
-      J = median(p_all_ref + along_weight * IQR_pair(p_pair))
+      J = P84_window(p_all) + along_weight * median_window(IQR_pair(p_pair))
 
-    Lower J => lower chance all selected spacecraft observe the same stream,
-    while the IQR term penalizes unstable windows.
+    Lower J => lower and more stable all-spacecraft same-stream likelihood.
     """
     if frame.upper() != "GSE":
         raise ValueError("This interval-selection metric is implemented for GSE only.")
@@ -898,13 +921,22 @@ def find_best_stream_aligned_intervals(
     rows = []
     for ts in time_index:
         xyz = np.array([[tracks[t].loc[ts, "x_au"], tracks[t].loc[ts, "y_au"], tracks[t].loc[ts, "z_au"]] for t in targets])
-        perp, par = _pairwise_metrics(xyz, flow_hat)
+        perp, par, _ = _pairwise_metrics(xyz, flow_hat)
         if len(perp) == 0:
             continue
         p_pair, tau_h = _pairwise_stream_probability(perp, par, vsw_kms=vsw_kms, l_perp_au=l_perp_au, tau0_h=tau0_h)
-        p_all_upper = float(np.min(p_pair))
-        p_all_indep = float(np.prod(p_pair))
-        p_all_ref = float(np.sqrt(p_all_upper * p_all_indep))
+        p_all_ref, max_tau_h = _all_sc_same_stream_probability(perp, par, vsw_kms=vsw_kms, l_perp_au=l_perp_au, tau0_h=tau0_h)
+
+        lo_vsw = max(vsw_kms * (1.0 - vsw_rel_unc), 1e-3)
+        hi_vsw = vsw_kms * (1.0 + vsw_rel_unc)
+        lo_lperp = max(l_perp_au * (1.0 - decorrelation_rel_unc), 1e-6)
+        hi_lperp = l_perp_au * (1.0 + decorrelation_rel_unc)
+        lo_tau0 = max(tau0_h * (1.0 - decorrelation_rel_unc), 1e-6)
+        hi_tau0 = tau0_h * (1.0 + decorrelation_rel_unc)
+
+        p_all_lo, _ = _all_sc_same_stream_probability(perp, par, vsw_kms=lo_vsw, l_perp_au=lo_lperp, tau0_h=lo_tau0)
+        p_all_hi, _ = _all_sc_same_stream_probability(perp, par, vsw_kms=hi_vsw, l_perp_au=hi_lperp, tau0_h=hi_tau0)
+
         pair_iqr = float(np.percentile(p_pair, 75) - np.percentile(p_pair, 25))
         rows.append(
             {
@@ -913,13 +945,14 @@ def find_best_stream_aligned_intervals(
                 "median_par_au": np.median(par),
                 "median_tau_h": np.median(tau_h),
                 "median_pair_probability": np.median(p_pair),
-                "all_pair_p_upper": p_all_upper,
-                "all_pair_p_indep": p_all_indep,
                 "all_pair_p_ref": p_all_ref,
+                "all_pair_p_ref_p16": min(p_all_lo, p_all_hi),
+                "all_pair_p_ref_p84": max(p_all_lo, p_all_hi),
                 "pairwise_prob_iqr": pair_iqr,
                 "p75_pair_probability": np.percentile(p_pair, 75),
                 "max_perp_au": np.max(perp),
                 "max_par_au": np.max(par),
+                "max_tau_h": max_tau_h,
             }
         )
 
@@ -943,11 +976,13 @@ def find_best_stream_aligned_intervals(
         median_perp = g["median_perp_au"].median()
         median_par = g["median_par_au"].median()
         p_ref = g["all_pair_p_ref"].to_numpy()
-        p_upper = g["all_pair_p_upper"].to_numpy()
+        p_ref_p16 = g["all_pair_p_ref_p16"].to_numpy()
+        p_ref_p84 = g["all_pair_p_ref_p84"].to_numpy()
         same_stream_prob = np.median(p_ref)
-        j_samples = p_ref + along_weight * g["pairwise_prob_iqr"].to_numpy()
-        metric = float(np.median(j_samples))
-        j_p16, j_p84 = np.percentile(j_samples, [16, 84])
+        pair_iqr_med = float(np.median(g["pairwise_prob_iqr"].to_numpy()))
+        metric = float(np.percentile(p_ref, 84) + along_weight * pair_iqr_med)
+        j_p16 = float(np.percentile(p_ref_p16, 84) + along_weight * pair_iqr_med)
+        j_p84 = float(np.percentile(p_ref_p84, 84) + along_weight * pair_iqr_med)
         dperp_p16, dperp_p84 = np.percentile(g["median_perp_au"], [16, 84])
         dpar_p16, dpar_p84 = np.percentile(g["median_par_au"], [16, 84])
         tau_p16, tau_p84 = np.percentile(g["median_tau_h"], [16, 84])
@@ -965,11 +1000,11 @@ def find_best_stream_aligned_intervals(
                 "same_flow_score_p16": 1.0 - np.percentile(p_ref, 84),
                 "same_flow_score_p84": 1.0 - np.percentile(p_ref, 16),
                 "same_stream_prob": same_stream_prob,
-                "same_stream_prob_p16": np.percentile(p_ref, 16),
-                "same_stream_prob_p84": np.percentile(p_ref, 84),
-                "same_stream_prob_upper": np.median(p_upper),
+                "same_stream_prob_p16": np.percentile(p_ref_p16, 16),
+                "same_stream_prob_p84": np.percentile(p_ref_p84, 84),
                 "max_perp_au": g["max_perp_au"].median(),
                 "max_par_au": g["max_par_au"].median(),
+                "max_tau_h": g["max_tau_h"].median(),
                 "median_perp_p16_au": dperp_p16,
                 "median_perp_p84_au": dperp_p84,
                 "median_par_p16_au": dpar_p16,
@@ -980,6 +1015,8 @@ def find_best_stream_aligned_intervals(
                 "perp_length_au": l_perp_au,
                 "tau0_h": tau0_h,
                 "vsw_kms": vsw_kms,
+                "vsw_rel_unc": vsw_rel_unc,
+                "decorrelation_rel_unc": decorrelation_rel_unc,
                 "alignment_metric": metric,
                 "alignment_metric_p16": j_p16,
                 "alignment_metric_p84": j_p84,
@@ -997,20 +1034,47 @@ def find_best_stream_aligned_intervals(
         print("  1) Assumption: Taylor frozen-in flow with bulk speed Vsw.")
         print("  2) Pair physics: two spacecraft sample the same parcel with probability")
         print("       p_pair = exp(-(d_perp/L_perp)^2 - (tau/tau0)^2), tau=|d_parallel|/Vsw.")
-        print("  3) All-spacecraft logic (conservative):")
-        print("       p_all_upper = min(p_pair), p_all_indep = product(p_pair),")
-        print("       p_all_ref = sqrt(p_all_upper * p_all_indep).")
+        print("  3) All-spacecraft logic (first-principles necessary condition):")
+        print("       p_all = exp(-(max_pair(d_perp)/L_perp)^2 - (max_pair(tau)/tau0)^2).")
         print("  4) Optimization target (lower is better):")
-        print(f"       J = median(p_all_ref + {along_weight:g}*IQR_pair(p_pair)).")
+        print(f"       J = P84_window(p_all) + {along_weight:g}*median_window(IQR_pair(p_pair)).")
         print("  5) Interpretation: minimizing J minimizes the chance all selected spacecraft")
         print("     observe the same stream while preferring temporally stable windows.")
         print(f"  6) Scales: L_adv={l_adv_au:.4f} AU ({l_adv_au * AU_IN_RE:.1f} Re),")
         print(f"     L_perp={l_perp_au:.4f} AU ({l_perp_au * AU_IN_RE:.1f} Re), tau0={tau0_h:.2f} h.")
-        print("  7) Hardcoded assumptions currently in use:")
-        print("       flow_dir_gse, fixed Vsw, perp_scale, lag_tolerance are user-set constants.")
+        print("  7) Uncertainty envelope for default error bars:")
+        print(f"       Vsw ±{100*vsw_rel_unc:.0f}%, L_perp and tau0 ±{100*decorrelation_rel_unc:.0f}%.")
         print("  8) To improve with real data: use measured Vsw(t), local Parker-spiral direction,")
         print("       and turbulence anisotropy to make L_perp and tau0 time dependent.")
         print("  9) All reported central values include default 16-84% error bars.")
+
+        if len(best) > 0:
+            ref = best.iloc[0]
+            tmask = (metric_df.index >= ref["window_start"]) & (metric_df.index < ref["window_end"])
+            sample_times = metric_df.index[tmask]
+            pair_stats = {}
+            for ts in sample_times:
+                xyz = np.array([[tracks[t].loc[ts, "x_au"], tracks[t].loc[ts, "y_au"], tracks[t].loc[ts, "z_au"]] for t in targets])
+                for i in range(len(targets)):
+                    for j in range(i + 1, len(targets)):
+                        dr = xyz[i] - xyz[j]
+                        dpar = float(np.dot(dr, flow_hat))
+                        dperp = float(np.linalg.norm(dr - dpar * flow_hat))
+                        key = f"{targets[i]}-{targets[j]}"
+                        pair_stats.setdefault(key, {"dpar": [], "dperp": []})
+                        pair_stats[key]["dpar"].append(np.abs(dpar))
+                        pair_stats[key]["dperp"].append(dperp)
+
+            print("[alignment] Best-window pairwise separations (median [P16, P84]):")
+            for pair_name in sorted(pair_stats):
+                dpar_arr = np.asarray(pair_stats[pair_name]["dpar"]) * AU_IN_RE
+                dperp_arr = np.asarray(pair_stats[pair_name]["dperp"]) * AU_IN_RE
+                dpar_q = np.percentile(dpar_arr, [16, 50, 84])
+                dperp_q = np.percentile(dperp_arr, [16, 50, 84])
+                print(
+                    f"  - {pair_name}: |d_parallel|={dpar_q[1]:.1f} [{dpar_q[0]:.1f}, {dpar_q[2]:.1f}] Re, "
+                    f"d_perp={dperp_q[1]:.1f} [{dperp_q[0]:.1f}, {dperp_q[2]:.1f}] Re"
+                )
 
     return {
         "scores": scores,
@@ -1135,6 +1199,12 @@ def plot_stream_alignment_interval(
     l_perp_au = summary_row.get("perp_length_au", np.nan) if summary_row is not None else np.nan
     tau0_h = summary_row.get("tau0_h", np.nan) if summary_row is not None else np.nan
     inferred_vsw_kms = summary_row.get("vsw_kms", np.nan) if summary_row is not None else np.nan
+    if not np.isfinite(inferred_vsw_kms):
+        inferred_vsw_kms = 400.0
+    if not np.isfinite(tau0_h):
+        tau0_h = 0.5 * ((pd.Timestamp(window_end) - pd.Timestamp(window_start)).total_seconds() / 3600.0)
+    if not np.isfinite(l_perp_au):
+        l_perp_au = 0.35 * ((inferred_vsw_kms * u.km / u.s) * (tau0_h * u.hour)).to_value(u.AU)
     for ts in sorted(set().union(*[set(tracks[t].loc[(tracks[t].index >= window_start) & (tracks[t].index < window_end)].index) for t in targets])):
         points = []
         for t in targets:
@@ -1144,8 +1214,8 @@ def plot_stream_alignment_interval(
         if len(points) < 2:
             continue
         xyz_t = np.vstack(points)
-        perp_t, par_t = _pairwise_metrics(xyz_t, flow_hat)
-        pair_par.extend(par_t * AU_IN_RE)
+        perp_t, par_t, par_signed_t = _pairwise_metrics(xyz_t, flow_hat)
+        pair_par.extend(par_signed_t * AU_IN_RE)
         pair_perp.extend(perp_t * AU_IN_RE)
         if np.isfinite(l_perp_au) and np.isfinite(tau0_h) and np.isfinite(inferred_vsw_kms):
             p_pair_t, _ = _pairwise_stream_probability(perp_t, par_t, vsw_kms=inferred_vsw_kms, l_perp_au=l_perp_au, tau0_h=tau0_h)
@@ -1160,7 +1230,7 @@ def plot_stream_alignment_interval(
         y_p16, y_p84 = np.percentile(pair_perp, [16, 84])
 
         marker_kwargs = dict(size=6, color="rgba(80,80,80,0.35)")
-        hovertemplate = "|d∥|=%{x:.2f} Re<br>d⊥=%{y:.2f} Re<extra></extra>"
+        hovertemplate = "d∥=%{x:.2f} Re<br>d⊥=%{y:.2f} Re<extra></extra>"
         if len(pair_prob) == len(pair_par) and len(pair_prob) > 0:
             marker_kwargs = dict(
                 size=7,
@@ -1171,7 +1241,7 @@ def plot_stream_alignment_interval(
                 colorbar=dict(title="Distinct-stream probability", x=0.98, y=0.5, len=0.8),
                 line=dict(width=0.3, color="rgba(0,0,0,0.35)"),
             )
-            hovertemplate = "|d∥|=%{x:.2f} Re<br>d⊥=%{y:.2f} Re<br>P(distinct)=%{marker.color:.2f}<extra></extra>"
+            hovertemplate = "d∥=%{x:.2f} Re<br>d⊥=%{y:.2f} Re<br>P(distinct)=%{marker.color:.2f}<extra></extra>"
         fig.add_trace(
             go.Scatter(
                 x=pair_par,
@@ -1221,12 +1291,22 @@ def plot_stream_alignment_interval(
             col=2,
         )
 
-    flow_span_re = max(np.linalg.norm(xyz_all_re - center_re, axis=1).max(), 10.0)
+    if len(pair_par) > 0:
+        x_lim = 1.10 * np.max(np.abs(pair_par))
+        y_lim = 1.10 * np.max(pair_perp)
+        x_lim = max(x_lim, 10.0)
+        y_lim = max(y_lim, 10.0)
+    else:
+        x_lim, y_lim = 30.0, 30.0
+
+    fig.update_xaxes(range=[-x_lim, x_lim], row=1, col=2)
+    fig.update_yaxes(range=[0, y_lim], row=1, col=2)
+
     fig.add_annotation(
-        x=0.45 * flow_span_re,
-        y=0,
-        ax=-0.45 * flow_span_re,
-        ay=0,
+        x=0.85 * x_lim,
+        y=0.08 * y_lim,
+        ax=0.35 * x_lim,
+        ay=0.08 * y_lim,
         xref="x2",
         yref="y2",
         axref="x2",
@@ -1235,7 +1315,7 @@ def plot_stream_alignment_interval(
         arrowsize=1.3,
         arrowwidth=2.0,
         arrowcolor="black",
-        text="Solar-wind flow",
+        text="+flow",
         showarrow=True,
         font=dict(size=11),
     )
@@ -1253,14 +1333,14 @@ def plot_stream_alignment_interval(
             f"median lag={summary_row['median_tau_h']:.2f} h</sup>"
         )
 
-    fig.update_xaxes(title_text="parallel offset to flow [Re]", zeroline=True, row=1, col=2)
-    fig.update_yaxes(title_text="cross-flow offset [Re]", zeroline=True, row=1, col=2)
+    fig.update_xaxes(title_text="signed parallel separation d∥ [Re]", zeroline=True, row=1, col=2)
+    fig.update_yaxes(title_text="cross-flow separation d⊥ [Re]", zeroline=True, row=1, col=2)
     fig.add_annotation(
         x=0.02,
         y=0.02,
         xref="paper",
         yref="paper",
-        text="Defaults currently assume fixed flow direction and fixed Vsw",
+        text="Assumptions: fixed flow direction and Vsw; default uncertainty bands are reported as 16-84%",
         showarrow=False,
         font=dict(size=11, color="rgba(60,60,60,0.9)"),
         bgcolor="rgba(255,255,255,0.8)",
