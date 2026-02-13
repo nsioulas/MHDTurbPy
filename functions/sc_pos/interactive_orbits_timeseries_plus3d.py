@@ -635,7 +635,7 @@ def build_3d_figure(
         else:
             robust_extent = (plane_span_au * pos_scale) * 0.5
 
-        lim = max(0.1, 1.25 * robust_extent)
+        lim = max(0.1, 1.5 * robust_extent)
         axis_len = 0.92 * lim
 
         # Explicit GSE axis guides (black, subtle)
@@ -660,23 +660,23 @@ def build_3d_figure(
                 col=1,
             )
 
-        # Solar wind direction cue in GSE: approximately toward -X at Earth
-        sw_start = 0.92 * lim
-        sw_end = 0.15 * lim
-        fig.add_trace(
-            go.Scatter3d(
-                x=[sw_start, sw_end], y=[0.0, 0.0], z=[0.0, 0.0],
-                mode="lines+text",
-                line=dict(width=5, color="#ff7f0e", dash="dash"), opacity=0.6,
-                text=["", "Solar wind → Earth"],
-                textposition="top center",
-                name="Solar wind direction",
-                showlegend=False,
-                hoverinfo="skip",
-            ),
-            row=1,
-            col=1,
-        )
+        # # Solar wind direction cue in GSE: approximately toward -X at Earth
+        # sw_start = 0.92 * lim
+        # sw_end = 0.15 * lim
+        # fig.add_trace(
+        #     go.Scatter3d(
+        #         x=[sw_start, sw_end], y=[0.0, 0.0], z=[0.0, 0.0],
+        #         mode="lines+text",
+        #         line=dict(width=5, color="#ff7f0e", dash="dash"), opacity=0.6,
+        #         text=["", "Solar wind → Earth"],
+        #         textposition="top center",
+        #         name="Solar wind direction",
+        #         showlegend=False,
+        #         hoverinfo="skip",
+        #     ),
+        #     row=1,
+        #     col=1,
+        # )
 
         # Indicate Sunward side on +X boundary without forcing zoom-out with full Sun trajectory
         fig.add_trace(
