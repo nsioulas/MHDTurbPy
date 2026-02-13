@@ -2,7 +2,8 @@ from matplotlib import pyplot as plt
 from matplotlib.backend_bases import MouseButton
 from matplotlib.gridspec import GridSpec
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-
+import importlib.util
+import logging
 
 import traceback
 import numpy as np
