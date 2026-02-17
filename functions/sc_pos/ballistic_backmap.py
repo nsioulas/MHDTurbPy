@@ -113,9 +113,15 @@ def _interp_to_index(df: pd.DataFrame, idx: pd.DatetimeIndex) -> pd.DataFrame:
 
 def _size_from_metric(x: pd.Series, smin: float = 5.0, smax: float = 200.0) -> pd.Series:
     valid = x.replace([np.inf, -np.inf], np.nan)
-    lo, hi = np.nanpercentile(valid, [5, 95]) if np.isfinite(valid).any() else (0.0, 1.0)
+
+    # If there are no finite values at all, fall back to a constant midpoint size
+    if not np.isfinite(valid).any():
+        return pd.Series(np.full(len(x), (smin + smax) / 2.0), index=x.index)
+
+    lo, hi = np.nanpercentile(valid, [5, 95])
     if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
         return pd.Series(np.full(len(x), (smin + smax) / 2.0), index=x.index)
+
     return smin + (smax - smin) * np.clip((valid - lo) / (hi - lo), 0, 1)
 
 
