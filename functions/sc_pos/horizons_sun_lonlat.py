@@ -8,6 +8,7 @@ from typing import List, Optional, Dict
 
 import pandas as pd
 import requests
+import numpy as np
 
 
 @dataclass(frozen=True)
@@ -212,6 +213,36 @@ def get_lonlat_xyz_timeseries(
 
     return TrajResult(target=str(canonical_target), spkid=str(spkid), df=out)
 
+
+
+def ballistic_source_longitude(
+    lon_carr_deg,
+    r_au,
+    vsw_kms,
+    r_ss_rsun: float = 2.5,
+    omega_deg_per_day: float = 14.1844,
+    vsw_fallback_kms: float = 400.0,
+):
+    """Vectorized ballistic mapping from spacecraft Carrington longitude to source-surface longitude.
+
+    Parameters are array-like and interpreted in degrees/AU/km/s.
+    Returns `(phi_src_deg_wrapped, tau_days, fallback_mask)`.
+    """
+    lon = pd.Series(lon_carr_deg, copy=False, dtype=float)
+    r = pd.Series(r_au, copy=False, dtype=float)
+    vsw = pd.Series(vsw_kms, copy=False, dtype=float)
+
+    fallback = (~np.isfinite(vsw)) | (vsw <= 0)
+    vsw_eff = vsw.copy()
+    vsw_eff[fallback] = float(vsw_fallback_kms)
+
+    rsun_au = 0.00465047
+    r_ss_au = float(r_ss_rsun) * rsun_au
+    km_per_au = 1.495978707e8
+    tau_days = (r - r_ss_au) * km_per_au / (vsw_eff * 86400.0)
+
+    phi_src = np.mod(lon - float(omega_deg_per_day) * tau_days, 360.0)
+    return phi_src, tau_days, fallback
 
 
 def main(argv: Optional[List[str]] = None) -> int:
