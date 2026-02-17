@@ -3,6 +3,8 @@ import numpy as np
 import plotly.graph_objects as go
 import astropy.constants as const
 
+from .horizons_sun_lonlat import ballistic_source_longitude
+
 
 def delta_long(r, rss, vsw, omega_deg_per_day=14.1844):
     sun_rot = (omega_deg_per_day * u.deg) / (24 * 3600 * u.s)
@@ -15,6 +17,22 @@ def ballistic_map(carr_coord, rss, vsw, omega_deg_per_day=14.1844):
     ss_lon = np.mod(ss_skycoord.to_value(u.deg), 360.0)
     return ss_lon
 
+
+
+
+
+
+def ballistic_source_longitude_from_df(df, lon_col="Carr_lon", r_col="Radius", vsw_col="Vr", **kwargs):
+    """Convenience wrapper for dataframe-based ballistic source-longitude mapping.
+
+    Expects longitude in deg, radius in km or AU, and speed in km/s.
+    If `r_col` max exceeds 10, values are treated as km and converted to AU.
+    """
+    lon = df[lon_col]
+    r = df[r_col]
+    r_au = r / 1.495978707e8 if float(np.nanmax(np.abs(r))) > 10 else r
+    vsw = df[vsw_col]
+    return ballistic_source_longitude(lon_carr_deg=lon, r_au=r_au, vsw_kms=vsw, **kwargs)
 
 def wrap(arr, difference=340):
     arr = np.array(arr, dtype=float, copy=True)

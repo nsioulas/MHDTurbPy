@@ -80,7 +80,7 @@ def apply_rolling_mean_and_get_columns(f_df, settings):
 
 
 def _rolling_sign(series: pd.Series, window='30min', negate=False):
-    sign = np.sign(series.rolling(window, center=True).mean())
+    sign = np.sign(series.rolling(window, center=True).median())
     return -sign if negate else sign
 
 

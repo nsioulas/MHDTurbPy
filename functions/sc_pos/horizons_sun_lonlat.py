@@ -8,6 +8,7 @@ from typing import List, Optional, Dict
 
 import pandas as pd
 import requests
+import numpy as np
 
 
 @dataclass(frozen=True)
@@ -30,9 +31,9 @@ KNOWN_SPKID: Dict[str, str] = {
     "DSCOVR": "-78",
     "DISCOVER": "-78",
     "DISCOVR": "-78",
-    "ADITYA": "-170",
-    "ADITYA-L1": "-170",
-    "ADITYA L1": "-170",
+    "ADITYA": "-156",
+    "ADITYA-L1": "-156",
+    "ADITYA L1": "-156",
     "SOHO": "-21",
     "PSP": "-96",
     "PARKER SOLAR PROBE": "-96",
@@ -160,10 +161,17 @@ def get_lonlat_xyz_timeseries(
     step: str,
     carrington: bool = False,
 ) -> TrajResult:
+    """
+    Horizons trajectory timeseries in HGS (and optionally HGC), plus HEE Cartesian.
+
+    FIX: if carrington=True, the HGS->HGC transform requires observer != None in newer SunPy.
+    We set observer to Earth's HGS position at each obstime.
+    """
     _require_sunpy()
 
     import astropy.units as u
     from sunpy.coordinates import get_horizons_coord
+    from sunpy.coordinates import get_body_heliographic_stonyhurst
     from sunpy.coordinates.frames import (
         HeliographicCarrington,
         HeliographicStonyhurst,
@@ -205,13 +213,45 @@ def get_lonlat_xyz_timeseries(
     ).set_index("time_utc")
 
     if carrington:
-        coord_hgc = coord_hgs.transform_to(HeliographicCarrington(obstime=coord_hgs.obstime))
-        out["hgc_lon_deg"] = coord_hgc.lon.to_value(u.deg)
+        earth_obs = get_body_heliographic_stonyhurst("earth", coord_hgs.obstime)
+        coord_hgc = coord_hgs.transform_to(
+            HeliographicCarrington(obstime=coord_hgs.obstime, observer=earth_obs)
+        )
+        out["hgc_lon_deg"] = np.mod(coord_hgc.lon.to_value(u.deg), 360.0)
         out["hgc_lat_deg"] = coord_hgc.lat.to_value(u.deg)
         out["hgc_r_au"] = _dist_to_au(coord_hgc)
 
     return TrajResult(target=str(canonical_target), spkid=str(spkid), df=out)
 
+
+def ballistic_source_longitude(
+    lon_carr_deg,
+    r_au,
+    vsw_kms,
+    r_ss_rsun: float = 2.5,
+    omega_deg_per_day: float = 14.1844,
+    vsw_fallback_kms: float = 400.0,
+):
+    """Vectorized ballistic mapping from spacecraft Carrington longitude to source-surface longitude.
+
+    Parameters are array-like and interpreted in degrees/AU/km/s.
+    Returns `(phi_src_deg_wrapped, tau_days, fallback_mask)`.
+    """
+    lon = pd.Series(lon_carr_deg, copy=False, dtype=float)
+    r = pd.Series(r_au, copy=False, dtype=float)
+    vsw = pd.Series(vsw_kms, copy=False, dtype=float)
+
+    fallback = (~np.isfinite(vsw)) | (vsw <= 0)
+    vsw_eff = vsw.copy()
+    vsw_eff[fallback] = float(vsw_fallback_kms)
+
+    rsun_au = 0.00465047
+    r_ss_au = float(r_ss_rsun) * rsun_au
+    km_per_au = 1.495978707e8
+    tau_days = (r - r_ss_au) * km_per_au / (vsw_eff * 86400.0)
+
+    phi_src = np.mod(lon - float(omega_deg_per_day) * tau_days, 360.0)
+    return phi_src, tau_days, fallback
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -222,95 +262,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--targets", nargs="+", required=True)
     p.add_argument("--coord", choices=["HGS", "HGS+HGC"], default="HGS")
     p.add_argument("--outdir", default="out")
-    p.add_argument("--csv", default=None)
     args = p.parse_args(argv)
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    want_carr = args.coord == "HGS+HGC"
+    carr = (args.coord == "HGS+HGC")
+    for tgt in args.targets:
+        tr = get_lonlat_xyz_timeseries(tgt, args.start, args.stop, args.step, carrington=carr)
+        csv = outdir / f"{tr.target.replace(' ', '_')}_{tr.spkid}.csv"
+        tr.df.to_csv(csv)
+        print(f"Wrote {csv}")
 
-    frames = []
-    for t in args.targets:
-        res = get_lonlat_xyz_timeseries(t, args.start, args.stop, args.step, carrington=want_carr)
-        df = res.df.copy()
-        df.insert(0, "target", res.target)
-        df.insert(1, "spkid", res.spkid)
-        frames.append(df)
-        df.to_csv(outdir / f"{res.target.replace(' ', '_')}_lonlat_xyz.csv")
-
-    combined = pd.concat(frames).reset_index().rename(columns={"index": "time_utc"}).set_index(["time_utc", "target"])
-    if args.csv is not None:
-        Path(args.csv).parent.mkdir(parents=True, exist_ok=True)
-        combined.to_csv(args.csv)
-
-    print(f"Wrote per-target CSVs in: {outdir}")
-    if args.csv is not None:
-        print(f"Wrote combined CSV: {args.csv}")
     return 0
-
-
-def get_repo_style_orbit_df(
-    target: str,
-    start: str,
-    stop: str,
-    step: str,
-    rss_rsun: float = 2.5,
-    vsw_low_kms: float = 300.0,
-    vsw_high_kms: float = 700.0,
-    omega_deg_per_day: float = 14.1844,
-):
-    _require_sunpy()
-
-    import numpy as np
-    import pandas as pd
-    import astropy.units as u
-    import astropy.constants as const
-    from sunpy.coordinates import get_horizons_coord, get_body_heliographic_stonyhurst
-    from sunpy.coordinates.frames import HeliographicStonyhurst, HeliographicCarrington
-
-    import helpers as helpers_mod
-
-    start, stop = validate_time_window(start, stop)
-    canonical_target = canonicalize_spacecraft_target(target)
-    spkid = resolve_spacecraft_spkid(canonical_target)
-
-    coord0 = get_horizons_coord(
-        spkid,
-        {"start": start, "stop": stop, "step": step},
-    )
-
-    hgs = coord0.transform_to(HeliographicStonyhurst(obstime=coord0.obstime))
-
-    earth_obs = get_body_heliographic_stonyhurst("earth", hgs.obstime)
-    carr = hgs.transform_to(HeliographicCarrington(obstime=hgs.obstime, observer=earth_obs))
-
-    r_km = carr.spherical.distance.to_value(u.km)
-    lon_deg = np.mod(carr.lon.to_value(u.deg), 360.0)
-    lat_deg = carr.lat.to_value(u.deg)
-
-    rss = (rss_rsun * const.R_sun).to(u.km)
-    vsw_low = (vsw_low_kms * u.km / u.s)
-    vsw_high = (vsw_high_kms * u.km / u.s)
-
-    mapped_300 = helpers_mod.ballistic_map(carr, rss=rss, vsw=vsw_low, omega_deg_per_day=omega_deg_per_day)
-    mapped_700 = helpers_mod.ballistic_map(carr, rss=rss, vsw=vsw_high, omega_deg_per_day=omega_deg_per_day)
-
-    df = pd.DataFrame(
-        {
-            "Radius": r_km,
-            "Carr_lat": lat_deg,
-            "Carr_lon": lon_deg,
-            "Mapped_300": mapped_300,
-            "Mapped_700": mapped_700,
-        },
-        index=pd.to_datetime(carr.obstime.datetime64),
-    )
-    df.index.name = "time_utc"
-
-    return TrajResult(target=str(canonical_target), spkid=str(spkid), df=df)
-
-
 
 
 if __name__ == "__main__":
