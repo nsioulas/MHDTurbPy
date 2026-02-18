@@ -20,3 +20,6 @@ examples/downloaded_intervals/
 examples/selected_intervals/
 selected_intervals/
 *.tmp
+examples/figures/
+examples/noise_removal/
+Notebooks_Examples/*-checkpoint.ipynb
