@@ -292,7 +292,8 @@ def calculate_diagnostics(
     # If PSP and sc-vel columns are missing -> set components to 0 (no removal).
     # ------------------------------------------------------------------
     sc_name = str(settings.get('sc', '')).upper()
-    use_sc_removal = (sc_name == "PSP") and ("Vr" in columns_v)
+    #use_sc_removal = (sc_name in {"PSP", "SOLO"}) and ("Vr" in columns_v)
+    use_sc_removal = (sc_name in {"PSP", "SOLO"}) and ("Vr" in columns_v)
 
     if use_sc_removal:
         n = len(f_df)

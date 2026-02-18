@@ -198,7 +198,7 @@ def default_variables_to_download_SOLO(vars_2_downnload: Dict[str, Any]) -> Tupl
         varnames_RPW = vars_2_downnload["rpw"]
 
     if vars_2_downnload.get("swa", None) is None:
-        varnames_SWA = ["N", "V_RTN", "T"]
+        varnames_SWA = ["N", "V_RTN", "T", "V_SOLO_RTN"]
     else:
         varnames_SWA = vars_2_downnload["swa"]
 
@@ -380,6 +380,239 @@ def _safe_distance_placeholder(req_start: pd.Timestamp, req_end: pd.Timestamp) -
 
 
 # ============================================================
+# SOAR merged SCM tone removal (BEFORE any resample/interpolate)
+# ============================================================
+def _clean_soar_merged_scm_before_resample(
+    merged_df: pd.DataFrame,
+    settings: Dict[str, Any],
+    noise_cfg: Dict[str, Any],
+) -> pd.DataFrame:
+    """
+    Apply tone removal on SOAR merged SCM BEFORE any downstream resample/interpolate.
+
+    Design constraints (physics / signal processing):
+      - The tone remover assumes a uniform cadence (fs in Hz).
+      - Long gaps must NOT be bridged by interpolation (they broaden coherent lines).
+      - Cleaning must be applied on contiguous finite segments only.
+
+    Implementation:
+      1) Choose B columns (RTN or SRF).
+      2) Determine fs (prefer settings['SOLO_merged_fs'], else infer from small dt statistics).
+      3) Split by large timestamp jumps, regularize each segment onto the native grid (no averaging).
+      4) Interpolate ONLY tiny holes (<= SOLO_noise_fill_small_gaps_s) and keep long gaps as NaN.
+      5) Call turb.remove_wheel_noise_SOLO (if available) on each contiguous finite run, else fallback to generic.
+      6) Map cleaned values back onto original timestamps without inventing new samples.
+    """
+    if not isinstance(merged_df, pd.DataFrame) or len(merged_df) < 64:
+        return merged_df
+
+    df = merged_df.copy()
+    df = df.sort_index()
+    df = df[~df.index.duplicated(keep="first")]
+
+    # choose B columns
+    if set(["Br", "Bt", "Bn"]).issubset(df.columns):
+        cols = ["Br", "Bt", "Bn"]
+    elif set(["Bx", "By", "Bz"]).issubset(df.columns):
+        cols = ["Bx", "By", "Bz"]
+    else:
+        cols = list(df.columns[:3])
+        if len(cols) == 0:
+            return merged_df
+
+    B0 = df[cols].astype(float, copy=True)
+
+    # fs in Hz
+    fs_use = settings.get("SOLO_merged_fs", None)
+    try:
+        fs_use = float(fs_use) if fs_use is not None else np.nan
+    except Exception:
+        fs_use = np.nan
+
+    if not (np.isfinite(fs_use) and fs_use > 0):
+        tns = B0.index.view("i8")
+        if tns.size < 2:
+            return merged_df
+        dts = np.diff(tns).astype(float) * 1e-9
+        dts = dts[np.isfinite(dts) & (dts > 0)]
+        if dts.size == 0:
+            return merged_df
+        # infer from the core small-dt population (ignore large gaps)
+        p10 = float(np.percentile(dts, 10))
+        core = dts[dts <= max(1.5 * p10, 1.5 * float(np.min(dts)))]
+        dt0 = float(np.median(core)) if core.size else float(np.median(dts))
+        if not (np.isfinite(dt0) and dt0 > 0):
+            return merged_df
+        fs_use = 1.0 / dt0
+
+    dt_ns = int(round(1e9 / float(fs_use)))
+    if dt_ns <= 0:
+        return merged_df
+
+    # segmentation threshold (seconds)
+    split_gap_s = float(settings.get("SOLO_noise_split_gap_s", 2.0))
+
+    # segment indices by large time jumps (based on original timestamps)
+    t = B0.index
+    dt_jump = t.to_series().diff().dt.total_seconds().to_numpy()
+    cut = np.where(np.isfinite(dt_jump) & (dt_jump > split_gap_s))[0]
+    # segments are [a:b) in row indices
+    bounds = [0] + (cut.tolist()) + [len(B0)]
+    segments = []
+    for i in range(len(bounds) - 1):
+        a = bounds[i]
+        b = bounds[i + 1]
+        if b - a >= 64:
+            segments.append((a, b))
+
+    remover_solo = getattr(turb, "remove_wheel_noise_SOLO", None)
+
+    fill_small_gaps_s = float(settings.get("SOLO_noise_fill_small_gaps_s", 0.25))
+    lim = int(max(0, round(fill_small_gaps_s * float(fs_use))))
+    min_n = int(max(2048, round(float(fs_use) * 5.0)))
+    try:
+        if "stft_nperseg" in noise_cfg:
+            min_n = int(max(min_n, int(noise_cfg.get("stft_nperseg"))))
+    except Exception:
+        pass
+
+    out_all = B0.copy()
+
+    def _reset_index_to_t(dfin: pd.DataFrame) -> pd.DataFrame:
+        idx_name = dfin.index.name if dfin.index.name is not None else "index"
+        tmp = dfin.reset_index()
+        if idx_name in tmp.columns and idx_name != "t":
+            tmp = tmp.rename(columns={idx_name: "t"})
+        elif "index" in tmp.columns and "t" not in tmp.columns:
+            tmp = tmp.rename(columns={"index": "t"})
+        if "t" not in tmp.columns:
+            tmp.insert(0, "t", pd.to_datetime(dfin.index.values))
+        # normalize dtype for merge_asof
+        tmp["t"] = pd.to_datetime(tmp["t"], utc=True).dt.tz_convert(None)
+        return tmp
+
+    debug_runs: List[Dict[str, Any]] = []
+
+    for a, b in segments:
+        seg = B0.iloc[a:b].copy()
+
+        # Build native grid for this segment
+        t0 = seg.index[0]
+        t1 = seg.index[-1]
+        freq = pd.to_timedelta(dt_ns, unit="ns")
+        try:
+            grid_index = pd.date_range(start=t0, end=t1, freq=freq)
+        except Exception:
+            continue
+
+        # Snap to grid without averaging: nearest within half-sample tolerance
+        tol = pd.to_timedelta(max(1, dt_ns // 2), unit="ns")
+        left = pd.DataFrame({"t": grid_index})
+        right = _reset_index_to_t(seg).sort_values("t")
+
+        try:
+            snap = pd.merge_asof(left, right, on="t", direction="nearest", tolerance=tol)
+            grid = snap.set_index("t")[cols]
+        except Exception:
+            # strict reindex fallback
+            grid = seg.reindex(grid_index)
+
+        if lim > 0:
+            grid = grid.interpolate(method="time", limit=lim, limit_area="inside")
+
+        X = grid.to_numpy(dtype=float)
+        finite = np.all(np.isfinite(X), axis=1)
+        if not np.any(finite):
+            continue
+
+        # contiguous finite runs in the native grid
+        d = np.diff(finite.astype(np.int8))
+        starts = np.r_[0, np.where(d == 1)[0] + 1]
+        ends = np.r_[np.where(d == -1)[0] + 1, finite.size]
+        runs = [(s, e) for s, e in zip(starts, ends) if finite[s] and (e > s)]
+
+        Y = X.copy()
+        for s, e in runs:
+            if (e - s) < min_n:
+                continue
+            xseg = X[s:e, :]
+
+            try:
+                if callable(remover_solo):
+                    cfg_run = dict(noise_cfg)
+                    cfg_run.setdefault("return_debug", True)
+                    out = remover_solo(xseg, float(fs_use), **cfg_run)
+                    info = None
+                    if isinstance(out, tuple) and len(out) >= 2:
+                        yseg, info = out[0], out[1]
+                    else:
+                        yseg = out
+
+                    if isinstance(yseg, tuple):
+                        yseg = yseg[0]
+                    yseg = np.asarray(yseg, float)
+                    if yseg.shape == xseg.shape:
+                        Y[s:e, :] = yseg
+                        # record debug (if provided)
+                        if isinstance(info, dict):
+                            debug_runs.append({
+                                "seg_row_bounds": (int(a), int(b)),
+                                "grid_run_bounds": (int(s), int(e)),
+                                "t_start": str(grid.index[s]),
+                                "t_end": str(grid.index[e-1]),
+                                "n": int(e - s),
+                                "info": info,
+                            })
+
+                else:
+                    cols_out = []
+                    for j in range(xseg.shape[1]):
+                        cols_out.append(turb.remove_wheel_noise(xseg[:, j], float(fs_use), **noise_cfg))
+                    yseg = np.column_stack(cols_out)
+                    if yseg.shape == xseg.shape:
+                        Y[s:e, :] = yseg
+                        # record debug (if provided)
+                        if isinstance(info, dict):
+                            debug_runs.append({
+                                "seg_row_bounds": (int(a), int(b)),
+                                "grid_run_bounds": (int(s), int(e)),
+                                "t_start": str(grid.index[s]),
+                                "t_end": str(grid.index[e-1]),
+                                "n": int(e - s),
+                                "info": info,
+                            })
+
+            except Exception:
+                continue
+
+        grid_clean = pd.DataFrame(Y, index=grid.index, columns=cols)
+
+        # Map cleaned grid back to original timestamps in [a:b)
+        left2 = _reset_index_to_t(seg).sort_values("t")
+        right2 = _reset_index_to_t(grid_clean).sort_values("t")
+        try:
+            m2 = pd.merge_asof(left2[["t"]], right2, on="t", direction="nearest", tolerance=tol)
+            mapped = m2.set_index("t")[cols]
+            mapped = mapped.reindex(seg.index)
+            # only overwrite where mapped is finite
+            for c in cols:
+                vv = mapped[c].to_numpy()
+                ok = np.isfinite(vv)
+                if np.any(ok):
+                    out_all.loc[seg.index[ok], c] = vv[ok]
+        except Exception:
+            continue
+
+    out_all.attrs = dict(getattr(merged_df, "attrs", {}))
+    out_all.attrs["WHEEL_NOISE_REMOVED"] = True
+    out_all.attrs["WHEEL_NOISE_FS_HZ"] = float(fs_use)
+    out_all.attrs["WHEEL_NOISE_METHOD"] = "remove_wheel_noise_SOLO" if callable(remover_solo) else "remove_wheel_noise(1D)"
+    out_all.attrs["WHEEL_NOISE_DEBUG"] = {"runs": debug_runs, "segments": len(segments), "cols": cols}
+
+    return out_all
+
+
+# ============================================================
 # MAG loader (SOAR merged optional + SPEDAS fallback)
 # ============================================================
 def download_MAG_SOLO(
@@ -495,21 +728,19 @@ def download_MAG_SOLO(
             merged_df = sanitize_timeseries_df(merged_df)
             if isinstance(merged_df, pd.DataFrame) and len(merged_df) > 0:
                 logger.info("SOAR merged dataset loaded successfully.")
-                # Merged MAG noise-removal (unified with PSP SCAM)
+                # NOTE (SOAR merged SCM): remove tones BEFORE any downstream resample/interpolate.
+                # Do NOT run a generic "interpolate-all-NaNs then STFT" cleaner here, because long gaps
+                # broaden coherent lines and leave residual harmonics.
                 noise_flag, noise_cfg = resolve_mag_noise_settings(settings)
                 if noise_flag:
                     try:
-                        dt = func.find_cadence(merged_df)
-                        merged_df = apply_optional_wheel_noise_removal(
-                            resampled_df=merged_df,
-                            cadence_seconds=float(dt) if dt is not None else None,
-                            remove_wheel_noise_func=turb.remove_wheel_noise,
+                        merged_df = _clean_soar_merged_scm_before_resample(
+                            merged_df=merged_df,
+                            settings=settings,
                             noise_cfg=noise_cfg,
-                            logger=logging.getLogger(__name__),
                         )
                     except Exception as e:
-                        logging.warning(f"Merged MAG noise-removal skipped: {e}")
-
+                        logging.warning(f"Merged MAG tone-removal skipped: {e}")
                 return merged_df, "Burst"
             logger.info("SOAR merged dataset empty/unreadable -> fallback to SPEDAS.")
 
@@ -879,26 +1110,6 @@ def LoadTimeSeriesSOLO(
             big_gaps = func.find_big_gaps(dfmag, settings["Big_Gaps"]["Mag_big_gaps"], ind1, ind2)
             diagnostics_MAG = func.resample_timeseries_estimate_gaps(dfmag, settings["MAG_resol"], large_gaps=10)
             diagnostics_MAG.setdefault("resampled_df", None)
-
-            # ======================================================
-            # OPTIONAL: wheel-noise removal for merged SCM (SOLO)
-            # Applied ONLY at resampled_df stage (matches PSP)
-            # ======================================================
-            try:
-                scm_loaded = bool(dfmag.attrs.get("SCM_merged_loaded", False))
-                noise_flag, noise_cfg = resolve_mag_noise_settings(settings)
-                if scm_loaded and noise_flag and isinstance(diagnostics_MAG.get("resampled_df", None), pd.DataFrame):
-                    dt = func.find_cadence(diagnostics_MAG["resampled_df"])
-                    logger.info("SOLO MAG: wheel-noise removal enabled (merged SCM, resampled_df stage)")
-                    diagnostics_MAG["resampled_df"] = apply_optional_wheel_noise_removal(
-                        resampled_df=diagnostics_MAG["resampled_df"],
-                        cadence_seconds=dt,
-                        remove_wheel_noise_func=turb.remove_wheel_noise,
-                        noise_cfg=noise_cfg,
-                        logger=logger,
-                    )
-            except Exception:
-                traceback.print_exc()
 
         except Exception:
             traceback.print_exc()

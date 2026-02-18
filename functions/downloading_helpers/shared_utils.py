@@ -192,11 +192,53 @@ def resolve_mag_noise_settings(settings: Dict[str, Any]) -> Tuple[bool, Dict[str
           settings["Mag_SCAM_PSP"]  (PSP SCAM pipeline)
           settings["Mag_SCM_SOLO"]  (SOLO merged SCM pipeline)
 
+    IMPORTANT behavior:
+      - If the unified key exists and is enabled (noise_flag=True), it wins.
+      - If the unified key exists but is disabled, we still honor a legacy key
+        if the user explicitly enabled it (noise_flag=True). This prevents
+        "silent no-op" when defaults define Mag_SCM but the user toggles only
+        the legacy block.
+
     Returns:
       (noise_flag, noise_cfg)
     """
     if not isinstance(settings, dict):
         return False, default_wheel_noise_cfg()
+
+    # unified preferred key
+    unified = settings.get("Mag_SCM", None)
+    if isinstance(unified, dict):
+        flag_u = bool(unified.get("noise_flag", False))
+        cfg_u = unified.get("noise_removal", None)
+        if not isinstance(cfg_u, dict):
+            cfg_u = default_wheel_noise_cfg()
+
+        # If unified is explicitly enabled, take it.
+        if flag_u:
+            return True, cfg_u
+
+        # Otherwise, allow legacy keys to override if explicitly enabled.
+        for legacy_key in ("Mag_SCAM_PSP", "Mag_SCM_SOLO"):
+            legacy = settings.get(legacy_key, None)
+            if isinstance(legacy, dict) and bool(legacy.get("noise_flag", False)):
+                cfg_l = legacy.get("noise_removal", None)
+                if not isinstance(cfg_l, dict):
+                    cfg_l = default_wheel_noise_cfg()
+                return True, cfg_l
+
+        return False, cfg_u
+
+    # legacy fallbacks (keep meaning)
+    for legacy_key in ("Mag_SCAM_PSP", "Mag_SCM_SOLO"):
+        legacy = settings.get(legacy_key, None)
+        if isinstance(legacy, dict):
+            flag = bool(legacy.get("noise_flag", False))
+            cfg = legacy.get("noise_removal", None)
+            if not isinstance(cfg, dict):
+                cfg = default_wheel_noise_cfg()
+            return flag, cfg
+
+    return False, default_wheel_noise_cfg()
 
     # unified preferred key
     if isinstance(settings.get("Mag_SCM", None), dict):
@@ -239,12 +281,84 @@ def apply_optional_wheel_noise_removal(
     noise_cfg: Dict[str, Any],
     logger: Optional[logging.Logger] = None,
 ) -> Optional[pd.DataFrame]:
+    """
+    Apply a wheel-noise / tone-removal function column-by-column on a DataFrame.
 
+    Notes
+    -----
+    - `cadence_seconds` is the sampling cadence (dt) in seconds, not Hz.
+    - We only pass `return_debug=True` if the target function supports it.
+    - We filter `noise_cfg` to only the kwargs supported by the target function.
+    """
     if logger is None:
         logger = logging.getLogger(__name__)
 
     if resampled_df is None or not isinstance(resampled_df, pd.DataFrame) or len(resampled_df) == 0:
         return resampled_df
+
+    if cadence_seconds is None or (not np.isfinite(cadence_seconds)) or cadence_seconds <= 0:
+        return resampled_df
+
+    fs = 1.0 / float(cadence_seconds)
+    if not np.isfinite(fs) or fs <= 0:
+        return resampled_df
+
+    cfg = default_wheel_noise_cfg()
+    if isinstance(noise_cfg, dict):
+        cfg.update(noise_cfg)
+
+    # Inspect once
+    try:
+        sig = inspect.signature(remove_wheel_noise_func)
+        allowed = set(sig.parameters.keys())
+    except Exception:
+        sig = None
+        allowed = None
+
+    if allowed is not None:
+        cfg_pass = {k: v for k, v in cfg.items() if k in allowed}
+        supports_return_debug = ("return_debug" in allowed)
+    else:
+        cfg_pass = dict(cfg)
+        supports_return_debug = False
+
+    logger.info("Wheel-noise removal: fs=%g Hz | func=%s | passing keys=%s",
+                fs, getattr(remove_wheel_noise_func, "__name__", str(remove_wheel_noise_func)), sorted(cfg_pass.keys()))
+
+    keys = list(resampled_df.columns)
+    if len(keys) == 0:
+        return resampled_df
+
+    # Process each column
+    for key in keys:
+        try:
+            x = resampled_df[key].to_numpy(dtype=float, copy=False)
+
+            call_kwargs = dict(cfg_pass)
+            if supports_return_debug:
+                call_kwargs["return_debug"] = True
+
+            out = remove_wheel_noise_func(x, fs, **call_kwargs)
+
+            if supports_return_debug and isinstance(out, (tuple, list)) and len(out) == 2 and isinstance(out[1], dict):
+                y, dbg = out
+                logger.info(
+                    "WheelNoise[%s]: nCand=%d | mask_frac=%g | max_score_db=%g",
+                    key, dbg.get("nCand", -1), dbg.get("mask_frac", np.nan), dbg.get("max_score_db", np.nan),
+                )
+            else:
+                y = out
+
+            y = np.asarray(y, float)
+            if y.size != len(resampled_df):
+                raise ValueError(f"cleaned length {y.size} != df length {len(resampled_df)}")
+
+            resampled_df[key] = y
+
+        except Exception:
+            logger.exception("Wheel-noise removal failed for column=%s", key)
+
+    return resampled_df
 
     if cadence_seconds is None or not np.isfinite(cadence_seconds) or cadence_seconds <= 0:
         return resampled_df

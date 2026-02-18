@@ -70,6 +70,7 @@ from distutils.log import warn
 #Import custom functions
 from general_functions import *
 from three_D_funcs import *
+from signal_processing import remove_wheel_noise_SOLO
 
 import  modwt
 
@@ -207,233 +208,285 @@ def flucts(tau,
     return dB
 
 
+def calculate_compressibility( 
+                               window,
+                               B,
+                               keys    = ['Br', 'Bt', 'Bn'],
+                               five_points_sfunc=True):
+    
 
-def structure_functions_parallel(B,
-                                 scales,
-                                 max_qorder, 
-                                 five_points_sfunc = False, 
-                                 keep_sdk          = False,
-                                 return_components = False,
-                                 return_Bmod       = False, 
-                                 return_compress   = False,
-                                 return_flucts     = False,
-                                 n_jobs            = -1):
+    B['compress'] = np.sqrt(B[keys[0]]**2 + B[keys[1]]**2 + B[keys[2]]**2)
+    dB            =  flucts(
+                                 window,
+                                 B,
+                                 five_points_sfunc = five_points_sfunc,
+                                 return_dataframe  = True)
+
+
+    return pd.DataFrame((np.abs(dB['compress'])/np.sqrt((dB[keys[0]].values)**2 + (dB[keys[1]].values)**2 + (dB[keys[2]].values)**2))**2)
+
+
+def parallel_compress(lag,
+                      Bdf,
+                      keys              = ['Br', 'Bt', 'Bn'],
+                      five_points_sfunc = True):
+    
+    comp = calculate_compressibility(
+                         lag,
+                         Bdf,
+                         keys=keys,
+                         five_points_sfunc=five_points_sfunc).values
+    ind = np.isinf(comp) | (comp>2.)
+    return np.nanmean(comp[~ind])
+
+
+
+
+def structure_functions_parallel(
+    B,
+    scales,
+    max_qorder,
+    five_points_sfunc=False,
+    keep_sdk=False,
+    return_components=False,
+    return_Bmod=False,
+    return_compress=False,
+    return_flucts=False,
+    n_jobs=-1,
+    return_all=False,
+):
     """
-    Estimate the structure functions of a vector field B in parallel.
+    Estimate structure functions of a (possibly vector) field B over a set of lags.
 
-    Args:
-        B (pd.Series or np.ndarray):       Input field (shape (N,) if 1D or (N,3) if 3D).
-        scales (list or np.ndarray):       Scales (lags) at which to calculate the structure functions.
-        max_qorder (int):                 Maximum order of the structure functions to be calculated.
-        five_points_sfunc (bool):         Whether to estimate 5-point increments instead of 2-point.
-        keep_sdk (bool):                  (Currently unused) Option to store or skip certain diagnostics.
-        return_components (bool):         If True, also return separate components of the SF.
-        return_Bmod (bool):               If True, also compute magnitude increments dBmod and return the 
-                                          corresponding structure functions in parallel to the “trace.”
-        return_compress (bool):           If True, also compute a “compressibility” measure from the fluctuations.
-        return_flucts (bool):             If True, return the raw increments dB and dBmod for each scale, 
-                                          rather than the structure functions.
-        n_jobs (int):                     Number of parallel jobs. Defaults to -1 (all cores).
+    This rewrite returns a *dictionary* with consistently named outputs.
+    Any field not computed is returned as None (or an array of NaNs where appropriate).
 
-    Returns:
-        If return_flucts is True:
-            dB_all_scales   (np.ndarray): shape (len(scales), ...) of dB increments
-            dBmod_all_scales(np.ndarray): shape (len(scales), ...) of |dB| increments (if return_Bmod=True)
-
-        Else if return_components is True:
-            sfn     (np.ndarray): shape (len(scales), max_qorder) of the trace SF
-            sdk     (np.ndarray): shape (len(scales),)  normalizing factor from 4th order (if max_qorder>=4)
-            sfn_cmp (np.ndarray): shape (len(scales), max_qorder, n_components) of each component's SF
-            SF_dBmod(np.ndarray): shape (len(scales), max_qorder) of the modulus SF (if return_Bmod=True)
-            compress(np.ndarray): shape (len(scales),) compressibility measure (if return_compress=True)
-            counts  (np.ndarray): shape (len(scales),) number of non‐NaN points in dBmod
-
-        Else:
-            sfn (np.ndarray): shape (len(scales), max_qorder)
-            sdk (np.ndarray): shape (len(scales),)
+    Parameters are kept (plus `return_all`) to preserve the ingest contract.
     """
 
-    # Define the qorders
-    qorders = np.arange(1, max_qorder + 1)
+    # ------------------------------------------------------------
+    # Normalize options: "return_all" forces all outputs.
+    if return_all:
+        return_components = True
+        return_Bmod = True
+        return_compress = True
+        return_flucts = True
 
-    # -------------------------------------------------------------------------
-    # A small helper that calculates the SF at a given qorder for dB and dBmod
-    def calc_sfn(dB, dBmod, qorder, return_components=False, return_Bmod=False):
+    scales_arr = np.asarray(scales, dtype=int)
+    qorders = np.arange(1, int(max_qorder) + 1, dtype=int)
+
+    # ------------------------------------------------------------
+    # Helpers
+    def _as_2d(x):
+        x = np.asarray(x, dtype=float)
+        if x.ndim == 1:
+            return x[:, None]
+        return x
+
+    def _sf_moments_from_abs(dB_abs_2d, qorders, want_components):
         """
-        Computes the structure function of order qorder:
-            SF(dB)   = mean( |dB|^qorder ) across the chosen dimension,
-            SF(dBmod)= mean( |dBmod|^qorder ) if return_Bmod is True.
-
-        Args:
-            dB (np.ndarray): shape (N, 3) if 3D, or (N,) if 1D.
-            dBmod (np.ndarray or float): shape (N,) if returning magnitude, else np.nan.
-            qorder (int)
-            return_components (bool): if True, also return the separate comp SF.
-            return_Bmod (bool): if True, also compute and return SF(dBmod).
-
+        dB_abs_2d: (N, C) absolute increments
         Returns:
-            If return_components == False:
-                (sfn_sum, sfn_mod)
-            Else:
-                (sfn_sum, comps_array, sfn_mod)
-            where
-                sfn_sum   = sum of component-wise means of |dB|^qorder
-                comps_arr = mean of each component in |dB|^qorder if returning comps
-                sfn_mod   = mean of |dBmod|^qorder, or np.nan if not return_Bmod
+            trace: (Q,)
+            comps: (Q, C) or None
         """
-        # Mean of each component^qorder
-        comps = np.nanmean(dB ** qorder, axis=0)  # shape (#components,)
-        # If returning the magnitude's SF
-        if return_Bmod and isinstance(dBmod, np.ndarray):
-            SF_dBmod = np.nanmean(dBmod ** qorder)
-        else:
-            SF_dBmod = np.nan
+        dB_abs_2d = _as_2d(dB_abs_2d)
+        Q = qorders.size
+        C = dB_abs_2d.shape[1]
 
-        if return_components:
-            # return (trace, [comp1, comp2, comp3, ...], magnitude)
-            return np.sum(comps), comps, SF_dBmod
-        else:
-            # return (trace, magnitude)
-            return np.sum(comps), SF_dBmod
+        trace = np.empty(Q, dtype=float)
+        comps_out = np.empty((Q, C), dtype=float) if want_components else None
 
+        # iterative powers: pow = |dB|^q
+        pow_ = dB_abs_2d.copy()
+        for i, q in enumerate(qorders):
+            if q != 1:
+                pow_ *= dB_abs_2d
+            comps = np.nanmean(pow_, axis=0)  # (C,)
+            trace[i] = np.sum(comps)
+            if want_components:
+                comps_out[i, :] = comps
 
-    # -------------------------------------------------------------------------
-    # The actual worker for each scale
-    def process_scale(tau,
-                      return_components=False,
-                      return_Bmod=False,
-                      return_compress=False,
-                      return_flucts=False):
+        return trace, comps_out
+
+    def _sf_moments_1d_from_abs(dBmod_abs, qorders):
         """
-        Computes increments dB, dBmod (if needed), and from there either:
-         - returns them directly if return_flucts=True,
-         - or computes the SF across qorders.
+        dBmod_abs: (N,) absolute increments of |B| (or stencil output on |B|)
+        Returns:
+            sf_mod: (Q,)
         """
-        # -- First, get the fluctuations
-        dB = np.abs(flucts(tau, B, five_points_sfunc=five_points_sfunc))
-        # shape of dB is typically (N,3) for a vector B
+        dBmod_abs = np.asarray(dBmod_abs, dtype=float).reshape(-1)
+        Q = qorders.size
+        sf_mod = np.empty(Q, dtype=float)
 
-        compress = np.nan
-        # If we need the magnitude increments:
-        if return_Bmod:
-            dBmod = np.abs(
-                flucts(tau, B,
-                       five_points_sfunc=five_points_sfunc,
-                       estimate_mod_flucts=return_Bmod)
-            )
-            # If return_flucts is True, we *only* return the raw increments
-            if return_flucts:
-                # Force no compress if returning raw increments
-                return_compress = False
-            if return_compress:
-                # Example compressibility measure
-                #   compress = mean(|delta B_parallel|^2 / (|delta B|^2))
-                #   but code below does something like dBmod.T[0] ...
-                #   If we truly want parallel component, define it carefully.
-                #   For demonstration let's just do a ratio:
-                #       compress = mean( (dBmod[:,0])^2 / sum of squares of dB )
-                #   *But watch shape carefully. If dBmod is a single column
-                #   (the magnitude), we can't do dBmod[:,0].
-                #   Possibly the user meant the projection of dB along something.
-                #   We'll keep the line but ensure shapes are correct:
-                #
-                #   compress = mean( dBmod[:,0]^2 / (dB[:,0]^2 + dB[:,1]^2 + dB[:,2]^2 ) )
-                #   or if "dBmod" is just a single column, you might do dBmod**2 / sum(dB**2).
-                #
-                if dBmod.ndim == 2 and dBmod.shape[1] == 3:
-                    # Then we can do .T[0] etc. if that's the parallel part
-                    compress = np.nanmean(
-                        np.abs(dBmod[:, 0])**2 /
-                        (dB[:, 0]**2 + dB[:, 1]**2 + dB[:, 2]**2)
-                    )
-                else:
-                    # If "dBmod" is purely the magnitude:
-                    #   compress doesn't have a straightforward meaning here
-                    compress = np.nan
-        else:
-            dBmod = np.nan
+        pow_ = dBmod_abs.copy()
+        for i, q in enumerate(qorders):
+            if q != 1:
+                pow_ *= dBmod_abs
+            sf_mod[i] = np.nanmean(pow_)
 
-        # If the user only wants the raw increments:
+        return sf_mod
+
+    def _sdk_from_abs(dB_abs_2d, sf_trace):
+        """
+        Match your original definition:
+            sdk = SF(q=4) / sum( mean(|dB|^2,comp)^2 )
+        where SF(q=4) is sf_trace[3] since qorders starts at 1.
+        """
+        if int(max_qorder) < 4:
+            return np.nan
+        dB_abs_2d = _as_2d(dB_abs_2d)
+        m2 = np.nanmean(dB_abs_2d ** 2, axis=0)  # (C,)
+        denom = np.sum(m2 ** 2)
+        if denom == 0.0 or not np.isfinite(denom):
+            return np.nan
+        return sf_trace[3] / denom
+
+    def _compress_from_abs(dB_abs_2d, dBmod_abs_1d):
+        """
+        A sensible, shape-correct definition (only if requested):
+            compress = mean( (d(|B|))^2 / |dB|^2 )
+        where d(|B|) is what your estimate_mod_flucts returns, and |dB|^2 is sum over components.
+        """
+        dB_abs_2d = _as_2d(dB_abs_2d)
+        dBmod_abs_1d = np.asarray(dBmod_abs_1d, dtype=float).reshape(-1)
+
+        # NOTE: In your 2-pt + estimate_mod_flucts=False path, dB is length N (NaN padded),
+        # but in your 2-pt + estimate_mod_flucts=True path, dBmod may be length N-tau (not padded).
+        # We therefore align by the common minimum length to avoid silent broadcasting bugs.
+        n = min(dB_abs_2d.shape[0], dBmod_abs_1d.shape[0])
+        if n == 0:
+            return np.nan
+
+        num = dBmod_abs_1d[:n] ** 2
+        den = np.sum(dB_abs_2d[:n, :] ** 2, axis=1)
+
+        bad = ~np.isfinite(num) | ~np.isfinite(den) | (den <= 0.0)
+        if np.all(bad):
+            return np.nan
+
+        return np.nanmean(num[~bad] / den[~bad])
+
+    # ------------------------------------------------------------
+    # Worker per scale
+    def _process_one_tau(tau):
+        tau = int(tau)
+
+        # absolute increments of the vector (or scalar treated as 1-component)
+        dB_abs = np.abs(flucts(tau, B, five_points_sfunc=five_points_sfunc))
+        dB_abs_2d = _as_2d(dB_abs)
+
+        out = {}
+
+        # Return raw increments if requested (matches your original: abs increments)
         if return_flucts:
-            return dB, dBmod
+            out["dB"] = dB_abs
 
-        # Otherwise, compute structure functions over qorders
-        if return_components:
-            # We want: sfn, sfn_comps, SF_dBmod, plus sdk and possibly compress
-            # We'll gather (trace, comps, mod) for each qorder
-            tmp = [calc_sfn(dB, dBmod, q, 
-                            return_components=True, 
-                            return_Bmod=return_Bmod)
-                   for q in qorders]
-            # tmp is list of length max_qorder, each element is ( trace_val, comps_vec, mod_val )
-            trace_vals, comps_list, mod_vals = zip(*tmp)  # each is length max_qorder
-            sfn       = np.array(trace_vals)             # shape (max_qorder,)
-            sfn_comps = np.array(comps_list)             # shape (max_qorder, n_components?)
-            SF_dBmod  = np.array(mod_vals)               # shape (max_qorder,)
-
-            # Compute sdk if we have at least q=4
-            if max_qorder >= 4:
-                # The code uses the 4th order / sum of squares of the 2nd moment, etc.
-                # We'll match the original usage:
-                #  sdk = sfn[3] / np.sum(np.nanmean(dB ** 2, axis=0) ** 2)
-                sdk = sfn[3] / np.sum(np.nanmean(dB**2, axis=0)**2)
-            else:
-                sdk = np.nan
-
-            counts = np.count_nonzero(~np.isnan(dBmod)) if isinstance(dBmod, np.ndarray) else 0
-
-            return sfn, sdk, sfn_comps, SF_dBmod, compress, counts
+        # |B| increments (or stencil output on |B|)
+        dBmod_abs = None
+        if return_Bmod or return_compress:
+            dBmod_abs = np.abs(
+                flucts(
+                    tau,
+                    B,
+                    five_points_sfunc=five_points_sfunc,
+                    estimate_mod_flucts=True,
+                )
+            )
+            # flatten to 1D if it is (N,1)
+            dBmod_abs_1d = np.asarray(dBmod_abs, dtype=float).reshape(-1)
+            out["counts_Bmod"] = int(np.count_nonzero(np.isfinite(dBmod_abs_1d)))
+            if return_flucts:
+                out["dBmod"] = dBmod_abs
 
         else:
-            # return_components=False -> simpler: just return trace + sdk
-            tmp = [calc_sfn(dB, dBmod, q, 
-                            return_components=False, 
-                            return_Bmod=return_Bmod)
-                   for q in qorders]
-            # tmp is list of length max_qorder, each (trace, mod)
-            trace_vals, mod_vals = zip(*tmp)   # each is length max_qorder
-            sfn      = np.array(trace_vals)    # shape (max_qorder,)
-            SF_dBmod = np.array(mod_vals)      # shape (max_qorder,) but not used here
+            out["counts_Bmod"] = 0
+            if return_flucts:
+                out["dBmod"] = None
 
-            if max_qorder >= 4:
-                sdk = sfn[3] / np.sum(np.nanmean(dB**2, axis=0)**2)
-            else:
-                sdk = np.nan
+        # Structure functions for the trace (+ components optionally)
+        sf_trace, sf_comps = _sf_moments_from_abs(dB_abs_2d, qorders, want_components=return_components)
+        out["SF_trace"] = sf_trace
+        out["SF_components"] = sf_comps  # None if not requested
+        out["SDK"] = _sdk_from_abs(dB_abs_2d, sf_trace)
 
-            return sfn, sdk
+        # Structure functions for |B| increments (optional)
+        if return_Bmod and dBmod_abs is not None:
+            out["SF_Bmod"] = _sf_moments_1d_from_abs(np.asarray(dBmod_abs, dtype=float), qorders)
+        else:
+            out["SF_Bmod"] = None
 
-    # -------------------------------------------------------------------------
-    # Now run the above worker in parallel over each scale
-    results = Parallel(n_jobs=n_jobs)(
-        delayed(process_scale)(tau,
-                               return_components=return_components,
-                               return_Bmod=return_Bmod,
-                               return_compress=return_compress,
-                               return_flucts=return_flucts)
-        for tau in scales
-    )
+        # Compressibility-like scalar per tau (optional)
+        if return_compress and dBmod_abs is not None:
+            out["compress"] = _compress_from_abs(dB_abs_2d, np.asarray(dBmod_abs, dtype=float))
+        else:
+            out["compress"] = np.nan
 
-    # Finally, assemble outputs
-    if return_flucts:
-        # results is a list of (dB, dBmod) for each scale
-        dB_all, dBmod_all = zip(*results)
-        return np.array(dB_all), np.array(dBmod_all)
+        return out
 
+    # ------------------------------------------------------------
+    # Run in parallel over scales
+    results = Parallel(n_jobs=n_jobs)(delayed(_process_one_tau)(tau) for tau in scales_arr)
+
+    # ------------------------------------------------------------
+    # Assemble outputs into arrays/lists with consistent naming
+    n_scales = scales_arr.size
+    Q = qorders.size
+
+    SF_trace = np.stack([r["SF_trace"] for r in results], axis=0)  # (n_scales, Q)
+    SDK = np.array([r["SDK"] for r in results], dtype=float)       # (n_scales,)
+    counts_Bmod = np.array([r["counts_Bmod"] for r in results], dtype=int)
+
+    if return_components:
+        # (n_scales, Q, C)
+        SF_components = np.stack([r["SF_components"] for r in results], axis=0)
     else:
-        if return_components:
-            # results is a list of 6-tuples: (sfn, sdk, sfn_comps, SF_dBmod, compress, counts)
-            sfn, sdk, sfn_comps, SF_dBmod, compress, counts = zip(*results)
-            return (np.array(sfn),
-                    np.array(sdk),
-                    np.array(sfn_comps),
-                    np.array(SF_dBmod),
-                    np.array(compress),
-                    np.array(counts))
-        else:
-            # results is a list of 2-tuples: (sfn, sdk)
-            sfn, sdk = zip(*results)
-            return np.array(sfn), np.array(sdk)
+        SF_components = None
 
+    if return_Bmod:
+        # (n_scales, Q) or None (but we enforce shape if requested)
+        SF_Bmod = np.stack(
+            [r["SF_Bmod"] if r["SF_Bmod"] is not None else np.full(Q, np.nan, dtype=float) for r in results],
+            axis=0,
+        )
+    else:
+        SF_Bmod = None
+
+    compress = np.array([r["compress"] for r in results], dtype=float) if return_compress else None
+
+    # Raw fluctuations: keep as list (can be ragged because your `flucts` for Bmod is ragged in 2-pt mode)
+    dB_list = [r.get("dB", None) for r in results] if return_flucts else None
+    dBmod_list = [r.get("dBmod", None) for r in results] if return_flucts else None
+
+    return {
+        "scales": scales_arr,
+        "qorders": qorders,
+
+        # structure functions
+        "SF_trace": SF_trace,                 # (n_scales, Q)
+        "SF_components": SF_components,       # (n_scales, Q, C) or None
+        "SF_Bmod": SF_Bmod,                   # (n_scales, Q) or None
+        "SDK": SDK,                           # (n_scales,)
+
+        # optional diagnostics
+        "compress": compress,                 # (n_scales,) or None
+        "counts_Bmod": counts_Bmod,           # (n_scales,)
+
+        # optional raw increments (abs)
+        "dB": dB_list,                         # list of arrays (per scale) or None
+        "dBmod": dBmod_list,                   # list of arrays (per scale) or None
+
+        # metadata
+        "meta": {
+            "five_points_sfunc": bool(five_points_sfunc),
+            "return_components": bool(return_components),
+            "return_Bmod": bool(return_Bmod),
+            "return_compress": bool(return_compress),
+            "return_flucts": bool(return_flucts),
+            "n_jobs": int(n_jobs),
+            "keep_sdk": bool(keep_sdk),
+        },
+    }
 
 
 def est_5_pt_sfuncs(B_df,
@@ -4398,256 +4451,7 @@ def calculate_dhtf(v, b):
 
 ##########################################
 
-import numpy as np
-from scipy.signal import stft, istft, medfilt
 
-
-def _interp_nans_1d(x: np.ndarray) -> np.ndarray:
-    x = np.asarray(x, float)
-    n = x.size
-    if n == 0:
-        return x
-    ok = np.isfinite(x)
-    if ok.all():
-        return x
-    if ok.sum() < 2:
-        return np.zeros_like(x)
-    idx = np.arange(n)
-    y = x.copy()
-    y[~ok] = np.interp(idx[~ok], idx[ok], x[ok])
-    return y
-
-
-def _find_runs(idx: np.ndarray):
-    if idx.size == 0:
-        return []
-    splits = np.where(np.diff(idx) > 1)[0] + 1
-    return np.split(idx, splits)
-
-
-def remove_wheel_noise(
-    x: np.ndarray,
-    fs: float,
-    *,
-    # ---- STFT geometry
-    freq_min: float = 8.0,
-    stft_nperseg: int = 2048,
-    stft_overlap: float = 0.5,
-
-    # ---- candidate detection (global in time)
-    percentile_q: float = 99.5,
-    kernel: int = 301,
-    thresh_db: float = 3.0,
-    merge_hz: float = 0.20,
-    max_lines: int = 2000,
-
-    # ---- OPTIONAL: slope flattening (helps “dense forest” high-f spectra)
-    whiten_exp: float = 0.0,        # try 8/3 if needed
-
-    # ---- drift tracking + removal
-    track_half_width_hz: float = 4.0,
-    remove_half_width_hz: float = 1.5,
-    atten_db: float = 100.0,
-
-    # ---- robustness
-    fallback_top_k: int = 80,       # if detection yields nCand=0, force top-k candidates
-    return_debug: bool = False,
-
-    # ---- compatibility (ignore unknown keys safely)
-    mad_mult=None,
-    **_ignored,
-):
-    """
-    Drift-safe coherent-line removal for SCM wheel/electronics tones.
-
-    Simple description:
-      1) STFT -> S(f,t)
-      2) Build a 1D candidate spectrum Sq(f) = percentile over time
-      3) Score(f) = dB above a smooth baseline (median filter)
-      4) Pick candidate line bands
-      5) For each candidate, track the ridge in time (local argmax in S)
-      6) Attenuate a frequency band around that ridge
-      7) iSTFT
-    """
-
-    x = _interp_nans_1d(np.asarray(x, float))
-    n = x.size
-    if n < 64 or not np.isfinite(fs) or fs <= 0:
-        return (x, {"candidates_hz": np.array([]), "mask_frac": 0.0}) if return_debug else x
-
-    nperseg = int(min(max(256, stft_nperseg), n))
-    noverlap = int(nperseg * float(stft_overlap))
-    noverlap = min(max(0, noverlap), nperseg - 1)
-
-    # IMPORTANT: boundary/padded -> avoids NOLA/invertibility issues
-    f, tt, Z = stft(
-        x,
-        fs=float(fs),
-        window="hann",
-        nperseg=nperseg,
-        noverlap=noverlap,
-        boundary="zeros",
-        padded=True,
-    )
-
-    if f.size < 2 or Z.size == 0:
-        return (x, {"candidates_hz": np.array([]), "mask_frac": 0.0}) if return_debug else x
-
-    df = float(f[1] - f[0])
-    nyq = 0.5 * fs
-
-    S = np.abs(Z) ** 2  # (nf, nt)
-
-    # ---------------------------
-    # (1) GLOBAL candidate spectrum Sq(f)
-    # ---------------------------
-    Sq = np.percentile(S, float(percentile_q), axis=1)
-
-    eps = 1e-30
-    logSq = np.log10(np.maximum(Sq, eps))
-
-    # Optional whitening (flatten power-law slopes)
-    if whiten_exp != 0.0:
-        ff = np.maximum(f, 1e-6)
-        logSq = logSq + float(whiten_exp) * np.log10(ff)
-
-    # Smooth baseline across frequency
-    k = int(kernel)
-    if k < 3:
-        k = 3
-    if k % 2 == 0:
-        k += 1
-    if k > logSq.size:
-        k = logSq.size if (logSq.size % 2 == 1) else max(3, logSq.size - 1)
-
-    base = medfilt(logSq, kernel_size=k)
-    score = 10.0 * (logSq - base)  # dB above baseline
-
-    valid = (f >= float(freq_min)) & (f < nyq)
-
-    if not np.any(valid):
-        return (x, {"candidates_hz": np.array([]), "mask_frac": 0.0}) if return_debug else x
-
-    score_valid = score[valid]
-    max_score_db = float(np.max(score_valid))
-
-    # Primary thresholding
-    cand = np.where(valid & (score > float(thresh_db)))[0]
-
-    # If nothing passes threshold, force candidates from the strongest bins
-    if cand.size == 0 and fallback_top_k is not None and int(fallback_top_k) > 0:
-        idx_valid = np.where(valid)[0]
-        ktop = min(int(fallback_top_k), idx_valid.size)
-        top_idx = idx_valid[np.argpartition(score[idx_valid], -ktop)[-ktop:]]
-        cand = np.sort(top_idx)
-
-    if cand.size == 0:
-        # absolutely nothing usable -> do nothing
-        dbg = {
-            "candidates_hz": np.array([]),
-            "mask_frac": 0.0,
-            "nCand": 0,
-            "fs": float(fs),
-            "df_hz": df,
-            "max_score_db": max_score_db,
-            "thresh_db": float(thresh_db),
-        }
-        return (x, dbg) if return_debug else x
-
-    # Group contiguous bins and pick max per run
-    runs = _find_runs(cand)
-
-    cand_bins = []
-    cand_heights = []
-    for run in runs:
-        j = run[np.argmax(score[run])]
-        cand_bins.append(j)
-        cand_heights.append(score[j])
-
-    cand_bins = np.array(cand_bins, dtype=int)
-    cand_heights = np.array(cand_heights, dtype=float)
-
-    order = np.argsort(cand_heights)[::-1]
-    cand_bins = cand_bins[order]
-    cand_heights = cand_heights[order]
-
-    cand_freqs = f[cand_bins]
-
-    # Merge close candidates
-    keep = []
-    for i, fi in enumerate(cand_freqs):
-        if len(keep) == 0:
-            keep.append(i)
-        else:
-            if np.min(np.abs(fi - cand_freqs[keep])) > float(merge_hz):
-                keep.append(i)
-
-    cand_bins = cand_bins[keep]
-    cand_freqs = f[cand_bins]
-
-    if cand_bins.size > int(max_lines):
-        cand_bins = cand_bins[: int(max_lines)]
-        cand_freqs = cand_freqs[: int(max_lines)]
-
-    # ---------------------------
-    # (2) TRACK ridges in time + build mask
-    # ---------------------------
-    track_bins = int(np.ceil(float(track_half_width_hz) / df))
-    rm_bins = int(np.ceil(float(remove_half_width_hz) / df))
-
-    track_bins = max(1, track_bins)
-    rm_bins = max(1, rm_bins)
-
-    nf, nt = S.shape
-    mask = np.zeros((nf, nt), dtype=bool)
-    cols = np.arange(nt)
-
-    for k0 in cand_bins:
-        a = max(0, k0 - track_bins)
-        b = min(nf - 1, k0 + track_bins)
-
-        band = S[a:b + 1, :]  # (band_nf, nt)
-        local_argmax = np.argmax(band, axis=0) + a  # (nt,)
-
-        # Vectorized band marking (no inner time-loop)
-        for off in range(-rm_bins, rm_bins + 1):
-            rr = np.clip(local_argmax + off, 0, nf - 1)
-            mask[rr, cols] = True
-
-    # Attenuate coefficients in mask
-    atten = 10.0 ** (-float(atten_db) / 20.0)
-    Zc = Z.copy()
-    Zc[mask] *= atten
-
-    # Invert STFT
-    _, y = istft(
-        Zc,
-        fs=float(fs),
-        window="hann",
-        nperseg=nperseg,
-        noverlap=noverlap,
-        boundary=True,
-    )
-
-    # Match length
-    if y.size > n:
-        y = y[:n]
-    elif y.size < n:
-        y = np.pad(y, (0, n - y.size))
-
-    if return_debug:
-        dbg = {
-            "candidates_hz": cand_freqs,
-            "mask_frac": float(mask.mean()),
-            "nCand": int(cand_freqs.size),
-            "fs": float(fs),
-            "df_hz": df,
-            "max_score_db": max_score_db,
-            "thresh_db": float(thresh_db),
-        }
-        return y, dbg
-
-    return y
 
 
 # import numpy as np
@@ -5490,22 +5294,6 @@ def compressibility_complex_chen(  av_window,
 
     return pd.DataFrame( rms['mod']**2 /(rms[keys[0]]**2 +  rms[keys[1]]**2  +  rms[keys[2]]**2  ))
 
-def calculate_compressibility( 
-                               window,
-                               B,
-                               keys    = ['Br', 'Bt', 'Bn'],
-                               five_points_sfunc=True):
-    
-
-    B['compress'] = np.sqrt(B[keys[0]]**2 + B[keys[1]]**2 + B[keys[2]]**2)
-    dB            =  flucts(
-                                 window,
-                                 B,
-                                 five_points_sfunc = five_points_sfunc,
-                                 return_dataframe  = True)
-
-
-    return pd.DataFrame((np.abs(dB['compress'])/np.sqrt((dB[keys[0]].values)**2 + (dB[keys[1]].values)**2 + (dB[keys[2]].values)**2))**2)
 
 
 
@@ -5596,18 +5384,7 @@ def local_parker_spiral(B,
     return B_parker, alpha_p, Vr_filtered, def_angles
 
 
-def parallel_compress(lag,
-                      Bdf,
-                      keys              = ['Br', 'Bt', 'Bn'],
-                      five_points_sfunc = True):
-    
-    comp = calculate_compressibility(
-                         lag,
-                         Bdf,
-                         keys=keys,
-                         five_points_sfunc=five_points_sfunc).values
-    ind = np.isinf(comp) | (comp>2.)
-    return np.nanmean(comp[~ind])
+
 
 
 
