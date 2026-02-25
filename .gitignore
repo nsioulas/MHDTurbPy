@@ -23,3 +23,18 @@ selected_intervals/
 examples/figures/
 examples/noise_removal/
 Notebooks_Examples/*-checkpoint.ipynb
+
+# --- ALWAYS TRACK THESE PSP QTN DATASETS ---
+!data/psp_data/PSP_QTN_Romeo/
+!data/psp_data/PSP_QTN_Romeo/**
+!data/psp_data/PSP_QTN_Monc/
+!data/psp_data/PSP_QTN_Monc/**
+
+
+data/psp_data/PSP_QTN_Romeo/.ipynb_checkpoints/
+
+!data/psp_data/PSP_QTN_Romeo/
+!data/psp_data/PSP_QTN_Romeo/**
+!data/psp_data/PSP_QTN_Monc/
+!data/psp_data/PSP_QTN_Monc/**
+
