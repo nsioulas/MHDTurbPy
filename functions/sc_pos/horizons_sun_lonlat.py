@@ -4,11 +4,11 @@ import argparse
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Dict
+from typing import Dict, List, Optional, Sequence, Tuple
 
+import numpy as np
 import pandas as pd
 import requests
-import numpy as np
 
 
 @dataclass(frozen=True)
@@ -74,7 +74,7 @@ def canonicalize_spacecraft_target(target: str) -> str:
     return alias_map.get(compact, cleaned)
 
 
-def validate_time_window(start: str, stop: str) -> tuple[str, str]:
+def validate_time_window(start: str, stop: str) -> Tuple[str, str]:
     """Validate and normalize ISO-like start/stop strings for Horizons calls."""
 
     def _parse_one(label: str, value: str) -> pd.Timestamp:
@@ -101,7 +101,7 @@ def validate_time_window(start: str, stop: str) -> tuple[str, str]:
     return t_start.isoformat(), t_stop.isoformat()
 
 
-def _require_sunpy():
+def _require_sunpy() -> None:
     try:
         import sunpy  # noqa: F401
     except Exception as e:
@@ -164,7 +164,9 @@ def get_lonlat_xyz_timeseries(
     """
     Horizons trajectory timeseries in HGS (and optionally HGC), plus HEE Cartesian.
 
-    FIX: if carrington=True, the HGS->HGC transform requires observer != None in newer SunPy.
+    Notes
+    -----
+    If carrington=True, the HGS->HGC transform requires an observer != None in newer SunPy.
     We set observer to Earth's HGS position at each obstime.
     """
     _require_sunpy()
@@ -173,9 +175,9 @@ def get_lonlat_xyz_timeseries(
     from sunpy.coordinates import get_horizons_coord
     from sunpy.coordinates import get_body_heliographic_stonyhurst
     from sunpy.coordinates.frames import (
+        HeliocentricEarthEcliptic,
         HeliographicCarrington,
         HeliographicStonyhurst,
-        HeliocentricEarthEcliptic,
     )
 
     start, stop = validate_time_window(start, stop)
@@ -190,7 +192,7 @@ def get_lonlat_xyz_timeseries(
     coord_hgs = coord0.transform_to(HeliographicStonyhurst(obstime=coord0.obstime))
     coord_hee = coord0.transform_to(HeliocentricEarthEcliptic(obstime=coord0.obstime))
 
-    def _dist_to_au(c):
+    def _dist_to_au(c) -> np.ndarray:
         if hasattr(c, "radius"):
             return c.radius.to_value(u.AU)
         if hasattr(c, "distance"):
@@ -252,6 +254,73 @@ def ballistic_source_longitude(
 
     phi_src = np.mod(lon - float(omega_deg_per_day) * tau_days, 360.0)
     return phi_src, tau_days, fallback
+
+
+def get_repo_style_orbit_df(
+    target: str,
+    start: str,
+    stop: str,
+    step: str,
+    rss_rsun: float = 2.5,
+    omega_deg_per_day: float = 14.1844,
+    vsw_kms: Sequence[float] = (300.0, 700.0),
+    vsw_fallback_kms: float = 400.0,
+) -> TrajResult:
+    """Return a repo-style orbit dataframe for interactive orbit plots.
+
+    This is the adaptor expected by the orbit plot scripts. Output columns match helpers.add_sc():
+      - Radius      [km]
+      - Carr_lon    [deg] (0..360)
+      - Carr_lat    [deg]
+      - Mapped_300  [deg]
+      - Mapped_700  [deg]
+    """
+    tr = get_lonlat_xyz_timeseries(target, start, stop, step, carrington=True)
+    base = tr.df
+
+    required = ("hgc_lon_deg", "hgc_lat_deg", "hgc_r_au")
+    missing = [k for k in required if k not in base.columns]
+    if missing:
+        raise RuntimeError(
+            "Carrington columns are missing from Horizons output. "
+            f"Missing: {missing}. This should not happen when carrington=True."
+        )
+
+    n = int(len(base))
+    km_per_au = 1.495978707e8
+
+    df = pd.DataFrame(index=base.index)
+    df.index.name = base.index.name or "time_utc"
+
+    df["Radius"] = base["hgc_r_au"].to_numpy(dtype=float) * km_per_au
+    df["Carr_lon"] = np.mod(base["hgc_lon_deg"].to_numpy(dtype=float), 360.0)
+    df["Carr_lat"] = base["hgc_lat_deg"].to_numpy(dtype=float)
+
+    r_au = base["hgc_r_au"].to_numpy(dtype=float)
+    lon_deg = df["Carr_lon"].to_numpy(dtype=float)
+
+    for v in vsw_kms:
+        tag = int(round(float(v)))
+        vsw_arr = np.full(n, float(v), dtype=float)
+        phi_src, _, _ = ballistic_source_longitude(
+            lon_carr_deg=lon_deg,
+            r_au=r_au,
+            vsw_kms=vsw_arr,
+            r_ss_rsun=float(rss_rsun),
+            omega_deg_per_day=float(omega_deg_per_day),
+            vsw_fallback_kms=float(vsw_fallback_kms),
+        )
+        df[f"Mapped_{tag}"] = np.asarray(phi_src, dtype=float)
+
+    # Guarantee the exact downstream names exist.
+    if "Mapped_300" not in df.columns and len(vsw_kms) > 0:
+        k0 = int(round(float(list(vsw_kms)[0])))
+        df["Mapped_300"] = df[f"Mapped_{k0}"]
+    if "Mapped_700" not in df.columns and len(vsw_kms) > 1:
+        k1 = int(round(float(list(vsw_kms)[1])))
+        df["Mapped_700"] = df[f"Mapped_{k1}"]
+
+    return TrajResult(target=tr.target, spkid=tr.spkid, df=df)
 
 
 def main(argv: Optional[List[str]] = None) -> int:

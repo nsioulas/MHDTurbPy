@@ -3,3 +3,7 @@ psp_data/PSP_QTN_Romeo/save_pickled_dfs/merged_qtn_orlando.pkl filter=lfs diff=l
 data/psp_data/PSP_QTN_Romeo/**/*.pkl filter=lfs diff=lfs merge=lfs -text
 data/psp_data/PSP_QTN_Monc/**/*.pkl filter=lfs diff=lfs merge=lfs -text
 data/psp_data/PSP_QTN_Romeo/**/*.tplot filter=lfs diff=lfs merge=lfs -text
+*.py text eol=lf
+*.ipynb text eol=lf
+*.md text eol=lf
+*.txt text eol=lf

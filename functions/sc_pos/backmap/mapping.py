@@ -14,13 +14,13 @@ its inertial longitude is approximately conserved along the trajectory.
 Carrington longitude is a rotating-frame longitude. Under the above assumption,
 	the Carrington longitude of the parcel at launch satisfies:
 
-    phi_src(t0) = phi_sc(t) - Omega * tau(t)
+    phi_src(t0) = phi_sc(t) + Omega * tau(t)
 
 where Omega is the Carrington rotation rate.
 
 We therefore implement:
 
-    phi_src = wrap_0_360( phi_sc - phi_sign * Omega * tau )
+    phi_src = wrap_0_360( phi_sc + phi_sign * Omega * tau )
 
 with ``phi_sign`` defaulting to +1. A negative sign is permitted only as a
 *diagnostic* to catch convention mismatches; it is not recommended for
@@ -70,6 +70,7 @@ def map_to_source_surface(
     lat_sc_deg: np.ndarray,
     tau: u.Quantity,
     omega: u.Quantity,
+    delta_phi_deg: Optional[object] = None,
     phi_sign: int = +1,
     sign: Optional[int] = None,  # deprecated alias
 ) -> MappingResult:
@@ -104,13 +105,28 @@ def map_to_source_surface(
     phi = np.asarray(phi_sc_deg, dtype=float).reshape(-1)
     lat = np.asarray(lat_sc_deg, dtype=float).reshape(-1)
 
-    phi_src = wrap_0_360(phi - s * omega_deg_s * tau_s)
+    if delta_phi_deg is None:
+        dphi = omega_deg_s * tau_s
+        dphi_def = 'Omega*tau'
+    else:
+        dq = u.Quantity(delta_phi_deg, u.deg).to_value(u.deg)
+        dq = np.asarray(dq, dtype=float)
+        if dq.size == 1:
+            dphi = np.full_like(phi, float(dq.reshape(-1)[0]), dtype=float)
+        else:
+            if dq.shape[0] != phi.shape[0]:
+                raise ValueError('delta_phi_deg must be scalar or have the same length as phi_sc_deg')
+            dphi = dq.reshape(-1)
+        dphi_def = 'provided'
+
+    phi_src = wrap_0_360(phi + s * dphi)
 
     meta = {
         "frame": "HeliographicCarrington (observer explicit upstream)",
-        "phi_src_def": "wrap_0_360(phi_sc - phi_sign*Omega*tau)",
+        "phi_src_def": "wrap_0_360(phi_sc + phi_sign*DeltaPhi)",
         "phi_sign": int(s),
         "omega": float(u.Quantity(omega).to_value(u.deg / u.day)),
+        "delta_phi_def": str(dphi_def),
         "lat_src_def": "lat_sc (no latitudinal evolution modeled)",
     }
     return MappingResult(phi_src_deg=phi_src, lat_src_deg=lat.copy(), meta=meta)

@@ -287,29 +287,35 @@ class ScaledExpAcceleration(TravelTimeModel):
 
 
 class HybridParker(TravelTimeModel):
-    """Hybrid Parker approximations (large-distance + small-distance), scaled to match V_bg at r_sc.
+    """Hybrid Parker approximations (small-$r$ and large-$r$ asymptotics), scaled to match $V_{bg}$ at $r_{sc}$.
 
-    This implements a practical family of accelerating profiles inspired by
-    common Parker-wind asymptotics. The free parameter ``rs`` controls the
-    "acceleration scale" via the functional forms. For numerical robustness
-    and for visually sensible profiles, the default joining mode is:
+    This model implements the two asymptotic forms used in aa44327-22 (Sect. 2.3) to define an
+    accelerating radial speed profile $U(r,t)$ on a fixed radial grid. At each cadence sample $t$,
+    the profile is scaled so that $U(r_{sc}(t),t)=V_{bg}(t)$, and the travel time is computed as
 
-        switch="match": join the two asymptotics at the first radius r_join > rs
-        where v_small(r_join) = v_large(r_join). This yields continuity in v(r)
-        with a local jump in the derivative.
+        $\tau(t)=\int_{r_{ss}}^{r_{sc}(t)} \! dr\, /\, U(r,t)$.
 
-    If you explicitly request switch="rs", we switch at r=rs (less physical but
-    matches the literal wording in some heuristic formulations).
+    Join/switching convention
+    ------------------------
+    - ``switch=\"rs\"`` (default): use the small-$r$ form for $r<r_s$ and the large-$r$ form for $r\ge r_s$
+      (paper-style switching at $r_s$).
+    - ``switch=\"match\"``: choose a join radius $r_{join}$ where the two asymptotic forms intersect
+      ($U_{small}(r_{join})=U_{large}(r_{join})$), clamped to lie inside $[r_{ss}, r_{sc}]$.
+
+    The ``match`` mode is a numerical/visual convenience (continuity of $U$ at the join); it is not a different
+    physical model.
     """
 
     name = "hybrid_parker"
 
-    def __init__(self, *, rs: u.Quantity = 2.7 * u.R_sun, n_grid: int = 8192, switch: str = "match"):
+    def __init__(self, *, rs: u.Quantity = 2.7 * u.R_sun, n_grid: int = 8192, switch: str = "rs"):
         self.rs = u.Quantity(rs).to(u.m)
         self.n_grid = int(n_grid)
         self.switch = str(switch).strip().lower()
+        if self.switch == "paper":
+            self.switch = "rs"
         if self.switch not in {"match", "rs"}:
-            raise ValueError("HybridParker: switch must be 'match' or 'rs'.")
+            raise ValueError("HybridParker: switch must be 'match', 'rs', or 'paper'.")
 
     @staticmethod
     def _f_large(r: u.Quantity, *, rs: u.Quantity, r_sc: u.Quantity) -> np.ndarray:
@@ -317,11 +323,17 @@ class HybridParker(TravelTimeModel):
         rs_m = u.Quantity(rs).to(u.m).to_value(u.m)
         rsc_m = u.Quantity(r_sc).to(u.m).to_value(u.m)
 
-        # Guard: large-distance form requires r > rs.
-        x = np.maximum(rr / rs_m, 1.0 + 1e-12)
-        xsc = max(rsc_m / rs_m, 1.0 + 1e-12)
+        x = rr / rs_m
+        xsc = rsc_m / rs_m
+        if not np.isfinite(xsc) or (xsc <= 1.0):
+            # Undefined (or nearly so) for the large-distance asymptotic.
+            return np.full_like(x, np.nan, dtype=float)
 
-        return np.sqrt(np.log(x)) / np.sqrt(np.log(xsc))
+        den = np.sqrt(np.log(xsc))
+        out = np.full_like(x, np.nan, dtype=float)
+        m = np.isfinite(x) & (x > 1.0)
+        out[m] = np.sqrt(np.log(x[m])) / den
+        return out
 
     @staticmethod
     def _f_small(r: u.Quantity, *, rs: u.Quantity, r_sc: u.Quantity) -> np.ndarray:
@@ -359,6 +371,10 @@ class HybridParker(TravelTimeModel):
         # Look for the first sign change.
         idx = np.where(s[:-1] * s[1:] < 0.0)[0]
         if idx.size == 0:
+            # No strict sign change; accept a near-zero minimum if it exists.
+            j = int(np.nanargmin(np.abs(diff)))
+            if np.isfinite(diff[j]) and (abs(float(diff[j])) < 1e-3):
+                return rr[j].to(u.m)
             return None
 
         i = int(idx[0])
@@ -397,10 +413,9 @@ class HybridParker(TravelTimeModel):
         else:
             r_join = self._find_join_radius(r_ss=u.Quantity(r_ss), r_sc=r_scq)
             if r_join is None:
-                # If no join exists, fall back to a single branch:
-                # - If r_ss > rs, large-distance is at least defined at r_ss.
-                # - Otherwise, use the small-distance form.
-                r_join = u.Quantity(r_ss).to(u.m)
+                # If no match radius is found (common for this heuristic family),
+                # fall back to the paper-style switch at r=rs.
+                r_join = rs
 
         vL = V * fL
         vS = V * fS
@@ -422,36 +437,56 @@ class HybridParker(TravelTimeModel):
         v_min: u.Quantity,
         v_fallback: u.Quantity,
     ) -> TravelTimeResult:
-        r_sc = u.Quantity(r_sc).to(u.m)
-        V_bg = u.Quantity(V_bg).to(u.m / u.s)
+        """Evaluate travel time for the hybrid-Parker heuristic family.
+
+        Important consistency notes
+        ---------------------------
+        - Use the same robust speed policy as the other models:
+          invalid / too-small V_bg samples are replaced by v_fallback and
+          flagged in fallback_mask.
+        - Travel time is still computed on fallback samples (so the mapping
+          remains defined), but those samples are explicitly flagged.
+        """
+
+        r_sc = _as1d(u.Quantity(r_sc).to(u.m))
+        V_bg = _as1d(u.Quantity(V_bg).to(u.m / u.s))
         r_ss = u.Quantity(r_ss).to(u.m)
 
-        rr_sc = np.atleast_1d(r_sc.to_value(u.m))
-        VV = np.atleast_1d(V_bg.to_value(u.m / u.s))
+        _validate_radii(r_sc, r_ss)
+
+        # Robustify V_bg exactly as in the other models.
+        V_eff, fb_speed = _robust_speed(V_bg, v_min=v_min, v_fallback=v_fallback)
+
+        rr_sc = np.asarray(r_sc.to_value(u.m), dtype=float)
+        vv_eff = np.asarray(V_eff.to_value(u.m / u.s), dtype=float)
 
         tau = np.full(rr_sc.shape, np.nan, dtype=float) * u.s
-        fb = np.zeros(rr_sc.shape, dtype=bool)
+        fb = np.asarray(fb_speed, dtype=bool).copy()
 
         # Diagnostics
         n_join_none = 0
 
-        for i, (r_i, v_i) in enumerate(zip(rr_sc, VV)):
-            if not np.isfinite(r_i) or not np.isfinite(v_i):
+        r_ss_m = float(r_ss.to_value(u.m))
+        v_min_mps = float(u.Quantity(v_min).to_value(u.m / u.s))
+
+        for i, (r_i, v_i) in enumerate(zip(rr_sc, vv_eff)):
+            if (not np.isfinite(r_i)) or (r_i <= r_ss_m):
                 fb[i] = True
                 continue
 
-            if r_i <= r_ss.to_value(u.m):
+            # v_i is expected finite and >= v_min, but keep a final guard.
+            if (not np.isfinite(v_i)) or (v_i <= 0.0):
                 fb[i] = True
-                continue
+                v_i = float(u.Quantity(v_fallback).to_value(u.m / u.s))
 
-            V_eff = max(v_i, u.Quantity(v_min).to_value(u.m / u.s))
-            V_eff = max(V_eff, 1e-9)
+            V_i = max(float(v_i), v_min_mps)
+            V_i = max(V_i, 1e-9)
 
-            r_grid = np.geomspace(r_ss.to_value(u.m), r_i, num=self.n_grid) * u.m
+            r_grid = np.geomspace(r_ss_m, float(r_i), num=self.n_grid) * u.m
             U = self.speed_profile(
                 r_grid=r_grid,
-                r_sc=u.Quantity(r_i, u.m),
-                V_bg=u.Quantity(V_eff, u.m / u.s),
+                r_sc=u.Quantity(float(r_i), u.m),
+                V_bg=u.Quantity(V_i, u.m / u.s),
                 r_ss=r_ss,
                 v_min=v_min,
             )
@@ -459,18 +494,19 @@ class HybridParker(TravelTimeModel):
                 fb[i] = True
                 continue
 
-            # Travel time integral
+            # Travel time integral tau = \int dr / U(r)
             r_m = r_grid.to_value(u.m)
             inv_u = 1.0 / U.to_value(u.m / u.s)
             tau_sec = float(np.trapz(inv_u, r_m))
-            if not np.isfinite(tau_sec) or tau_sec <= 0:
+            if (not np.isfinite(tau_sec)) or (tau_sec <= 0.0):
                 fb[i] = True
                 continue
+
             tau[i] = tau_sec * u.s
 
             if self.switch == "match":
-                # Count join failures for reporting (speed_profile falls back to r_ss in that case).
-                rj = self._find_join_radius(r_ss=r_ss, r_sc=u.Quantity(r_i, u.m))
+                # Count join failures for reporting.
+                rj = self._find_join_radius(r_ss=r_ss, r_sc=u.Quantity(float(r_i), u.m))
                 if rj is None:
                     n_join_none += 1
 
@@ -486,9 +522,6 @@ class HybridParker(TravelTimeModel):
             },
         }
         return TravelTimeResult(tau=tau.to(u.s), fallback_mask=fb, meta=meta)
-
-
-
 class ParkerScaled(TravelTimeModel):
     """Isothermal Parker-wind *shape* scaled to match V_bg(t) at r_sc.
 
@@ -577,6 +610,19 @@ def build_model(name: str, *, model_kwargs: Optional[Dict[str, Any]] = None) -> 
     key = str(name).strip().lower()
     kw = dict(model_kwargs or {})
 
+    def _coerce_length(x: Any, default_unit: u.UnitBase) -> u.Quantity:
+        """Coerce an input into a length Quantity.
+
+        Convention used across MHDTurbPy backmapping:
+        - If the user provides a bare number (dimensionless), interpret it in `default_unit`.
+          (e.g. rs=2.7 -> 2.7 * R_sun)
+        - If the user provides a Quantity with length units, keep it.
+        """
+        q = u.Quantity(x)
+        if q.unit == u.dimensionless_unscaled:
+            return q.value * default_unit
+        return q
+
     if key in {"ballistic_bg", "ballistic", "background", "bg"}:
         return BallisticBackground()
     if key in {"constant", "const"}:
@@ -586,29 +632,19 @@ def build_model(name: str, *, model_kwargs: Optional[Dict[str, Any]] = None) -> 
     if key in {"exp_accel", "accel", "acceleration", "empirical_exp"}:
         return ScaledExpAcceleration(**kw)
 
+    
     if key in {"hybrid_parker", "hybrid"}:
-        rs = kw.pop("rs", 2.7 * u.R_sun)
+        rs = _coerce_length(kw.pop("rs", 2.7 * u.R_sun), u.R_sun)
         n_grid = int(kw.pop("n_grid", 8192))
-        switch = str(kw.pop("switch", "match"))
+        switch = str(kw.pop("switch", "rs"))
         return HybridParker(rs=rs, n_grid=n_grid, switch=switch)
 
-    if key in {"parker_scaled", "parker"}:
-        # Backward-compatible alias: use the hybrid Parker asymptotics (paper-style heuristic),
-        # not the Lambert-W isothermal Parker solution.
-        rs = kw.pop("rs", 2.7 * u.R_sun)
-        n_grid = int(kw.pop("n_grid", 8192))
-        switch = str(kw.pop("switch", "match"))
-        return HybridParker(rs=rs, n_grid=n_grid, switch=switch)
-
-    if key in {"parker_lambert", "parker_lambert_scaled", "parker_isothermal"}:
-        # Optional: the exact isothermal Parker-wind (Lambert-W) shape, scaled to match V_bg at r_sc.
-        if "r_c" in kw:
-            rc = kw.pop("r_c")
-        else:
-            rc = 6.0 * u.R_sun
+    if key in {"parker_scaled", "parker", "parker_lambert", "parker_lambert_scaled", "parker_isothermal"}:
+        # Exact isothermal Parker-wind (Lambert-W) *shape* scaled to match V_bg at r_sc.
+        rc = _coerce_length(kw.pop("r_c", 6.0 * u.R_sun), u.R_sun)
         n_grid = int(kw.pop("n_grid", 8192))
         return ParkerScaled(r_c=rc, n_grid=n_grid)
 
     raise ValueError(
-        f"Unknown travel-time model {name!r}. Allowed: ballistic_bg, constant, exp_accel, parker_scaled, hybrid_parker, parker_lambert."
+        f"Unknown travel-time model {name!r}. Allowed: ballistic_bg, constant, exp_accel, parker_scaled, hybrid_parker."
     )

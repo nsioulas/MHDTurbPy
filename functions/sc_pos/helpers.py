@@ -3,7 +3,10 @@ import numpy as np
 import plotly.graph_objects as go
 import astropy.constants as const
 
-from .horizons_sun_lonlat import ballistic_source_longitude
+try:
+    from .horizons_sun_lonlat import ballistic_source_longitude
+except ImportError:  # pragma: no cover
+    from horizons_sun_lonlat import ballistic_source_longitude
 
 
 def delta_long(r, rss, vsw, omega_deg_per_day=14.1844):
@@ -18,10 +21,6 @@ def ballistic_map(carr_coord, rss, vsw, omega_deg_per_day=14.1844):
     return ss_lon
 
 
-
-
-
-
 def ballistic_source_longitude_from_df(df, lon_col="Carr_lon", r_col="Radius", vsw_col="Vr", **kwargs):
     """Convenience wrapper for dataframe-based ballistic source-longitude mapping.
 
@@ -33,6 +32,7 @@ def ballistic_source_longitude_from_df(df, lon_col="Carr_lon", r_col="Radius", v
     r_au = r / 1.495978707e8 if float(np.nanmax(np.abs(r))) > 10 else r
     vsw = df[vsw_col]
     return ballistic_source_longitude(lon_carr_deg=lon, r_au=r_au, vsw_kms=vsw, **kwargs)
+
 
 def wrap(arr, difference=340):
     arr = np.array(arr, dtype=float, copy=True)

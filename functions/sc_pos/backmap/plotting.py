@@ -17,7 +17,7 @@ This module assumes the input DataFrame has unit metadata in ``df.attrs['units']
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Sequence, Union
 
 import numpy as np
 import pandas as pd
@@ -149,7 +149,16 @@ def _compute_scalar_limits(v: np.ndarray, *, spec: Dict[str, Any], percentiles: 
     if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
         lo = float(np.nanmin(vv))
         hi = float(np.nanmax(vv))
-    return float(lo), float(hi)
+    lo = float(lo)
+    hi = float(hi)
+    if not np.isfinite(lo) or not np.isfinite(hi):
+        raise ValueError("Non-finite color limits.")
+    if hi == lo:
+        # Avoid zero-span colorscales (can hide the colorbar in Plotly).
+        eps = 1e-12 if lo == 0.0 else 1e-6 * abs(lo)
+        lo -= eps
+        hi += eps
+    return lo, hi
 
 
 def marker_sizes_from_metric(x: pd.Series, *, smin: float = 12.0, smax: float = 140.0, prc: Tuple[float, float] = (5.0, 95.0)) -> pd.Series:
@@ -189,6 +198,18 @@ def plot_source_surface_2d(
 
     out_png = Path(out_png)
     out_png.parent.mkdir(parents=True, exist_ok=True)
+
+    if profile_panel is None:
+        raise ValueError("plot_source_surface_2d requires profile_panel (mandatory U(r) panel).")
+
+    # Traceability guard: the plotted U(r) must come from the executed model.
+    sig_panel = None if profile_panel is None else profile_panel.get("executed_model_signature", None)
+    sig_data = data.attrs.get("executed_model_signature", None)
+    if (sig_panel is not None) and (sig_data is not None) and (str(sig_panel) != str(sig_data)):
+        raise ValueError(
+            "Traceability guard failed: profile_panel signature != data.attrs signature. "
+            "This indicates compute/plot divergence."
+        )
 
     for v in plot_vars:
         if v not in var_specs:
@@ -317,6 +338,32 @@ def plot_source_surface_2d(
         U_hi = profile_panel.get("U_hi_kms", None)
 
         if r.size >= 2 and U.size == r.size:
+            # Optional: show the *time-varying* family U(r,t) used across the interval.
+            # This makes it explicit whether we are using a single profile (shape+scale)
+            # or a time-dependent scaling to V_bg(t) and r_sc(t).
+            U_samp = profile_panel.get("U_samples_kms", None)
+            t_hr = profile_panel.get("t_samples_hr", None)
+            if U_samp is not None and t_hr is not None:
+                try:
+                    U_samp = np.asarray(U_samp, float)
+                    t_hr = np.asarray(t_hr, float)
+                    if U_samp.ndim == 2 and U_samp.shape[1] == r.size and U_samp.shape[0] >= 2:
+                        # Keep the panel readable: cap number of profiles shown.
+                        nshow = int(min(U_samp.shape[0], 14))
+                        cmap = mpl.cm.get_cmap("viridis")
+                        norm = Normalize(vmin=float(np.nanmin(t_hr[:nshow])), vmax=float(np.nanmax(t_hr[:nshow])))
+                        for uu, tt in zip(U_samp[:nshow], t_hr[:nshow]):
+                            if np.isfinite(uu).any() and np.isfinite(tt):
+                                axp.plot(r, uu, lw=1.0, alpha=0.55, color=cmap(norm(float(tt))))
+                        # Add a compact colorbar for time (hours since first shown sample).
+                        sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
+                        sm.set_array([])
+                        cbt = plt.colorbar(sm, ax=axp, pad=0.015, fraction=0.045)
+                        cbt.set_label("time [h]")
+                except Exception:
+                    pass
+
+            # Median/profile envelope (representative diagnostic)
             axp.plot(r, U, lw=2)
             if (U_lo is not None) and (U_hi is not None):
                 lo = np.asarray(U_lo, float)
@@ -334,7 +381,44 @@ def plot_source_surface_2d(
             axp.set_xscale("log")
             axp.set_xlabel(r"$r\,[R_\odot]$")
             axp.set_ylabel(r"$U(r)\,[\mathrm{km\,s^{-1}}]$")
+
+            # Also show a normalized profile to make weak acceleration visually obvious
+            try:
+                U_sc = float(U[-1])
+                if np.isfinite(U_sc) and U_sc > 0.0:
+                    axp2 = axp.twinx()
+                    axp2.plot(r, U / U_sc, lw=1.2, alpha=0.6)
+                    axp2.set_ylabel(r"$U/U_{\mathrm{sc}}$")
+                    axp2.set_ylim(0.0, 1.05)
+                    axp.text(0.02, 0.93, f"$U_{{\mathrm{{ss}}}}/U_{{\mathrm{{sc}}}}={U[0]/U_sc:.3f}$", transform=axp.transAxes)
+            except Exception:
+                pass
             axp.grid(True, alpha=0.25)
+            # Annotate non-degeneracy diagnostics (if provided)
+            try:
+                umin = profile_panel.get("U_min_kms", None)
+                umax = profile_panel.get("U_max_kms", None)
+                span = profile_panel.get("U_span_kms", None)
+                thr = profile_panel.get("U_span_thr_kms", None)
+                deg = profile_panel.get("profile_degenerate", None)
+                rea = profile_panel.get("degenerate_reason", None)
+                if span is not None and thr is not None:
+                    txt = "U_span={:.3g} km/s\nthr={:.3g} km/s\ndegenerate={}\n{}".format(
+                        float(span), float(thr), str(bool(deg)), (str(rea) if rea is not None else "")
+                    )
+                    axp.text(
+                        0.98,
+                        0.02,
+                        txt,
+                        transform=axp.transAxes,
+                        ha="right",
+                        va="bottom",
+                        fontsize=9,
+                        bbox=dict(boxstyle="round,pad=0.25", fc="white", ec="0.3", alpha=0.9),
+                    )
+            except Exception:
+                pass
+
         else:
             axp.axis("off")
 
@@ -412,6 +496,12 @@ def plot_velocity_profile(
             ax0.fill_between(r, lo, hi, alpha=0.25, linewidth=0)
     ax0.set_ylabel(r"$U(r)\,[\mathrm{km\,s^{-1}}]$")
     ax0.grid(True, alpha=0.25)
+
+    try:
+        if np.isfinite(U[[0,-1]]).all() and U[-1] != 0.0:
+            ax0.text(0.02, 0.92, f'U_ss/U_sc={U[0]/U[-1]:.3f}', transform=ax0.transAxes)
+    except Exception:
+        pass
 
     # Acceleration proxy dU/dr
     dUdr = np.gradient(U, r)
@@ -628,20 +718,42 @@ def plot_source_surface_3d(
     ncols_vars: int = 2,
     # visual scale: all panels are a Sun-centered zoom cube in AU
     sun_zoom_au: float = 0.06,
-    width: int = 1700,
-    height: int = 900,
+    panel_px: int = 650,
+    width: Optional[int] = None,
+    height: Optional[int] = None,
     decimate: int = 1,
+    # Optional: provide an independent spacecraft trajectory so the orbit line
+    # remains visible even when cadence-grid samples are removed (e.g., gap masking).
+    # Expected columns: sc_x_au, sc_y_au, sc_z_au (Cartesian AU in the plotting frame).
+    sc_track: Optional[pd.DataFrame] = None,
+    sc_track_decimate: Optional[int] = None,
+    # radial scaling (visualization only)
+    # - "zoom_au": legacy Sun-centered zoom cube in AU (may project SC to a shell)
+    # - "linear":  true AU Cartesian coordinates (no projection)
+    # - "log_r_over_Rsun": spherical-style radial compression with r_plot = log10(r/Rsun) + radial_log_offset
+    radial_scale: str = "log_r_over_Rsun",
+    radial_log_offset: float = 1.0,
     # spacecraft rendering inside the zoom cube
-    sc_project_to_shell: bool = True,
+    sc_project_to_shell: bool = False,
     sc_shell_frac: float = 0.98,
     # panel framing / clarity
-    draw_panel_boxes: bool = True,
+    draw_panel_boxes: bool = False,
     show_cube_edges: bool = False,
     show_links: bool = True,
     link_count: int = 12,
     link_line_rgba: str = "rgba(0,0,0,0.22)",
     show_rtn_axes: bool = True,
     rtn_axis_frac: float = 0.22,
+    # ecliptic plane context (press-release friendly)
+    show_ecliptic_circles: bool = True,
+    ecliptic_circle_radii_au: Optional[Sequence[float]] = None,
+    ecliptic_circle_max_au: Optional[float] = None,
+    ecliptic_circle_count: int = 5,
+    ecliptic_circle_spacing: str = "log",  # "linear" or "log" (log-spaced radii)
+    ecliptic_circle_label_units: str = "Rsun",  # "Rsun", "AU", or "both"
+    ecliptic_circle_rgba: str = "rgba(0,0,0,0.16)",
+    ecliptic_circle_width: int = 2,
+    show_ecliptic_axes: bool = True,
     # sphere latitude/longitude grid
     show_sphere_grid: bool = True,
     grid_lon_step_deg: int = 45,
@@ -650,7 +762,7 @@ def plot_source_surface_3d(
     grid_width: int = 2,
     sphere_grid_frame: str = "carrington",
     sphere_grid_observer: str = "earth",
-    show_grid_labels: bool = True,
+    show_grid_labels: bool = False,
     # uncertainty display
     show_uncertainty_arcs: bool = False,
     uncertainty_decimate: int = 10,
@@ -727,27 +839,129 @@ def plot_source_surface_3d(
     req_sc = {"sc_x_au", "sc_y_au", "sc_z_au"}
     have_sc = req_sc.issubset(data.columns)
 
+    # Optional separate spacecraft track (for continuous orbit rendering)
+    track = None
+    if sc_track is not None:
+        try:
+            track = sc_track.copy()
+            if not isinstance(track.index, pd.DatetimeIndex):
+                track.index = pd.to_datetime(track.index)
+        except Exception:
+            track = None
+    have_track = (track is not None) and req_sc.issubset(track.columns)
+
     xs = pd.to_numeric(data["ss_x_au"], errors="coerce").to_numpy(dtype=float)[::decimate]
     ys = pd.to_numeric(data["ss_y_au"], errors="coerce").to_numpy(dtype=float)[::decimate]
     zs = pd.to_numeric(data["ss_z_au"], errors="coerce").to_numpy(dtype=float)[::decimate]
+    # Preserve physical (AU) coordinates for hover + sanity checks even when we re-scale for plotting.
+    xs_phys = xs.copy()
+    ys_phys = ys.copy()
+    zs_phys = zs.copy()
 
     if have_sc:
         xsc_raw = pd.to_numeric(data["sc_x_au"], errors="coerce").to_numpy(dtype=float)[::decimate]
         ysc_raw = pd.to_numeric(data["sc_y_au"], errors="coerce").to_numpy(dtype=float)[::decimate]
         zsc_raw = pd.to_numeric(data["sc_z_au"], errors="coerce").to_numpy(dtype=float)[::decimate]
+        xsc_phys = xsc_raw.copy()
+        ysc_phys = ysc_raw.copy()
+        zsc_phys = zsc_raw.copy()
     else:
         xsc_raw = ysc_raw = zsc_raw = None
+        xsc_phys = ysc_phys = zsc_phys = None
+
+    # Orbit track (may be denser and may include times where cadence-grid data were removed)
+    xtrk_raw = ytrk_raw = ztrk_raw = None
+    xtrk_phys = ytrk_phys = ztrk_phys = None
+    dtrk = int(sc_track_decimate) if (sc_track_decimate is not None) else int(decimate)
+    dtrk = max(1, dtrk)
+    if have_track:
+        xtrk_raw = pd.to_numeric(track["sc_x_au"], errors="coerce").to_numpy(dtype=float)[::dtrk]
+        ytrk_raw = pd.to_numeric(track["sc_y_au"], errors="coerce").to_numpy(dtype=float)[::dtrk]
+        ztrk_raw = pd.to_numeric(track["sc_z_au"], errors="coerce").to_numpy(dtype=float)[::dtrk]
+        xtrk_phys = xtrk_raw.copy()
+        ytrk_phys = ytrk_raw.copy()
+        ztrk_phys = ztrk_raw.copy()
 
     # -----------------------
-    # Zoom cube (fixes "pancake Sun")
+    # Radial scaling mode
     # -----------------------
-    lim = float(max(float(sun_zoom_au), 1.25 * float(r_ss_au), 2.2 * float(r_sun_au)))
-    lim = float(max(lim, 1.05 * float(r_ss_au)))
-    shell_r = float(max(0.0, float(sc_shell_frac))) * lim
+    radial_mode = str(radial_scale).lower().strip()
+    if radial_mode in {"zoom_cube", "zoom_au", "cube", "cube_au"}:
+        radial_mode = "zoom_au"
+    if radial_mode not in {"zoom_au", "linear", "log_r_over_rsun"}:
+        raise ValueError('radial_scale must be one of {"zoom_au","linear","log_r_over_Rsun"}.')
 
+    # Context extent: by default, show at least 1 AU (paper-style context), or the max SC radius.
+    r_sc_max_au = float("nan")
+    rr_list = []
+    if have_sc and (xsc_phys is not None):
+        rr_sc = np.sqrt(xsc_phys * xsc_phys + ysc_phys * ysc_phys + zsc_phys * zsc_phys)
+        rr_list.append(rr_sc)
+    if have_track and (xtrk_phys is not None):
+        rr_trk = np.sqrt(xtrk_phys * xtrk_phys + ytrk_phys * ytrk_phys + ztrk_phys * ztrk_phys)
+        rr_list.append(rr_trk)
+    if rr_list:
+        rr_all = np.concatenate([r[np.isfinite(r)] for r in rr_list if r is not None and np.isfinite(r).any()])
+        if rr_all.size:
+            r_sc_max_au = float(np.nanmax(rr_all))
+
+    if ecliptic_circle_max_au is None:
+        r_ctx_max_au = float(max(1.0, 1.05 * (r_sc_max_au if np.isfinite(r_sc_max_au) else float(r_ss_au))))
+    else:
+        r_ctx_max_au = float(max(0.0, float(ecliptic_circle_max_au)))
+
+    # Helper: map physical AU radius -> plot radius
+    def _r_au_to_plot(rr_au: float) -> float:
+        rr = float(rr_au)
+        if radial_mode in {"zoom_au", "linear"}:
+            return rr
+        off = float(radial_log_offset)
+        if not np.isfinite(off) or off <= 0:
+            raise ValueError("radial_log_offset must be finite and > 0 for log_r_over_Rsun mode.")
+        return float(np.log10(rr / max(float(r_sun_au), 1e-30)) + off)
+
+    def _xyz_to_plot(x: np.ndarray, y: np.ndarray, z: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+        z = np.asarray(z, dtype=float)
+        if radial_mode in {"zoom_au", "linear"}:
+            return x, y, z
+        r = np.sqrt(x * x + y * y + z * z)
+        ok = np.isfinite(r) & (r > 0)
+        outx = np.full_like(x, np.nan, dtype=float)
+        outy = np.full_like(y, np.nan, dtype=float)
+        outz = np.full_like(z, np.nan, dtype=float)
+        r_plot = np.full_like(r, np.nan, dtype=float)
+        r_plot[ok] = np.log10(r[ok] / max(float(r_sun_au), 1e-30)) + float(radial_log_offset)
+        r_plot = np.maximum(r_plot, 1e-6)
+        outx[ok] = x[ok] / r[ok] * r_plot[ok]
+        outy[ok] = y[ok] / r[ok] * r_plot[ok]
+        outz[ok] = z[ok] / r[ok] * r_plot[ok]
+        return outx, outy, outz
+
+    def _scale_xyz_arrays(x: np.ndarray, y: np.ndarray, z: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        return _xyz_to_plot(np.asarray(x, float), np.asarray(y, float), np.asarray(z, float))
+
+    # Plot radii for Sun/SS spheres
+    r_sun_plot = _r_au_to_plot(float(r_sun_au))
+    r_ss_plot = _r_au_to_plot(float(r_ss_au))
+
+    # Plot coordinates
+    xs, ys, zs = _xyz_to_plot(xs_phys, ys_phys, zs_phys)
     xsc = ysc = zsc = None
-    if have_sc and (xsc_raw is not None):
-        if sc_project_to_shell:
+    if have_sc and (xsc_phys is not None):
+        xsc, ysc, zsc = _xyz_to_plot(xsc_phys, ysc_phys, zsc_phys)
+
+    xtrk = ytrk = ztrk = None
+    if have_track and (xtrk_phys is not None):
+        xtrk, ytrk, ztrk = _xyz_to_plot(xtrk_phys, ytrk_phys, ztrk_phys)
+
+    # Panel extent
+    if radial_mode == "zoom_au":
+        lim = float(max(float(sun_zoom_au), 1.25 * float(r_ss_au), 2.2 * float(r_sun_au)))
+        lim = float(max(lim, 1.05 * float(r_ss_au)))
+        shell_r = float(max(0.0, float(sc_shell_frac))) * lim
+        if have_sc and (xsc_raw is not None) and sc_project_to_shell:
             r = np.sqrt(xsc_raw * xsc_raw + ysc_raw * ysc_raw + zsc_raw * zsc_raw)
             ok = np.isfinite(r) & (r > 0)
             xsc = np.full_like(xsc_raw, np.nan, dtype=float)
@@ -756,18 +970,54 @@ def plot_source_surface_3d(
             xsc[ok] = (xsc_raw[ok] / r[ok]) * shell_r
             ysc[ok] = (ysc_raw[ok] / r[ok]) * shell_r
             zsc[ok] = (zsc_raw[ok] / r[ok]) * shell_r
-        else:
-            xsc, ysc, zsc = xsc_raw.copy(), ysc_raw.copy(), zsc_raw.copy()
 
-    # ecliptic plane patch inside the cube
-    s2 = 0.55 * lim
-    px = np.array([-s2, s2, s2, -s2], dtype=float)
-    py = np.array([-s2, -s2, s2, s2], dtype=float)
-    pz = np.zeros(4, dtype=float)
+        # Apply the same projection to the orbit track if present.
+        if have_track and (xtrk_raw is not None) and (xtrk is not None) and sc_project_to_shell:
+            r = np.sqrt(xtrk_raw * xtrk_raw + ytrk_raw * ytrk_raw + ztrk_raw * ztrk_raw)
+            ok = np.isfinite(r) & (r > 0)
+            xtrk = np.full_like(xtrk_raw, np.nan, dtype=float)
+            ytrk = np.full_like(ytrk_raw, np.nan, dtype=float)
+            ztrk = np.full_like(ztrk_raw, np.nan, dtype=float)
+            xtrk[ok] = (xtrk_raw[ok] / r[ok]) * shell_r
+            ytrk[ok] = (ytrk_raw[ok] / r[ok]) * shell_r
+            ztrk[ok] = (ztrk_raw[ok] / r[ok]) * shell_r
+    elif radial_mode == "linear":
+        lim = float(1.05 * max(r_ctx_max_au, float(r_ss_au), float(r_sun_au)))
+    else:
+        lim = float(1.05 * max(_r_au_to_plot(r_ctx_max_au), r_ss_plot, r_sun_plot))
 
-    # spheres
-    sx, sy, sz, si, sj, sk = _sphere_mesh3d(float(r_sun_au), n_lat=48, n_lon=96)
-    rx, ry, rz, ri, rj, rk = _sphere_mesh3d(float(r_ss_au), n_lat=48, n_lon=96)
+    # Ecliptic-plane context: concentric circles in the x–y plane (z=0).
+    # NOTE: true log-log scaling is not meaningful in this Sun-centered Cartesian view (x and y change sign).
+    # Instead, we optionally *log-space the ring radii* to improve visibility close to the Sun.
+    spacing = str(ecliptic_circle_spacing).lower().strip()
+    if spacing not in {"linear", "log"}:
+        raise ValueError("ecliptic_circle_spacing must be 'linear' or 'log'")
+
+    if ecliptic_circle_radii_au is None:
+        anchors = [float(r_sun_au), float(r_ss_au)]
+        try:
+            n_extra = int(max(0, int(ecliptic_circle_count)))
+        except Exception:
+            n_extra = 5
+        extra = []
+        if n_extra > 0:
+            rmax = float(r_ctx_max_au)
+            if spacing == "log":
+                lo = max(float(r_ss_au), 1.05 * float(r_sun_au), 1e-12)
+                hi = max(lo * 1.01, rmax)
+                extra = np.geomspace(lo, hi, n_extra)
+            else:
+                extra = np.linspace(float(r_ss_au), rmax, n_extra)
+        base = anchors + [float(v) for v in extra]
+        radii_au = sorted({float(v) for v in base if np.isfinite(v) and float(v) > 0.0})
+    else:
+        radii_au = sorted({float(v) for v in ecliptic_circle_radii_au if np.isfinite(float(v)) and float(v) > 0.0})
+
+    radii_au = [r for r in radii_au if _r_au_to_plot(r) < 0.99 * float(lim)]
+
+    # spheres (in plotting coordinates)
+    sx, sy, sz, si, sj, sk = _sphere_mesh3d(float(r_sun_plot), n_lat=48, n_lon=96)
+    rx, ry, rz, ri, rj, rk = _sphere_mesh3d(float(r_ss_plot), n_lat=48, n_lon=96)
 
     # -----------------------
     # Sphere grid lines (lat/lon)
@@ -879,6 +1129,8 @@ def plot_source_surface_3d(
 
                 if xs_g:
                     segs = (np.asarray(xs_g, float), np.asarray(ys_g, float), np.asarray(zs_g, float))
+                    if radial_mode == "log_r_over_rsun":
+                        segs = _scale_xyz_arrays(segs[0], segs[1], segs[2])
 
 # -----------------------
     # Orientation axes (plotting-frame basis; avoids ambiguous 'RTN' labeling)
@@ -889,6 +1141,10 @@ def plot_source_surface_3d(
         np.array([0.0, 0.0, 1.0], dtype=float),
     )
     axis_len = float(max(0.0, rtn_axis_frac)) * float(lim)
+    # Ensure orientation axes extend beyond the source-surface sphere in all radial modes
+    # (important in log-radial visualization where r_ss_plot can exceed rtn_axis_frac*lim).
+    axis_len = float(max(axis_len, 1.25 * float(r_ss_plot)))
+    label_len = float(1.12 * axis_len)
 
 
     # -----------------------
@@ -900,6 +1156,16 @@ def plot_source_surface_3d(
     ncols_vars = int(max(1, ncols_vars))
     nrows = int(np.ceil(nvars / ncols_vars))
     total_cells = int(nrows * ncols_vars)
+
+    # Figure sizing: keep subplot domains close to square so spheres stay spherical.
+    try:
+        _pp = int(max(520, int(panel_px)))
+    except Exception:
+        _pp = 650
+    if width is None or int(width) <= 0:
+        width = int(_pp * ncols_vars)
+    if height is None or int(height) <= 0:
+        height = int(_pp * nrows + 90)
 
     specs = []
     for rr in range(nrows):
@@ -928,8 +1194,40 @@ def plot_source_surface_3d(
         plot_bgcolor="white",
     )
 
+    # Radial scaling note (plotting coordinates can be non-physical in log mode).
+    if radial_mode == "log_r_over_rsun":
+        fig.add_annotation(
+            x=0.99,
+            y=0.99,
+            xref="paper",
+            yref="paper",
+            text=f"radial scale: r_plot = log10(r/R⊙) + {float(radial_log_offset):.3g}",
+            showarrow=False,
+            align="right",
+            font=dict(size=13, color="rgba(0,0,0,0.70)"),
+        )
+
     # We intentionally avoid panel titles for long-term clarity.
     fig.layout.annotations = []
+
+
+    # Reserve a thin strip above each 3D panel for a custom *horizontal* colorbar.
+    # We draw the colorbar in paper coordinates inside this strip, so it never intrudes
+    # into the data when the user zooms/rotates the 3D scene.
+    _CB_STRIP_FRAC = 0.12  # fraction of each panel's domain height
+    _panel_strip = {}
+    for _i in range(1, total_cells + 1):
+        _sname = "scene" if _i == 1 else f"scene{_i}"
+        _dom = getattr(fig.layout, _sname).domain
+        _x0, _x1 = float(_dom.x[0]), float(_dom.x[1])
+        _y0, _y1 = float(_dom.y[0]), float(_dom.y[1])
+        _h = max(1e-9, _y1 - _y0)
+        _strip = float(_CB_STRIP_FRAC) * _h
+        _y1_scene = _y1 - _strip
+        getattr(fig.layout, _sname).domain = dict(x=[_x0, _x1], y=[_y0, _y1_scene])
+        _row_i = (_i - 1) // ncols_vars + 1
+        _col_i = (_i - 1) % ncols_vars + 1
+        _panel_strip[(_row_i, _col_i)] = dict(x0=_x0, x1=_x1, y0_scene=_y0, y1_scene=_y1_scene, y0_strip=_y1_scene, y1_strip=_y1)
 
     # Always show the median spacecraft heliocentric distance on-figure (not hover-only).
     if r_sc_med_rsun is not None and np.isfinite(float(r_sc_med_rsun)):
@@ -948,6 +1246,7 @@ def plot_source_surface_3d(
 
     def _scene_axes(_ttl: str = ""):
         # Minimal 3D aesthetic: no ticks/background planes (presentation-first).
+        # Axis titles are removed to avoid clutter (e.g., 'x [scaled]').
         return dict(
             title=dict(text=""),
             range=[-lim, lim],
@@ -959,6 +1258,8 @@ def plot_source_surface_3d(
             ticks="",
             showticklabels=False,
         )
+    # Axis titles are intentionally suppressed (presentation-first).
+    _xlab, _ylab, _zlab = "", "", ""
 
     def _cam(which: str):
         w = str(which).lower().strip()
@@ -1002,9 +1303,9 @@ def plot_source_surface_3d(
         col = (k % ncols_vars) + 1
         fig.update_scenes(
             dict(
-                xaxis=_scene_axes("x [AU]"),
-                yaxis=_scene_axes("y [AU]"),
-                zaxis=_scene_axes("z [AU]"),
+                xaxis=_scene_axes(_xlab),
+                yaxis=_scene_axes(_ylab),
+                zaxis=_scene_axes(_zlab),
                 aspectmode="cube",
                 aspectratio=dict(x=1, y=1, z=1),
             ),
@@ -1037,24 +1338,69 @@ def plot_source_surface_3d(
             )
 
     def _add_rtn_axes(*, row: int, col: int) -> None:
-        if (not show_rtn_axes) or (rtn is None) or (axis_len <= 0):
+        if (not show_rtn_axes) or (rtn is None) or (float(lim) <= 0):
             return
+
+        # Keep axis directions physical (frame basis), but place axis labels using a
+        # small perpendicular + out-of-ecliptic offset to avoid overlapping the
+        # ecliptic distance-ring labels (which sit on +X, z=0).
         R, T, N = rtn
         colr = "rgba(0,0,0,0.35)"
         lw = 5
+
         labx = f"{frame3d} +X"
         laby = f"{frame3d} +Y"
         labz = f"{frame3d} +Z"
+
+        lim_f = float(lim)
+
+        # Push axes clearly beyond the SS sphere, but keep endpoints inside the scene range.
+        axis_line_len = float(max(float(rtn_axis_frac) * lim_f, 1.85 * float(r_ss_plot)))
+        axis_line_len = float(min(0.90 * lim_f, axis_line_len))
+        label_base_len = float(min(0.965 * lim_f, 1.12 * axis_line_len))
+
+        # Perpendicular offset magnitude for labels (kept modest so labels remain in-frame).
+        off = 0.085 * lim_f
+
+        def _norm(v: np.ndarray) -> np.ndarray:
+            n = float(np.linalg.norm(v))
+            return (v / n) if (n > 0) else v
+
+        # "Clever" part: choose a perpendicular direction that moves labels away from
+        # the ecliptic-ring label rail at y=0,z=0. Add +z for X/Y labels.
+        perp_for = {
+            labx: _norm(np.array([0.0, +1.0, +1.2])),
+            laby: _norm(np.array([-1.0, 0.0, +1.2])),
+            labz: _norm(np.array([+1.0, +1.0, 0.0])),
+        }
+
         for nm, vec in [(labx, R), (laby, T), (labz, N)]:
-            vx, vy, vz = (axis_len * vec).tolist()
+            vec = _norm(np.asarray(vec, dtype=float))
+            vx, vy, vz = (axis_line_len * vec).tolist()
+
+            base = label_base_len * vec
+            perp = perp_for.get(nm, _norm(np.array([1.0, 1.0, 1.0])))
+            tx, ty, tz = (base + off * perp).tolist()
+
             fig.add_trace(
                 go.Scatter3d(
                     x=[0.0, vx], y=[0.0, vy], z=[0.0, vz],
-                    mode="lines+text",
+                    mode="lines",
                     line=dict(width=lw, color=colr),
-                    opacity=0.70,
-                    text=["", nm],
-                    textposition="top center",
+                    opacity=0.45,
+                    showlegend=False,
+                    hoverinfo="skip",
+                ),
+                row=row,
+                col=col,
+            )
+
+            fig.add_trace(
+                go.Scatter3d(
+                    x=[tx], y=[ty], z=[tz],
+                    mode="text",
+                    text=[nm],
+                    textfont=dict(size=16, color=colr),
                     showlegend=False,
                     hoverinfo="skip",
                 ),
@@ -1129,6 +1475,17 @@ def plot_source_surface_3d(
             grid_ss = _grid_lines(float(r_ss_au), lat_step=int(grid_lat_step_deg), lon_step=int(grid_lon_step_deg))
             grid_labels = None
 
+    # If we are using a non-linear radial visualization, re-scale grid lines into plot space.
+    if radial_mode == "log_r_over_rsun":
+        if grid_sun is not None:
+            grid_sun = _scale_xyz_arrays(grid_sun[0], grid_sun[1], grid_sun[2])
+        if grid_ss is not None:
+            grid_ss = _scale_xyz_arrays(grid_ss[0], grid_ss[1], grid_ss[2])
+        if grid_labels is not None:
+            lx, ly, lz, ltxt = grid_labels
+            lx2, ly2, lz2 = _scale_xyz_arrays(lx, ly, lz)
+            grid_labels = (lx2, ly2, lz2, ltxt)
+
 
     def _colorbar_pos(row: int, col: int):
         idx1 = (row - 1) * ncols_vars + col
@@ -1138,7 +1495,8 @@ def plot_source_surface_3d(
         y0, y1 = float(dom.y[0]), float(dom.y[1])
         # Place colorbars *inside* each panel near the right edge to avoid
         # giant outer margins (keeps the subplot grid compact).
-        x = max(x0 + 0.01, min(0.985, x1 - 0.018))
+        # We use xanchor='right' on the colorbar so the bar extends to the *left*.
+        x = max(x0 + 0.02, min(0.995, x1 - 0.006))
         y = 0.5 * (y0 + y1)
         ln = 0.66 * (y1 - y0)
         return dict(x=x, y=y, len=ln)
@@ -1150,10 +1508,139 @@ def plot_source_surface_3d(
             return f"$\\log_{10}\\left({inner}\\right)$"
         return f"log10({s})"
 
-    # local lon/lat for hover (plotting frame)
-    rloc = np.sqrt(xs * xs + ys * ys + zs * zs)
-    lon_loc = (np.degrees(np.arctan2(ys, xs)) + 360.0) % 360.0
-    lat_loc = np.degrees(np.arcsin(np.where(rloc > 0, zs / rloc, np.nan)))
+    
+
+    def _parse_rgb(_c: str) -> tuple[float, float, float]:
+        s = str(_c).strip()
+        if s.startswith("#") and len(s) in {7, 9}:
+            r = int(s[1:3], 16)
+            g = int(s[3:5], 16)
+            b = int(s[5:7], 16)
+            return float(r), float(g), float(b)
+        if s.lower().startswith("rgb"):
+            q = s[s.find("(") + 1 : s.find(")")]
+            parts = [p.strip() for p in q.split(",") if p.strip()]
+            if len(parts) >= 3:
+                return float(parts[0]), float(parts[1]), float(parts[2])
+        return 128.0, 128.0, 128.0
+
+    def _rgb_str(rgb: tuple[float, float, float]) -> str:
+        r, g, b = rgb
+        r = int(max(0, min(255, round(float(r)))))
+        g = int(max(0, min(255, round(float(g)))))
+        b = int(max(0, min(255, round(float(b)))))
+        return f"rgb({r},{g},{b})"
+
+    def _colorscale_color(colorscale: list, t: float) -> str:
+        if not colorscale:
+            return "rgb(128,128,128)"
+        tt = float(max(0.0, min(1.0, t)))
+        xs = [float(p[0]) for p in colorscale]
+        cs = [p[1] for p in colorscale]
+        if tt <= xs[0]:
+            return str(cs[0])
+        if tt >= xs[-1]:
+            return str(cs[-1])
+        j = 0
+        for k in range(len(xs) - 1):
+            if xs[k] <= tt <= xs[k + 1]:
+                j = k
+                break
+        x0, x1 = float(xs[j]), float(xs[j + 1])
+        c0 = _parse_rgb(cs[j])
+        c1 = _parse_rgb(cs[j + 1])
+        if (not np.isfinite(x1 - x0)) or (x1 == x0):
+            return _rgb_str(c0)
+        a = (tt - x0) / (x1 - x0)
+        rr = c0[0] + a * (c1[0] - c0[0])
+        gg = c0[1] + a * (c1[1] - c0[1])
+        bb = c0[2] + a * (c1[2] - c0[2])
+        return _rgb_str((rr, gg, bb))
+
+    def _fmt_tick(v: float) -> str:
+        try:
+            return f"{float(v):.3g}"
+        except Exception:
+            return str(v)
+
+    def _add_horizontal_colorbar(*, row: int, col: int, vmin: float, vmax: float, colorscale: list, title: str, nticks: int = 3) -> None:
+        g = _panel_strip.get((int(row), int(col)), None)
+        if g is None:
+            return
+
+        x0, x1 = float(g["x0"]), float(g["x1"])
+        ys0, ys1 = float(g["y0_strip"]), float(g["y1_strip"])
+        ww = max(1e-9, x1 - x0)
+        hh = max(1e-9, ys1 - ys0)
+
+        bx0 = x0 + 0.07 * ww
+        bx1 = x1 - 0.03 * ww
+        by0 = ys0 + 0.30 * hh
+        by1 = ys0 + 0.60 * hh
+
+        nseg = 48
+        for i in range(nseg):
+            t0 = i / nseg
+            t1 = (i + 1) / nseg
+            c = _colorscale_color(colorscale, 0.5 * (t0 + t1))
+            fig.add_shape(
+                type="rect",
+                xref="paper",
+                yref="paper",
+                x0=bx0 + t0 * (bx1 - bx0),
+                x1=bx0 + t1 * (bx1 - bx0),
+                y0=by0,
+                y1=by1,
+                line=dict(width=0),
+                fillcolor=c,
+                layer="above",
+            )
+
+        fig.add_shape(
+            type="rect",
+            xref="paper",
+            yref="paper",
+            x0=bx0,
+            x1=bx1,
+            y0=by0,
+            y1=by1,
+            line=dict(color="rgba(0,0,0,0.25)", width=1),
+            fillcolor="rgba(0,0,0,0)",
+            layer="above",
+        )
+
+        fig.add_annotation(
+            x=0.5 * (bx0 + bx1),
+            y=ys0 + 0.78 * hh,
+            xref="paper",
+            yref="paper",
+            text=str(title),
+            showarrow=False,
+            xanchor="center",
+            yanchor="bottom",
+            font=dict(size=12, color="rgba(0,0,0,0.85)"),
+        )
+
+        nt = int(max(2, nticks))
+        tick_y = ys0 + 0.08 * hh
+        for tt in np.linspace(0.0, 1.0, nt):
+            xv = bx0 + tt * (bx1 - bx0)
+            val = float(vmin) + tt * (float(vmax) - float(vmin))
+            fig.add_annotation(
+                x=xv,
+                y=tick_y,
+                xref="paper",
+                yref="paper",
+                text=_fmt_tick(val),
+                showarrow=False,
+                xanchor="center",
+                yanchor="bottom",
+                font=dict(size=11, color="rgba(0,0,0,0.72)"),
+            )
+# local lon/lat for hover: ALWAYS computed from physical AU coordinates (not plot-scaled)
+    rloc_phys = np.sqrt(xs_phys * xs_phys + ys_phys * ys_phys + zs_phys * zs_phys)
+    lon_loc = (np.degrees(np.arctan2(ys_phys, xs_phys)) + 360.0) % 360.0
+    lat_loc = np.degrees(np.arcsin(np.where(rloc_phys > 0, zs_phys / rloc_phys, np.nan)))
 
     try:
         t_hover = pd.to_datetime(data.index).astype("datetime64[ns]")[::decimate]
@@ -1173,7 +1660,8 @@ def plot_source_surface_3d(
     cols_cd.append(phi_car if phi_car is not None else np.full(len(xs), np.nan))
     cols_cd.append(lat_car if lat_car is not None else np.full(len(xs), np.nan))
     # radial distance in R_sun for hover (more intuitive than AU in the Sun-zoom cube)
-    rloc_rsun = np.where(np.isfinite(rloc), rloc / float(r_sun_au), np.nan)
+    rloc_rsun = np.where(np.isfinite(rloc_phys), rloc_phys / float(r_sun_au), np.nan)
+    sc_hover_label = "SC (projected)" if (radial_mode == "zoom_au" and bool(sc_project_to_shell)) else "SC"
     cols_cd.append(rloc_rsun)
     custom_base = np.column_stack(cols_cd)
 
@@ -1188,20 +1676,85 @@ def plot_source_surface_3d(
         row = (k // ncols_vars) + 1
         col = (k % ncols_vars) + 1
 
-        # ecliptic patch
-        fig.add_trace(
-            go.Mesh3d(
-                x=px, y=py, z=pz,
-                i=np.array([0, 0]), j=np.array([1, 2]), k=np.array([2, 3]),
-                opacity=0.05,
-                color="rgba(120,120,120,1.0)",
-                flatshading=True,
-                showlegend=False,
-                hoverinfo="skip",
-            ),
-            row=row,
-            col=col,
-        )
+        # Ecliptic context: circles in the x–y plane (z=0) with labeled radii.
+        if show_ecliptic_circles:
+            theta = np.linspace(0.0, 2.0 * np.pi, 361)
+            for rr in radii_au:
+                rr_plot = float(_r_au_to_plot(rr))
+                cx = rr_plot * np.cos(theta)
+                cy = rr_plot * np.sin(theta)
+                cz = np.zeros_like(theta)
+                fig.add_trace(
+                    go.Scatter3d(
+                        x=cx, y=cy, z=cz,
+                        mode="lines",
+                        line=dict(color=str(ecliptic_circle_rgba), width=int(ecliptic_circle_width)),
+                        hoverinfo="skip",
+                        showlegend=False,
+                    ),
+                    row=row,
+                    col=col,
+                )
+                # small label at +x for each ring
+                rr_rsun = rr / float(r_sun_au)
+                lab = f"{rr_rsun:.0f} R⊙"
+
+                # Put distance labels on the "back side" of the view to reduce clutter:
+                # choose the point opposite to the camera eye vector in the x–y plane.
+                try:
+                    _eye = (_cam(camera) or {}).get("eye", {}) or {}
+                    _ex = float(_eye.get("x", 1.0))
+                    _ey = float(_eye.get("y", 1.0))
+                except Exception:
+                    _ex, _ey = 1.0, 1.0
+
+                if (not np.isfinite(_ex)) or (not np.isfinite(_ey)) or (abs(_ex) + abs(_ey) < 1e-12):
+                    _ang = float(np.pi)
+                else:
+                    _ang = float(np.arctan2(_ey, _ex) + np.pi)
+
+                _xl = 1.02 * rr_plot * np.cos(_ang)
+                _yl = 1.02 * rr_plot * np.sin(_ang)
+
+                fig.add_trace(
+                    go.Scatter3d(
+                        x=[_xl], y=[_yl], z=[0.0],
+                        mode="text",
+                        text=[lab],
+                        textposition="middle center",
+                        textfont=dict(size=11, color="rgba(0,0,0,0.55)"),
+                        hoverinfo="skip",
+                        showlegend=False,
+                    ),
+                    row=row,
+                    col=col,
+                )
+
+        # Optional: ecliptic axes (x and y) for orientation
+        if show_ecliptic_axes:
+            axy = 0.92 * float(lim)
+            fig.add_trace(
+                go.Scatter3d(
+                    x=[-axy, axy], y=[0.0, 0.0], z=[0.0, 0.0],
+                    mode="lines",
+                    line=dict(color="rgba(0,0,0,0.18)", width=2),
+                    hoverinfo="skip",
+                    showlegend=False,
+                ),
+                row=row,
+                col=col,
+            )
+            fig.add_trace(
+                go.Scatter3d(
+                    x=[0.0, 0.0], y=[-axy, axy], z=[0.0, 0.0],
+                    mode="lines",
+                    line=dict(color="rgba(0,0,0,0.18)", width=2),
+                    hoverinfo="skip",
+                    showlegend=False,
+                ),
+                row=row,
+                col=col,
+            )
 
         # spheres
         fig.add_trace(
@@ -1273,36 +1826,43 @@ def plot_source_surface_3d(
             )
 
 
-        ex, ey, ez = _equator_ring(float(r_sun_au))
+        ex, ey, ez = _equator_ring(float(r_sun_plot))
         fig.add_trace(
             go.Scatter3d(x=ex, y=ey, z=ez, mode="lines", line=dict(width=2, color="rgba(0,0,0,0.30)"), showlegend=False, hoverinfo="skip"),
             row=row,
             col=col,
         )
-        ex, ey, ez = _equator_ring(float(r_ss_au))
+        ex, ey, ez = _equator_ring(float(r_ss_plot))
         fig.add_trace(
             go.Scatter3d(x=ex, y=ey, z=ez, mode="lines", line=dict(width=2, color="rgba(0,0,0,0.24)", dash="dot"), showlegend=False, hoverinfo="skip"),
             row=row,
             col=col,
         )
-        mx, my, mz = _prime_meridian(float(r_ss_au))
+        mx, my, mz = _prime_meridian(float(r_ss_plot))
         fig.add_trace(
             go.Scatter3d(x=mx, y=my, z=mz, mode="lines", line=dict(width=2, color="rgba(0,0,0,0.28)", dash="dash"), showlegend=False, hoverinfo="skip"),
             row=row,
             col=col,
         )
 
-        # spacecraft trajectory
-        if have_sc and (xsc is not None) and (xsc_raw is not None):
+        # spacecraft trajectory (use independent track if provided)
+        x_orb = xtrk if (have_track and (xtrk is not None) and (xtrk_raw is not None)) else xsc
+        y_orb = ytrk if (have_track and (ytrk is not None) and (ytrk_raw is not None)) else ysc
+        z_orb = ztrk if (have_track and (ztrk is not None) and (ztrk_raw is not None)) else zsc
+        x_orb_raw = xtrk_raw if (have_track and (xtrk_raw is not None)) else xsc_raw
+        y_orb_raw = ytrk_raw if (have_track and (ytrk_raw is not None)) else ysc_raw
+        z_orb_raw = ztrk_raw if (have_track and (ztrk_raw is not None)) else zsc_raw
+
+        if (x_orb is not None) and (x_orb_raw is not None):
             fig.add_trace(
                 go.Scatter3d(
-                    x=xsc, y=ysc, z=zsc,
-                    customdata=np.column_stack([xsc_raw, ysc_raw, zsc_raw, np.sqrt(xsc_raw**2 + ysc_raw**2 + zsc_raw**2)/float(r_sun_au)]),
+                    x=x_orb, y=y_orb, z=z_orb,
+                    customdata=np.column_stack([x_orb_raw, y_orb_raw, z_orb_raw, np.sqrt(x_orb_raw**2 + y_orb_raw**2 + z_orb_raw**2)/float(r_sun_au)]),
                     mode="lines",
                     line=dict(width=5, color="rgba(0,0,0,0.45)"),
                     opacity=0.55,
                     showlegend=False,
-                    hovertemplate="SC (projected)<br>true x=%{customdata[0]:.3f} AU<br>true y=%{customdata[1]:.3f} AU<br>true z=%{customdata[2]:.3f} AU<br>r=%{customdata[3]:.2f} R⊙<extra></extra>",
+                    hovertemplate=sc_hover_label + "<br>true x=%{customdata[0]:.3f} AU<br>true y=%{customdata[1]:.3f} AU<br>true z=%{customdata[2]:.3f} AU<br>r=%{customdata[3]:.2f} R⊙<extra></extra>",
                 ),
                 row=row,
                 col=col,
@@ -1379,16 +1939,16 @@ def plot_source_surface_3d(
                 cmin=float(vmin),
                 cmax=float(vmax),
                 opacity=0.94,
-                colorbar=dict(
-                    title=dict(text=cb_title, side="right"),
-                    x=cb["x"],
-                    y=cb["y"],
-                    len=cb["len"],
-                    thickness=10,
-                    outlinewidth=0.0,
-                    tickfont=dict(size=11),
-                ),
+                showscale=False,
             )
+
+            _add_horizontal_colorbar(
+                row=row, col=col,
+                vmin=float(vmin), vmax=float(vmax),
+                colorscale=colorscale,
+                title=cb_title,
+            )
+
 
             fig.add_trace(
                 go.Scatter3d(
@@ -1486,3 +2046,191 @@ if(gd){{
             fig.show()
 
     return out_html, fig
+
+
+def plot_carrington_diagnostics(
+    *,
+    data: pd.DataFrame,
+    ephem_orbit: pd.DataFrame,
+    omega: "u.Quantity",
+    phi_sign: int,
+    out_png: Union[str, Path],
+    title: str = "",
+    show: bool = False,
+) -> Tuple[Path, "plt.Figure"]:
+    """Diagnostic plot to prevent Carrington-longitude misinterpretations.
+
+    Panels
+    ------
+    (1) Unwrapped Carrington longitudes vs time (spacecraft and mapped source).
+        In a Sun-fixed rotating longitude, a spacecraft that is not rigidly
+        co-rotating with the Sun generally drifts and can sweep ~360° on
+        week-scale times (order a Carrington rotation), depending on its orbit.
+
+    (2) Mapping shift sanity: Δφ = (φ_src − φ_sc) in (−180,180] compared to
+        the expected φ_sign*Ω*τ (wrapped to (−180,180]).
+
+    This figure is intended as a physics audit aid, not a publication figure.
+    """
+    import astropy.units as u
+
+    if not isinstance(data, pd.DataFrame) or data.empty:
+        raise ValueError("data must be a non-empty DataFrame")
+    if not isinstance(ephem_orbit, pd.DataFrame) or ephem_orbit.empty:
+        raise ValueError("ephem_orbit must be a non-empty DataFrame")
+
+    out_png = Path(out_png)
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+
+    # --- helper: unwrap ---
+    def _unwrap_deg(phi: np.ndarray) -> np.ndarray:
+        return np.rad2deg(np.unwrap(np.deg2rad(np.asarray(phi, dtype=float))))
+
+    # --- drift fits ---
+    def _rate_deg_day(t: pd.DatetimeIndex, phi_unwrapped: np.ndarray) -> float:
+        tt = pd.to_datetime(pd.DatetimeIndex(t), utc=True)
+        ts = tt.view("int64").astype(float) / 1e9
+        m = np.isfinite(phi_unwrapped) & np.isfinite(ts)
+        if int(np.sum(m)) < 3:
+            return float("nan")
+        b, a = np.polyfit(ts[m], np.asarray(phi_unwrapped, float)[m], 1)
+        return float(b * 86400.0)
+
+    # Ephemeris (orbit; pre-gap by construction upstream)
+    t_orb = pd.to_datetime(pd.DatetimeIndex(ephem_orbit.index), utc=True)
+    if "phi_sc_deg" not in ephem_orbit.columns:
+        raise KeyError("ephem_orbit missing phi_sc_deg")
+    phi_sc_u = _unwrap_deg(ephem_orbit["phi_sc_deg"].to_numpy(dtype=float))
+    rate_sc = _rate_deg_day(t_orb, phi_sc_u)
+
+    # Data cadence series (mapped)
+    t_dat = pd.to_datetime(pd.DatetimeIndex(data.index), utc=True)
+    phi_src = None
+    phi_src_u = None
+    rate_src = float("nan")
+    if "phi_src" in data.columns:
+        phi_src = data["phi_src"].to_numpy(dtype=float)
+        phi_src_u = _unwrap_deg(phi_src)
+        rate_src = _rate_deg_day(t_dat, phi_src_u)
+
+    # Mapping shift sanity
+    shift_block = None
+    if {"phi_sc", "phi_src", "tau_s"}.issubset(data.columns):
+        phi_sc_dat = data["phi_sc"].to_numpy(dtype=float)
+        phi_src_dat = data["phi_src"].to_numpy(dtype=float)
+        tau_s = data["tau_s"].to_numpy(dtype=float)
+        m = np.isfinite(phi_sc_dat) & np.isfinite(phi_src_dat) & np.isfinite(tau_s) & (tau_s > 0)
+        if int(np.sum(m)) >= 5:
+            dphi = delta_deg(phi_src_dat[m], phi_sc_dat[m])  # (-180,180]
+            omega_deg_s = float(u.Quantity(omega).to_value(u.deg / u.s))
+            if "delta_phi_signed" in data.columns:
+                expected = data["delta_phi_signed"].to_numpy(dtype=float)[m]
+            else:
+                expected = float(phi_sign) * omega_deg_s * tau_s[m]
+            expected = ((expected + 180.0) % 360.0) - 180.0
+            err = dphi - expected
+            err = ((err + 180.0) % 360.0) - 180.0
+            shift_block = dict(
+                t=t_dat[m],
+                dphi=dphi,
+                expected=expected,
+                err=err,
+                err_med=float(np.nanmedian(err)),
+                err_p16=float(np.nanpercentile(err, 16.0)),
+                err_p84=float(np.nanpercentile(err, 84.0)),
+            )
+
+    # Plot
+    fig, axs = plt.subplots(2, 1, figsize=(12.5, 6.0), sharex=True)
+    ax0, ax1 = axs
+
+    ax0.plot(t_orb, phi_sc_u, lw=1.2, label=r"$\phi_{\rm sc}$ (Carrington, unwrapped)")
+    if phi_src_u is not None:
+        ax0.plot(t_dat, phi_src_u, lw=1.2, alpha=0.85, label=r"$\phi_{\rm src}$ (unwrapped)")
+
+    ax0.set_ylabel("Longitude (deg; unwrapped)")
+    if title:
+        ax0.set_title(str(title))
+
+    # Annotation block
+    lines = []
+    if np.isfinite(rate_sc):
+        w = float("inf") if abs(rate_sc) < 1e-9 else 360.0 / abs(rate_sc)
+        lines.append(f"sc drift: {rate_sc:+.3f} deg/day  (360°/{w:.1f} d)")
+    if np.isfinite(rate_src):
+        w = float("inf") if abs(rate_src) < 1e-9 else 360.0 / abs(rate_src)
+        lines.append(f"src drift: {rate_src:+.3f} deg/day  (360°/{w:.1f} d)")
+    if lines:
+        ax0.text(
+            0.01, 0.02,
+            "\n".join(lines),
+            transform=ax0.transAxes,
+            fontsize=9,
+            va="bottom",
+            ha="left",
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.85, edgecolor="0.75"),
+        )
+    ax0.legend(loc="upper left", fontsize=9, frameon=False)
+
+    if shift_block is not None:
+        ax1.plot(shift_block["t"], shift_block["dphi"], lw=1.0, label=r"$\Delta\phi = \phi_{\rm src}-\phi_{\rm sc}$")
+        ax1.plot(shift_block["t"], shift_block["expected"], lw=1.0, alpha=0.8, label=r"expected shift")
+        ax1.plot(shift_block["t"], shift_block["err"], lw=0.8, alpha=0.6, label="error")
+        ax1.set_ylabel("Angle (deg; wrapped to ±180)")
+        ax1.legend(loc="upper left", fontsize=9, frameon=False)
+        ax1.text(
+            0.01, 0.02,
+            f"err median={shift_block['err_med']:+.2f}°  (p16={shift_block['err_p16']:+.2f}°, p84={shift_block['err_p84']:+.2f}°)",
+            transform=ax1.transAxes,
+            fontsize=9,
+            va="bottom",
+            ha="left",
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.85, edgecolor="0.75"),
+        )
+    else:
+        ax1.text(
+            0.5, 0.5,
+            "mapping-shift check unavailable (need phi_sc, phi_src, tau_s)",
+            transform=ax1.transAxes,
+            ha="center",
+            va="center",
+            fontsize=10,
+        )
+        ax1.set_ylabel("Angle (deg)")
+    ax1.set_xlabel("UTC")
+
+    fig.tight_layout()
+    fig.savefig(out_png, dpi=200)
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+    return out_png, fig
+
+
+def _apply_cube_aspect(fig: go.Figure, *, sun_zoom_au: float, n_scenes: int) -> None:
+    """Force equal aspect so spheres render as spheres (avoid 'pancake' Sun)."""
+    try:
+        zoom = float(sun_zoom_au)
+    except Exception:
+        zoom = None  # type: ignore
+    if zoom is None or not np.isfinite(zoom) or zoom <= 0:
+        return
+    rng = [-zoom, zoom]
+    for k in range(1, int(max(1, n_scenes)) + 1):
+        key = "scene" if k == 1 else f"scene{k}"
+        if not hasattr(fig.layout, key):
+            continue
+        try:
+            scene = getattr(fig.layout, key)
+            scene.update(
+                aspectmode="cube",
+                xaxis=dict(range=rng),
+                yaxis=dict(range=rng),
+                zaxis=dict(range=rng),
+            )
+        except Exception:
+            continue
+
+

@@ -4715,42 +4715,75 @@ def calculate_dhtf(v, b):
 
 def build_V_mod_TH(
     B, V,
-    axes               = None,
-    sc                 = "PSP",
-    window             = "30min",
-    correct_sign       = True,
-    consider_Va        = True,
-    consider_Vsc       = True,
-    return_addit       = False
+    axes=None,
+    sc="PSP",
+    window="30min",
+    correct_sign=True,
+    consider_Va=True,
+    consider_Vsc=True,
+    return_addit=False
 ):
+    """
+    Modified Taylor's hypothesis helper.
+
+    Implements the effective Doppler mapping:
+        ω_sc = k·V_rel ± k_parallel V_A
+    by constructing an effective advection magnitude
+        |V_mod_TH| = || V_rel + sigma * V_A * b_hat ||,
+    where b_hat is the rolling-mean guide-field direction and
+        sigma = sign(B0_r)  (RTN)  or  sign(-B0_z) (XYZ branch kept as in your code).
+
+    Inputs/outputs are identical to your existing function:
+      returns (summary_df, V_rel_df) or (summary_df, V_rel_df, V_MTH_extra) if return_addit=True.
+    """
     import numpy as np
     import pandas as pd
 
     _C_ALFVEN = 21.82  # Va[km/s] = 21.82 * B[nT] / sqrt(n_p[cm^-3])
 
+    # ---- axes / columns ----
     if axes is None:
-        axes = ["r","t","n"] if "Br" in B.columns else ["x","y","z"]
+        axes = ["r", "t", "n"] if "Br" in B.columns else ["x", "y", "z"]
 
-    is_rtn      = axes[0] == "r"
-    base_cols   = [f"V{a}" for a in axes]
-    B_cols      = [f"B{a}" for a in axes]
-    sc_vel_cols = [f"sc_vel_{a}" for a in ("r","t","n")]
+    is_rtn = (axes[0] == "r")
+    base_cols = [f"V{a}" for a in axes]
+    B_cols = [f"B{a}" for a in axes]
+    sc_vel_cols = [f"sc_vel_{a}" for a in ("r", "t", "n")]
 
+    # ---- density background ----
     n_p_raw = V["np"].astype(float)
-    Np_background = n_p_raw.rolling(window, center=True, min_periods=1).mean().to_numpy(dtype=float)
+    Np_background = (
+        n_p_raw.rolling(window, center=True, min_periods=1)
+        .mean()
+        .to_numpy(dtype=float)
+    )
     Np_background[Np_background <= 0] = np.nan
 
+    # ---- instantaneous B and background B0 ----
     B_arr = B[B_cols].to_numpy(dtype=float)
     B_inst_mag = np.linalg.norm(B_arr, axis=1)
-    B0_scalar = pd.Series(B_inst_mag, index=B.index).rolling(window, center=True, min_periods=1).mean().to_numpy(dtype=float)
 
-    B0_vec = B[B_cols].rolling(window, center=True, min_periods=1).mean().to_numpy(dtype=float)
+    B0_scalar = (
+        pd.Series(B_inst_mag, index=B.index)
+        .rolling(window, center=True, min_periods=1)
+        .mean()
+        .to_numpy(dtype=float)
+    )
+
+    B0_vec = (
+        B[B_cols]
+        .rolling(window, center=True, min_periods=1)
+        .mean()
+        .to_numpy(dtype=float)
+    )
+
     B0_vec_mag = np.linalg.norm(B0_vec, axis=1)
     B0_vec_mag[B0_vec_mag == 0] = np.nan
 
     with np.errstate(divide="ignore", invalid="ignore"):
         e_par = B0_vec / B0_vec_mag[:, None]
 
+    # ---- relative flow (optionally remove spacecraft velocity) ----
     V_arr = V[base_cols].to_numpy(dtype=float)
 
     if consider_Vsc and is_rtn and sc.upper() == "PSP":
@@ -4760,13 +4793,16 @@ def build_V_mod_TH(
 
     V_rel_df = pd.DataFrame(V_arr, index=V.index, columns=base_cols)
 
-    def _stable_perp_basis(epar: np.ndarray):
+    # ---- stable perpendicular basis ----
+    def _stable_perp_basis(epar):
         ref1 = np.array([1.0, 0.0, 0.0])
         ref2 = np.array([0.0, 1.0, 0.0])
         dot1 = np.abs(np.einsum("ij,j->i", epar, ref1))
-        ref  = np.where(dot1[:, None] < 0.9, ref1[None, :], ref2[None, :])
+        ref = np.where(dot1[:, None] < 0.9, ref1[None, :], ref2[None, :])
+
         e_p1 = np.cross(epar, ref)
-        n1   = np.linalg.norm(e_p1, axis=1)
+        n1 = np.linalg.norm(e_p1, axis=1)
+        n1[n1 == 0] = np.nan
         with np.errstate(divide="ignore", invalid="ignore"):
             e_p1 = e_p1 / n1[:, None]
         e_p2 = np.cross(epar, e_p1)
@@ -4774,30 +4810,37 @@ def build_V_mod_TH(
 
     e_p1, e_p2 = _stable_perp_basis(e_par)
 
+    # ---- projections ----
     v_par = np.einsum("ij,ij->i", V_arr, e_par)
-    v_p1  = np.einsum("ij,ij->i", V_arr, e_p1)
-    v_p2  = np.einsum("ij,ij->i", V_arr, e_p2)
+    v_p1 = np.einsum("ij,ij->i", V_arr, e_p1)
+    v_p2 = np.einsum("ij,ij->i", V_arr, e_p2)
 
     Vrel_perp_mag = np.sqrt(v_p1**2 + v_p2**2)
-    Vrel_mag      = np.sqrt(v_par**2 + Vrel_perp_mag**2)
+    Vrel_mag = np.sqrt(v_par**2 + Vrel_perp_mag**2)
 
-    Va_bulk = _C_ALFVEN * B0_scalar / np.sqrt(Np_background)
+    # ---- Alfven speed (use |B0_vec| for consistency with b_hat) ----
     Va_guide = _C_ALFVEN * B0_vec_mag / np.sqrt(Np_background)
 
+    # ---- polarity factor sigma ----
     if is_rtn:
         Br_like = B0_vec[:, 0]
     else:
-        Br_like = -B0_vec[:, 2]
+        Br_like = -B0_vec[:, 2]  # kept exactly as in your existing branch
 
     sigma = np.sign(Br_like)
     sigma[sigma == 0] = 1.0
     if not correct_sign:
         sigma = np.abs(sigma)
 
-    Va_used = Va_guide if consider_Va else 0.0
-    v_par_eff = v_par + sigma * Va_used
+    # ---- modified Taylor magnitude ----
+    if consider_Va:
+        v_par_eff = v_par + sigma * Va_guide
+    else:
+        v_par_eff = v_par
+
     V_mod_mag = np.sqrt(v_par_eff**2 + Vrel_perp_mag**2)
 
+    # ---- theta between V_rel and B0 direction (no Va term) ----
     with np.errstate(divide="ignore", invalid="ignore"):
         cos_theta = v_par / Vrel_mag
     theta_VB = np.degrees(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
@@ -4805,7 +4848,7 @@ def build_V_mod_TH(
     summary_df = pd.DataFrame(
         {
             "θ_VB": theta_VB,
-            "|Va|": Va_bulk,
+            "|Va|": Va_guide,                 # Va actually used in the correction
             "|V_rel|": Vrel_mag,
             "|V_mod_TH|": V_mod_mag,
             "B0_scalar": B0_scalar,
@@ -4829,129 +4872,7 @@ def build_V_mod_TH(
     return summary_df, V_rel_df
 
 
-# def build_V_mod_TH(
-#     B, V,
-#     axes: list[str] | None = None,
-#     sc: str            = "PSP",
-#     window: str        = "30min",
-#     correct_sign: bool = True,
-#     consider_Va:  bool = True,
-#     consider_Vsc: bool = True,
-#     return_addit: bool = False  # <--- This flag was present but unused
-# ):
-#     """
-#     Computes Effective Advection Speeds (MTH) and returns vector components.
-#     """
-#     import numpy as np
-#     import pandas as pd
 
-#     # --- Constants ---
-#     _C_ALFVEN = 21.82 
-
-#     # --- Axes Setup ---
-#     if axes is None:
-#         axes = ["r","t","n"] if "Br" in B.columns else ["x","y","z"]
-#     is_rtn        = axes[0] == "r"
-#     base_cols     = [f"V{a}" for a in axes]
-#     sc_vel_cols   = [f"sc_vel_{a}" for a in ("r","t","n")]
-#     B_cols        = [f"B{a}" for a in axes]
-
-#     # --- 1. Background Fields Calculation ---
-#     # Rolling mean for Density and B-field to get consistent background
-#     n_p_raw = V["np"] 
-#     Np_mean = n_p_raw.rolling(window, center=True, min_periods=1).mean()
-
-#     # Vector Background (Direction)
-#     B0_vec_df  = B[B_cols].rolling(window, center=True, min_periods=1).median()
-#     B0_vec_arr = B0_vec_df.values.astype(float)
-    
-#     # Scalar Background (Energy)
-#     B_inst_mag = np.linalg.norm(B[B_cols].values, axis=1)
-#     B0_scalar_series = pd.Series(B_inst_mag, index=B.index).rolling(window, center=True, min_periods=1).mean()
-#     B0_scalar_vals   = B0_scalar_series.values
-
-#     # --- 2. Frame Transformation (Get V_rel) ---
-#     V_arr  = V[base_cols].values.astype(float)
-    
-#     if consider_Vsc and is_rtn and sc.upper() == "PSP":
-#         if all(c in V.columns for c in sc_vel_cols):
-#             V_sc_arr = V[sc_vel_cols].values.astype(float)
-#             V_arr    = V_arr - V_sc_arr  # V_rel = V_sw - V_sc
-#         else:
-#             print("Warning: PSP SC velocity columns missing. Using V_sw as V_rel.")
-            
-#     # Save V_rel (V_sc_rem) for output
-#     V_rel_df = pd.DataFrame(V_arr, index=V.index, columns=base_cols)
-
-#     # --- 3. Basis Vectors (b_hat) ---
-#     B0_vec_mag = np.linalg.norm(B0_vec_arr, axis=1)
-    
-#     with np.errstate(divide='ignore', invalid='ignore'):
-#         e_par = B0_vec_arr / B0_vec_mag[:, None]
-#     e_par[np.isnan(e_par)] = 0.0
-
-#     # Perp Basis
-#     ref = np.array([1.0, 0.0, 0.0])
-#     e_p1 = np.cross(e_par, ref)
-#     idx_deg = np.linalg.norm(e_p1, axis=1) < 1e-6
-#     if np.any(idx_deg):
-#         e_p1[idx_deg] = np.cross(e_par[idx_deg], np.array([0.0, 1.0, 0.0]))
-    
-#     e_p1 /= np.linalg.norm(e_p1, axis=1)[:, None]
-#     e_p2 = np.cross(e_par, e_p1)
-
-#     # --- 4. Projections (The Core Physics) ---
-#     v_par = np.einsum("ij,ij->i", V_arr, e_par)  # V_rel_parallel
-#     v_p1  = np.einsum("ij,ij->i", V_arr, e_p1)
-#     v_p2  = np.einsum("ij,ij->i", V_arr, e_p2)
-    
-#     Vrel_perp_mag = np.sqrt(v_p1**2 + v_p2**2)   # V_rel_perp
-#     Vrel_mag      = np.sqrt(v_par**2 + Vrel_perp_mag**2) 
-
-#     # --- 5. Alfvén Speed & Polarity ---
-#     Np_vals = Np_mean.values
-#     Np_vals[Np_vals <= 0] = np.nan
-    
-#     Va_scalar_mag = _C_ALFVEN * B0_scalar_vals / np.sqrt(Np_vals)
-#     Va_scalar_mag[np.isnan(Va_scalar_mag)] = 0.0
-
-#     # Polarity (sigma)
-#     Br_like = B0_vec_arr[:, 0] if is_rtn else -B0_vec_arr[:, 2]
-#     sigma = np.sign(Br_like)
-#     sigma[sigma == 0] = 1.0
-#     if not correct_sign: sigma = np.abs(sigma)
-
-#     # MTH Velocity Magnitude
-#     # This accounts for the Doppler shift: V_eff = V_rel +/- V_A
-#     v_par_eff = v_par + (sigma * Va_scalar_mag if consider_Va else 0.0)
-#     V_mod_mag = np.sqrt(v_par_eff**2 + Vrel_perp_mag**2) 
-
-#     # --- 6. Theta_VB ---
-#     with np.errstate(divide='ignore', invalid='ignore'):
-#         cos_theta = v_par / Vrel_mag
-#     theta_VB = np.degrees(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
-
-#     # --- 7. Output ---
-#     summary_df = pd.DataFrame({
-#         "θ_VB"        : theta_VB,
-#         "|Va|"        : Va_scalar_mag, 
-#         "|V_rel|"     : Vrel_mag,  
-#         "|V_mod_TH|"  : V_mod_mag,
-#         "B0_scalar"   : B0_scalar_vals,
-#         "B0_vec_mag"  : B0_vec_mag,
-#         "Np_background": Np_vals
-#     }, index=V.index)
-
-#     # [FIX] Logic to return the 3rd DataFrame containing the components
-#     if return_addit:
-#         V_MTH_extra = pd.DataFrame({
-#             "Vrel_par":  v_par,          # Use this for V_rel,||
-#             "Vrel_perp": Vrel_perp_mag,  # Use this for V_rel,perp
-#             "sigma_Va":  sigma * Va_scalar_mag # The Alfvenic term
-#         }, index=V.index)
-#         return summary_df, V_rel_df, V_MTH_extra
-    
-#     return summary_df, V_rel_df
 
 def calculate_non_linearity_parameter(d_zp_lambda,
                                       d_zp_xi,

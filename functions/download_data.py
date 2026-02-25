@@ -707,8 +707,10 @@ def main_function(start_time, end_time, settings, vars_2_downnload, cdf_lib_path
             dfmag, dfpar, dfdis, misc = None, None, None, None
 
     elif sc == "Ulysses":
+        print('Working on Ulysses data')
         try:
             (dfmag, dfpar, dfdis, big_gaps, misc) = LoadTimeSeriesUlysses(start_time, end_time, settings)
+
         except Exception:
             traceback.print_exc()
             dfmag, dfpar, dfdis, misc = None, None, None, None

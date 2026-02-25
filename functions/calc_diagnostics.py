@@ -88,7 +88,7 @@ def calculate_signB(f_df, settings):
     """Calculate sign(B_r) proxy used in Elsasser definitions."""
     sc = settings['sc']
 
-    if sc in ['PSP', 'SOLO', 'HELIOS_A', 'HELIOS_B', 'ACE']:
+    if sc in ['PSP', 'SOLO', 'HELIOS_A', 'HELIOS_B', 'ACE', 'Ulysses']:
         if 'Br' in f_df.columns:
             return _rolling_sign(f_df['Br'], negate=True)
         if sc == 'PSP' and 'Bz' in f_df.columns:

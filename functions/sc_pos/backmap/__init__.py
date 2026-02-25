@@ -9,7 +9,8 @@ Public API
 The implementation is intentionally minimal and auditable.
 """
 
-from .pipeline import backmap_interval, run_backmapping_interval
+from .pipeline import backmap_interval, run_backmapping_interval, run_backmapping_range
+
 from .plotting import VAR_SPECS
 
-__all__ = ["backmap_interval", "run_backmapping_interval", "VAR_SPECS"]
+__all__ = ["backmap_interval", "run_backmapping_interval", "run_backmapping_range", "VAR_SPECS"]

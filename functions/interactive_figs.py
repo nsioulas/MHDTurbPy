@@ -196,7 +196,7 @@ def _normalize_timeseries_mode(normalize_timeseries):
 def _series_has_units(label):
     if label is None:
         return False
-    return re.search(r"\[[^\]]+\]", str(label)) is not None
+    return re.search(r"[^[^]+\]", str(label)) is not None
 
 
 def _normalize_series_values(y, mode):
@@ -1992,6 +1992,7 @@ def _install_interval_selector(
     return events
 
 
+
 # ============================================================
 # Horizons (GSE) ephemeris: FIX ambiguity by using numeric IDs
 # ============================================================
@@ -2017,8 +2018,9 @@ _HORIZONS_SC_ID = {
     "PARKER SOLAR PROBE": -96,
     "SOLAR ORBITER": -144,
     "SOLO": -144,
-}
 
+    "ULYSSES": -55,
+}
 
 _SC_NAME_NORMALIZE = {
     "ACE": "ACE",
@@ -2042,7 +2044,13 @@ _SC_NAME_NORMALIZE = {
     "PARKERSOLARPROBE": "PSP",
     "SOLARORBITER": "SOLO",
     "SOLO": "SOLO",
+
+    "ULYSSES": "ULYSSES",
+    "ULY": "ULYSSES",
+    "ULYS": "ULYSSES",
 }
+
+
 
 
 def _horizons_step_for_index(idx, min_step_s=60, max_points=12000):
@@ -2255,58 +2263,169 @@ def _download_ephem_gse_horizons(target, idx, *, min_step_s=60, max_points=12000
 
 
 
-def _download_sun_distance_au_horizons(target, idx, *, min_step_s=60, max_points=12000):
+def _download_sun_distance_au_horizons(
+    target,
+    idx,
+    min_step_s=120,
+    max_points=5000,
+):
     """
-    Download heliocentric distance (Sun->SC) via JPL Horizons (SunPy) and return a Series
-    aligned to `idx` in AU.
+    Return heliocentric distance (Sun->target) in AU on the exact DatetimeIndex `idx`,
+    using the JPL Horizons *API* directly (robust to the OUT_UNITS=AU-D failure you hit).
 
-    Uses the native Horizons coordinate (SunPy returns a Sun-centered frame by default);
-    distance is taken from `.radius` (fallback: cartesian norm).
+    This avoids sunpy.get_horizons_coord(), which (in some stacks) constructs an
+    OUT_UNITS=AU-D query that Horizons rejects ("Unknown units specification").
     """
     import numpy as np
     import pandas as pd
-    import astropy.units as u
-    from sunpy.coordinates import get_horizons_coord
+    from astropy.time import Time
+    from urllib.parse import urlencode
+    from urllib.request import Request, urlopen
 
     idx = pd.DatetimeIndex(idx)
-    if len(idx) < 2:
-        raise ValueError("Need at least two timestamps to download Horizons distance.")
+    if len(idx) == 0:
+        return pd.Series(dtype="float64", index=idx, name="Dist_au")
 
-    idx = idx[~idx.isna()]
-    if not idx.is_monotonic_increasing:
-        idx = idx.sort_values()
-    if len(idx) < 2:
-        raise ValueError("Need at least two valid timestamps to download Horizons distance.")
+    idx_sorted = idx.sort_values()
+    t0 = pd.Timestamp(idx_sorted[0]).to_pydatetime()
+    t1 = pd.Timestamp(idx_sorted[-1]).to_pydatetime()
 
-    body, id_type = _resolve_horizons_target(target)
-    step = _horizons_step_for_index(idx, min_step_s=min_step_s, max_points=max_points)
+    total_s = max(1.0, (idx_sorted[-1] - idx_sorted[0]).total_seconds())
+    step_s = int(np.ceil(total_s / max(1, (max_points - 1))))
+    step_s = max(int(min_step_s), step_s)
 
-    t0 = pd.Timestamp(idx[0]).to_pydatetime()
-    t1 = pd.Timestamp(idx[-1]).to_pydatetime()
-    time = {
-        "start": pd.Timestamp(t0).strftime("%Y-%m-%d %H:%M:%S"),
-        "stop":  pd.Timestamp(t1).strftime("%Y-%m-%d %H:%M:%S"),
-        "step":  step,
-    }
+    def _resolve_command_and_id_type(x):
+        if isinstance(x, (int, np.integer)):
+            return str(int(x)), "id"
+        s = str(x).strip()
+        if s and (s[0] in "+-" and s[1:].isdigit() or s.isdigit()):
+            return str(int(s)), "id"
 
-    coord0 = get_horizons_coord(body, time=time, id_type=id_type)
+        key = s.upper().replace("-", "").replace("_", "").replace(" ", "")
+        sc_to_naif = {
+            "PSP": "-96",
+            "PARKERSOLARPROBE": "-96",
+            "SOLO": "-144",
+            "SOLARORBITER": "-144",
+            "WIND": "-8",
+            "ACE": "-92",
+            "ULYSSES": "-55",
+        }
+        if key in sc_to_naif:
+            return sc_to_naif[key], "id"
 
-    t = pd.to_datetime(coord0.obstime.datetime64)
-    if hasattr(coord0, "radius"):
-        r = coord0.radius.to_value(u.AU)
-    else:
-        r = coord0.cartesian.norm().to_value(u.AU)
+        return s, "name"
 
-    s = pd.Series(r, index=pd.DatetimeIndex(t), name="Dist_au")
-    s = s[~s.index.duplicated(keep="first")].sort_index()
-    s.index.name = "time"
+    body, id_type = _resolve_command_and_id_type(target)
 
-    out_idx = pd.DatetimeIndex(idx)
-    union = s.index.union(out_idx)
-    s_u = s.reindex(union).interpolate(method="time", limit_direction="both")
-    s_out = s_u.reindex(out_idx).ffill().bfill()
+    def _horizons_vectors_api(body_str, id_type_str, start_dt, stop_dt, step_seconds):
+        base = "https://ssd.jpl.nasa.gov/api/horizons.api"
 
-    return s_out
+        if id_type_str == "id":
+            command = f"'{body_str}'"
+        else:
+            command = f"'{body_str}'"
+
+        params = {
+            "format": "text",
+            "MAKE_EPHEM": "'YES'",
+            "TABLE_TYPE": "'VECTORS'",
+            "COMMAND": command,
+            "CENTER": "'500@10'",
+            "REF_PLANE": "'ECLIPTIC'",
+            "REF_SYSTEM": "'ICRF'",
+            "TP_TYPE": "'ABSOLUTE'",
+            "VEC_LABELS": "'YES'",
+            "VEC_TABLE": "'3'",
+            "CSV_FORMAT": "'YES'",
+            "VEC_CORR": "'NONE'",
+            "VEC_DELTA_T": "'NO'",
+            "OBJ_DATA": "'NO'",
+            "START_TIME": f"'{pd.Timestamp(start_dt).strftime('%Y-%m-%d %H:%M:%S')}'",
+            "STOP_TIME": f"'{pd.Timestamp(stop_dt).strftime('%Y-%m-%d %H:%M:%S')}'",
+            "STEP_SIZE": f"'{int(step_seconds)}s'",
+            "OUT_UNITS": "'KM-S'",
+        }
+
+        url = base + "?" + urlencode(params)
+        req = Request(url, headers={"User-Agent": "MHDTurbPy/1.0"})
+        with urlopen(req, timeout=60) as r:
+            return r.read().decode("utf-8", errors="replace")
+
+    def _parse_vectors_csv(text):
+        if "$$SOE" not in text or "$$EOE" not in text:
+            raise ValueError(text[:800])
+
+        pre, rest = text.split("$$SOE", 1)
+        data_block, _ = rest.split("$$EOE", 1)
+
+        header_line = None
+        for line in reversed(pre.splitlines()):
+            if "JDTDB" in line and "," in line:
+                header_line = line
+                break
+        if header_line is None:
+            raise ValueError("Could not find Horizons CSV header line (JDTDB, ...).")
+
+        cols = [c.strip() for c in header_line.split(",") if c.strip()]
+        raw_lines = []
+        for line in data_block.splitlines():
+            s = line.strip()
+            if not s:
+                continue
+            if s.startswith("*"):
+                continue
+            raw_lines.append(s)
+
+        import io
+        import pandas as pd
+
+        df = pd.read_csv(io.StringIO("\n".join(raw_lines)), header=None)
+        if len(cols) == df.shape[1]:
+            df.columns = cols
+        else:
+            df.columns = [f"c{i}" for i in range(df.shape[1])]
+
+        return df
+
+    try:
+        txt = _horizons_vectors_api(body, id_type, t0, t1, step_s)
+        df = _parse_vectors_csv(txt)
+
+        jd = df["JDTDB"].astype(float).to_numpy()
+        t = pd.to_datetime(Time(jd, format="jd", scale="tdb").utc.datetime64)
+
+        if "RG" in df.columns:
+            rg_km = df["RG"].astype(float).to_numpy()
+            dist_au_grid = rg_km / 149597870.700
+        else:
+            x = df["X"].astype(float).to_numpy()
+            y = df["Y"].astype(float).to_numpy()
+            z = df["Z"].astype(float).to_numpy()
+            dist_au_grid = np.sqrt(x * x + y * y + z * z) / 149597870.700
+
+        s_grid = pd.Series(dist_au_grid, index=pd.DatetimeIndex(t)).sort_index()
+        s_grid = s_grid[~s_grid.index.duplicated(keep="first")]
+
+        all_idx = s_grid.index.union(idx_sorted)
+        s_interp = (
+            s_grid.reindex(all_idx)
+            .sort_index()
+            .interpolate(method="time", limit_direction="both")
+            .reindex(idx_sorted)
+        )
+
+        out = pd.Series(s_interp.to_numpy(), index=idx_sorted, name="Dist_au")
+        if not idx_sorted.equals(idx):
+            out = out.reindex(idx)
+
+        return out.astype("float64")
+
+    except Exception as e:
+        import pandas as pd
+
+        print(f"[WARN] Horizons Sun-distance failed for target={target!r}: {e}")
+        return pd.Series(np.nan, index=idx, name="Dist_au", dtype="float64")
 
 
 def _ensure_cached_sun_distance_au_in_par(fin, *, fin_path, sc_name, par_idx, force=False):

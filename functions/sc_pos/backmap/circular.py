@@ -16,6 +16,9 @@ from __future__ import annotations
 import numpy as np
 
 
+CIRC_PERCENTILE_ALGO_ID = "circ_percentile_deg_centered_mean_v1"
+
+
 def wrap_0_360(phi_deg: np.ndarray) -> np.ndarray:
     return np.mod(np.asarray(phi_deg, dtype=float), 360.0)
 

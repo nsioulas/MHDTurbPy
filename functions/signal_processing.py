@@ -20,6 +20,7 @@ import fractions
 import numpy
 import numpy as np
 import pandas as pd
+import copy
 from scipy import signal
 from scipy.signal import butter, filtfilt, firwin
 from numpy.fft import fft, ifft, fftfreq
@@ -519,6 +520,20 @@ class EqualizeConfig:
     # center-frequency refinement in the STFT mean spectrum (Hz)
     center_search_hz: float = 0.35
     peak_prom_db: float = 2.5
+
+    # baseline policy
+    # - "mult": shoulders are multiples of bw_hz (legacy behavior)
+    # - "fixed_hz": shoulders are fixed absolute offsets in Hz (more robust for very narrow lines)
+    baseline_mode: str = "fixed_hz"
+    baseline_inner_hz: float = 0.6
+    baseline_outer_hz: float = 3.0
+
+    # hard-cap policy for contamination lines: force the band magnitude down to the baseline
+    # (stronger than projection_equalize; intended for known instrument tones)
+    hard_cap: bool = True
+    hard_cap_families: Tuple[str, ...] = ("clock",)
+    hard_cap_per_channel: bool = True
+
 
 
     # time-aggregation statistic for intermittent tones (median can miss them)
@@ -1239,14 +1254,23 @@ def equalize_tone_bands_stft_multicomponent(
                                 band_mask2[chosen] = True
                                 band_mask = band_mask2
 
-            # shoulders (based on original bw around f0)
-            s1, s2 = cfg.shoulder_mult
-            left = (f >= f0 - s2*bw) & (f <= f0 - s1*bw)
-            right = (f >= f0 + s1*bw) & (f <= f0 + s2*bw)
-            if not left.any():
-                left = (f >= max(0.0, f0 - 6*bw)) & (f < f0 - bw)
-            if not right.any():
-                right = (f > f0 + bw) & (f <= min(0.5*fs, f0 + 6*bw))
+            # shoulders / baseline support
+            if getattr(cfg, "baseline_mode", "mult") == "fixed_hz":
+                inner = float(getattr(cfg, "baseline_inner_hz", 0.6))
+                outer = float(getattr(cfg, "baseline_outer_hz", 3.0))
+                inner = max(inner, bw + 2.0*df) if df > 0 else max(inner, bw)
+                outer = max(outer, inner + (bw + 2.0*df)) if df > 0 else max(outer, inner + bw)
+                left = (f >= max(0.0, f0 - outer)) & (f <= max(0.0, f0 - inner))
+                right = (f >= f0 + inner) & (f <= min(0.5*fs, f0 + outer))
+            else:
+                # legacy: shoulders are multiples of bw
+                s1, s2 = cfg.shoulder_mult
+                left = (f >= f0 - s2*bw) & (f <= f0 - s1*bw)
+                right = (f >= f0 + s1*bw) & (f <= f0 + s2*bw)
+                if not left.any():
+                    left = (f >= max(0.0, f0 - 6*bw)) & (f < f0 - bw)
+                if not right.any():
+                    right = (f > f0 + bw) & (f <= min(0.5*fs, f0 + 6*bw))
 
             if not left.any() and not right.any():
                 continue
@@ -1272,6 +1296,64 @@ def equalize_tone_bands_stft_multicomponent(
                 Abase = np.exp(targ)
 
             Zb = Z[band_mask, :, :]  # (nb,nt,ma)
+            # Optional hard-cap equalization for known instrument tones
+            hard_cap = bool(getattr(cfg, "hard_cap", False))
+            fams = tuple(getattr(cfg, "hard_cap_families", ()))
+            do_hard = hard_cap and (str(getattr(band, "family", "generic")) in fams)
+            if do_hard:
+                # baseline in log-domain per time frame; either per-channel or vector-magnitude
+                if bool(getattr(cfg, "hard_cap_per_channel", True)):
+                    # per-channel cap (strongest): match each component magnitude to its baseline
+                    for jj in range(ma):
+                        Zjj = Z[:, :, jj]
+                        Zb_j = Zjj[band_mask, :]
+                        Aj = np.abs(Zjj) + 1e-30
+                        if left.any():
+                            ml_j = np.median(np.log(Aj[left, :] + 1e-30), axis=0)
+                        else:
+                            ml_j = np.median(np.log(Aj + 1e-30), axis=0)
+                        if right.any():
+                            mr_j = np.median(np.log(Aj[right, :] + 1e-30), axis=0)
+                        else:
+                            mr_j = np.median(np.log(Aj + 1e-30), axis=0)
+                        fb = f[band_mask]
+                        if fb.size == 1:
+                            targ_log = 0.5*(ml_j + mr_j)
+                            Abase_j = np.exp(targ_log)[None, :]
+                        else:
+                            denom = (fb.max() - fb.min() + 1e-12)
+                            u = ((fb - fb.min())/denom)[:, None]
+                            targ = ml_j[None, :]*(1-u) + mr_j[None, :]*u
+                            Abase_j = np.exp(targ)
+                        Acur_j = np.abs(Zb_j) + 1e-30
+                        g = Abase_j / Acur_j
+                        if cfg.attenuate_only:
+                            g = np.minimum(g, 1.0)
+                        # allow much deeper suppression for hard-caps
+                        g_floor = min(float(getattr(cfg, "g_floor", 0.05)), 1e-3)
+                        g = np.clip(g, g_floor, float(getattr(cfg, "g_ceil", 1.5)))
+                        Zjj[band_mask, :] = Zb_j * g
+                        Z[:, :, jj] = Zjj
+                else:
+                    # vector-magnitude cap (keeps cross-phase): match total magnitude to baseline
+                    Acur = A[band_mask, :] + 1e-30
+                    g = Abase / Acur
+                    if cfg.attenuate_only:
+                        g = np.minimum(g, 1.0)
+                    g_floor = min(float(getattr(cfg, "g_floor", 0.05)), 1e-3)
+                    g = np.clip(g, g_floor, float(getattr(cfg, "g_ceil", 1.5)))
+                    Z[band_mask, :, :] = Zb * g[:, :, None]
+
+                edits.append({
+                    "seg": (int(i0), int(i1)),
+                    "family": str(band.family),
+                    "f0_nom": float(f0_nom),
+                    "f0_used": float(f0),
+                    "bw_eff_hz": float(bw),
+                    "prom_db": float(prom_db),
+                    "hard_cap": True,
+                })
+                continue
             if cfg.projection_equalize and ma >= 2:
                 # estimate dominant complex direction in this band using high-activity samples
                 Ab = A[band_mask, :]  # (nb,nt)
@@ -1344,222 +1426,6 @@ def equalize_tone_bands_stft_multicomponent(
 
     return Y, {"enabled": True, "segments": len(segs), "edits": edits}
 
-
-
-
-def equalize_tone_bands_fft_multicomponent(
-    X: np.ndarray,
-    fs: float,
-    bands: Sequence[ToneBand],
-    cfg: EqualizeConfig,
-    apply_to: Optional[Sequence[int]] = None,
-) -> Tuple[np.ndarray, Dict]:
-    """
-    Fast, deterministic frequency-domain equalization for *narrow* tone bands.
-
-    Rationale (SOAR merged SCM clock-family):
-      - Clock tones are coherent narrowband lines (fundamental + harmonics).
-      - For these, a per-segment FFT edit is sufficient and substantially faster than STFT.
-      - We enforce: |F(f)| inside the edited band matches a smooth baseline inferred from shoulders,
-        with no residual peaks and no broad notches.
-
-    Method:
-      1) Split into contiguous finite segments (no NaNs) on apply_to channels.
-      2) For each segment, compute rFFT across time for all components jointly.
-      3) For each band, refine center frequency in the 1D mean spectrum (optional),
-         build shoulder baseline in log-domain, and compute a scalar gain g(f) applied to all
-         components: F_new(f,j) = g(f) * F(f,j).
-      4) Inverse rFFT back to time domain and write into output.
-
-    Notes:
-      - This preserves cross-phase across components within the edited bins (scalar gain),
-        while removing the line amplitude.
-      - Dilation logic reuses the STFT equalizer heuristic in a 1D setting to capture minor
-        drift/sidebands without broad suppression.
-    """
-    X = np.asarray(X, float)
-    if X.ndim != 2:
-        raise ValueError("X must be 2D (n, m)")
-    n_all, m_all = X.shape
-    Y = X.copy()
-
-    if not cfg.enabled:
-        return Y, {"enabled": False, "segments": 0, "edits": []}
-
-    if apply_to is None:
-        apply_to = list(range(m_all))
-    apply_to = list(apply_to)
-
-    finite = np.all(np.isfinite(Y[:, apply_to]), axis=1)
-    # For FFT edits we can operate on shorter segments than cfg.nperseg; do not enforce STFT window length.
-    min_len = int(max(128, round(float(cfg.min_seg_s) * float(fs))))
-    segs = _finite_segments(finite, min_len=min_len)
-    if not segs:
-        return Y, {"enabled": True, "segments": 0, "edits": []}
-
-    edits = []
-    fs = float(fs)
-    eps = 1e-30
-    db_fac = 10.0 / np.log(10.0)
-
-    for i0, i1 in segs:
-        seg = Y[i0:i1, :].copy()
-        Xseg = seg[:, apply_to].astype(float, copy=False)
-
-        # Remove component means to avoid DC leakage into nearby bins
-        mu = np.mean(Xseg, axis=0)
-        X0 = Xseg - mu[None, :]
-
-        n = X0.shape[0]
-        if n < 64:
-            continue
-
-        F = np.fft.rfft(X0, axis=0)  # (nf, ma)
-        f = np.fft.rfftfreq(n, d=1.0 / fs)  # (nf,)
-        nf, ma = F.shape
-        df = float(f[1] - f[0]) if f.size > 1 else 0.0
-
-        A = np.sqrt(np.sum(np.abs(F) ** 2, axis=1))  # (nf,)
-        logA = np.log(A + eps)
-
-        for band in bands:
-            f0_nom = float(band.f0_hz)
-            if f0_nom <= 0.0 or f0_nom >= 0.5 * fs:
-                continue
-
-            # --- center refinement in mean spectrum ---
-            f0 = f0_nom
-            prom_db = 0.0
-            msearch = (f >= f0_nom - cfg.center_search_hz) & (f <= f0_nom + cfg.center_search_hz)
-            if msearch.any():
-                ip = int(np.argmax(logA[msearch]))
-                fpk = float(f[msearch][ip])
-
-                bw0 = float(band.bw_hz)
-                # shoulders around fpk
-                left0 = (f >= fpk - 3*bw0) & (f <= fpk - 2*bw0)
-                right0 = (f >= fpk + 2*bw0) & (f <= fpk + 3*bw0)
-                bases0 = []
-                if left0.any(): bases0.append(np.median(logA[left0]))
-                if right0.any(): bases0.append(np.median(logA[right0]))
-                if bases0:
-                    base0 = float(np.median(bases0))
-                    prom_db = db_fac * (float(logA[msearch][ip]) - base0)
-                    if prom_db >= cfg.peak_prom_db:
-                        f0 = fpk
-
-            bw = float(band.bw_hz)
-            if df > 0:
-                bw = max(bw, 4.0 * df)
-
-            band_mask = (f >= f0 - bw) & (f <= f0 + bw)
-            if not band_mask.any():
-                continue
-
-            # optional dilation based on excess vs baseline in the mean spectrum
-            if cfg.dilate_enabled and df > 0:
-                bw_max = float(cfg.dilate_max_mult) * bw
-                neigh = (f >= f0 - bw_max) & (f <= f0 + bw_max)
-                if neigh.any():
-                    s1, s2 = cfg.shoulder_mult
-                    left = (f >= f0 - s2*bw) & (f <= f0 - s1*bw)
-                    right = (f >= f0 + s1*bw) & (f <= f0 + s2*bw)
-                    if (not left.any()) or (not right.any()):
-                        left = (f >= max(0.0, f0 - 6*bw)) & (f < f0 - bw)
-                        right = (f > f0 + bw) & (f <= min(0.5*fs, f0 + 6*bw))
-
-                    if left.any() and right.any():
-                        base_left = float(np.median(logA[left]))
-                        base_right = float(np.median(logA[right]))
-                        ff = f[neigh]
-                        u = (ff - ff.min()) / (ff.max() - ff.min() + 1e-12)
-                        base = base_left * (1 - u) + base_right * u
-                        excess_db = db_fac * (logA[neigh] - base)
-                        cand = excess_db >= float(cfg.dilate_db)
-                        if cand.any():
-                            pk = int(np.argmin(np.abs(f - f0)))
-                            neigh_idx = np.where(neigh)[0]
-                            cand_idx = neigh_idx[cand]
-
-                            mask = np.zeros_like(band_mask)
-                            mask[cand_idx] = True
-                            mask[band_mask] = True
-                            mask &= neigh
-
-                            idx = np.where(mask)[0]
-                            if idx.size > 0:
-                                d = np.diff(idx)
-                                split = np.where(d > 1)[0]
-                                starts = np.r_[0, split + 1]
-                                ends = np.r_[split + 1, idx.size]
-
-                                chosen = None
-                                for a, b in zip(starts, ends):
-                                    run = idx[a:b]
-                                    if pk >= run[0] and pk <= run[-1]:
-                                        chosen = run
-                                        break
-                                if chosen is None:
-                                    scores = [np.max(logA[idx[a:b]]) for a, b in zip(starts, ends)]
-                                    jbest = int(np.argmax(scores))
-                                    chosen = idx[starts[jbest]:ends[jbest]]
-
-                                band_mask2 = np.zeros_like(band_mask)
-                                band_mask2[chosen] = True
-                                band_mask = band_mask2
-
-            # shoulders baseline in log domain
-            s1, s2 = cfg.shoulder_mult
-            left = (f >= f0 - s2*bw) & (f <= f0 - s1*bw)
-            right = (f >= f0 + s1*bw) & (f <= f0 + s2*bw)
-            if not left.any():
-                left = (f >= max(0.0, f0 - 6*bw)) & (f < f0 - bw)
-            if not right.any():
-                right = (f > f0 + bw) & (f <= min(0.5*fs, f0 + 6*bw))
-            if (not left.any()) and (not right.any()):
-                continue
-
-            ml = float(np.median(logA[left])) if left.any() else float(np.median(logA))
-            mr = float(np.median(logA[right])) if right.any() else float(np.median(logA))
-
-            fb = f[band_mask]
-            if fb.size == 1:
-                targ_log = 0.5 * (ml + mr)
-                Abase = np.array([np.exp(targ_log)], dtype=float)
-            else:
-                denom = (fb.max() - fb.min() + 1e-12)
-                u = (fb - fb.min()) / denom
-                targ = ml * (1 - u) + mr * u
-                Abase = np.exp(targ)
-
-            Acur = A[band_mask] + eps
-            g = Abase / Acur
-            if cfg.attenuate_only:
-                g = np.minimum(g, 1.0)
-            g = np.clip(g, float(cfg.g_floor), float(cfg.g_ceil))
-
-            F[band_mask, :] = F[band_mask, :] * g[:, None]
-
-            # update A/logA for subsequent bands (prevents reusing stale amplitudes)
-            A[band_mask] = Acur * g
-            logA[band_mask] = np.log(A[band_mask] + eps)
-
-            edits.append({
-                "seg": (int(i0), int(i1)),
-                "family": str(band.family),
-                "f0_nom": float(f0_nom),
-                "f0_used": float(f0),
-                "bw_eff_hz": float(bw),
-                "prom_db": float(prom_db),
-                "mode": "fft",
-            })
-
-        rec = np.fft.irfft(F, n=n, axis=0)
-        rec = rec + mu[None, :]
-        seg[:, apply_to] = rec
-        Y[i0:i1, :] = seg
-
-    return Y, {"enabled": True, "segments": len(segs), "edits": edits, "mode": "fft"}
 
 # --------------------------
 # High-level API
@@ -1639,7 +1505,7 @@ def clean_solo_merged_mag_tones(
     # Stage 1: lock-in only on clock-family by default
     if lockin.enabled and clock_freqs:
         Y, inf1 = remove_tones_lockin_joint(
-            Y, fs=fs, tone_freqs_hz=[clock_freqs[0]], cfg=lockin, apply_to=clock_apply_to
+            Y, fs=fs, tone_freqs_hz=clock_freqs, cfg=lockin, apply_to=clock_apply_to
         )
         info["families"]["clock_lockin"] = inf1
     else:
@@ -1649,7 +1515,7 @@ def clean_solo_merged_mag_tones(
     if equalize.enabled:
         # clock bands apply to clock_apply_to
         if clock_bands:
-            Y, inf2c = equalize_tone_bands_fft_multicomponent(
+            Y, inf2c = equalize_tone_bands_stft_multicomponent(
                 Y, fs=fs, bands=clock_bands, cfg=equalize, apply_to=clock_apply_to
             )
         else:
@@ -1687,271 +1553,505 @@ def clean_solo_merged_mag_tones(
 # --------------------------
 
 
+import numpy as np
+from scipy import signal
+import warnings
+
+
 def remove_wheel_noise_SOLO(
     B: np.ndarray,
     fs: float,
     *,
-    # ---- core cleaning (method is in clean_solo_merged_mag_tones)
-    bands: Optional[Sequence[ToneBand]] = None,
-    lockin: LockInConfig = LockInConfig(),
-    equalize: EqualizeConfig = EqualizeConfig(),
-    detect: DetectConfig = DetectConfig(),
+    # ---- legacy signature knobs (accepted for compatibility; not used by this method)
+    bands: Optional[Sequence["ToneBand"]] = None,
+    lockin: "LockInConfig" = LockInConfig(),
+    equalize: "EqualizeConfig" = EqualizeConfig(),
+    detect: "DetectConfig" = DetectConfig(),
     max_hz_clock: Optional[float] = None,
     max_hz_srf: float = 45.0,
     clock_apply_to: Optional[Sequence[int]] = None,
     srf_apply_to: Optional[Sequence[int]] = None,
-
-    # ---- plotting
+    # ---- minimal, physics-facing knobs
+    t: Optional[object] = None,
+    method: str = "ola_fft_cap_auto",
+    base_hz_clock: float = 8.0,
+    tone_bw_hz: Optional[float] = None,
+    tone_bw: Optional[float] = None,  # alias
+    baseline_inner_hz: Optional[float] = None,
+    baseline_outer_hz: Optional[float] = None,
+    cap_mult: Optional[float] = None,         # None -> bounded auto-tune
+    tune: bool = True,
+    tune_grid: Optional[Sequence[float]] = None,
+    guard_db: float = 0.4,
+    guard_offset_hz: float = 2.5,
+    # ---- STFT/OLA internals
+    window_size: Optional[int] = None,
+    noverlap: Optional[int] = None,
+    # ---- plotting (kept for compatibility; unused here)
     plot: bool = False,
-    plot_backend: str = "plotly",     # "plotly" | "matplotlib"
-    plot_time_s: float = 5.0,         # first seconds of channel-0 trace (0 disables)
+    plot_backend: str = "plotly",
+    plot_time_s: float = 5.0,
     plot_max_hz: float = 60.0,
     psd_nperseg: int = 8192,
     psd_overlap: float = 0.5,
-    plot_outfile: Optional[str] = None,  # e.g. "report.html" (plotly) or "report.png" (mpl)
-
+    plot_outfile: Optional[str] = None,
     # ---- outputs
     return_debug: bool = False,
-
     # ---- compatibility (ignore unknown keys safely)
     **_ignored,
 ):
     """
-    One-call entry point: clean Solar Orbiter merged MAG tones and (optionally) plot before/after.
+    OLA STFT cap-to-continuum tone removal for SOAR merged MAG+SCM.
 
-    This is a thin wrapper around `clean_solo_merged_mag_tones` that keeps the cleaning method intact.
-    The plotting is meant as a quick diagnostic (PSD + optional short time-series preview).
-
-    Inputs
-    ------
-    B : array-like
-        Time series, shape (n,) or (n, m). Real-valued.
-    fs : float
-        Sampling rate [Hz].
-
-    Returns
-    -------
-    If return_debug is False:
-        B_clean
-    If return_debug is True:
-        (B_clean, info)  where `info` also contains an optional `plot` entry.
+    This version is engineered to NOT warp the spectrum globally:
+      - Gap-safe segmentation
+      - Perfect-coverage OLA (includes last frame explicitly)
+      - sqrt-Hann analysis/synthesis (stable COLA with 50% overlap)
+      - Edge padding + trimming
+      - Identity safety check: if STFT/iSTFT is not ~identity, return input unchanged
     """
-    B = np.asarray(B, float)
-    if B.ndim == 1:
-        B_in_shape = "1d"
-        B2 = B[:, None]
-    elif B.ndim == 2:
-        B_in_shape = "2d"
-        B2 = B
+    import numpy as np
+    from scipy import signal as _signal
+
+    B_arr = np.asarray(B)
+    orig_dtype = B_arr.dtype
+
+    X0 = np.asarray(B_arr, dtype=float)
+    if X0.ndim == 1:
+        in_shape = "1d"
+        X = X0[:, None]
+    elif X0.ndim == 2:
+        in_shape = "2d"
+        X = X0
     else:
         raise ValueError("B must be 1D or 2D (n,) or (n, m).")
 
-    n = B2.shape[0]
-    if n < 64 or not np.isfinite(fs) or fs <= 0:
-        info = {"fs": float(fs), "n": int(n), "note": "Input too short or fs invalid; returned input unchanged."}
-        Bout = B2.copy()
-        if B_in_shape == "1d":
-            Bout = Bout[:, 0]
-        return (Bout, info) if return_debug else Bout
+    n, m = X.shape
+    info = {"n": int(n), "m": int(m), "fs": float(fs), "method": str(method)}
 
-    # --------------------
-    # Run cleaning (method unchanged)
-    # --------------------
-    B_clean, info = clean_solo_merged_mag_tones(
-        B2,
-        fs=float(fs),
-        bands=bands,
-        lockin=lockin,
-        equalize=equalize,
-        detect=detect,
-        max_hz_clock=max_hz_clock,
-        max_hz_srf=max_hz_srf,
-        clock_apply_to=clock_apply_to,
-        srf_apply_to=srf_apply_to,
+    if n < 64 or (not np.isfinite(fs)) or fs <= 0:
+        out = X.copy()
+        if in_shape == "1d":
+            out = out[:, 0]
+        if np.issubdtype(orig_dtype, np.floating):
+            out = np.asarray(out).astype(orig_dtype, copy=False)
+        return (out, info) if return_debug else out
+
+    if method not in ("ola_fft_cap_auto", "ola_fft_cap", "ola", "cap"):
+        out = X.copy()
+        if in_shape == "1d":
+            out = out[:, 0]
+        if np.issubdtype(orig_dtype, np.floating):
+            out = np.asarray(out).astype(orig_dtype, copy=False)
+        info["note"] = "Unsupported method; returned input unchanged."
+        return (out, info) if return_debug else out
+
+    # -------------------------
+    # Defaults: minimal knobs
+    # -------------------------
+    if tone_bw_hz is not None and np.isfinite(tone_bw_hz) and tone_bw_hz > 0:
+        tone_bw_hz_use = float(tone_bw_hz)
+    elif tone_bw is not None and np.isfinite(tone_bw) and tone_bw > 0:
+        tone_bw_hz_use = float(tone_bw)
+    else:
+        tone_bw_hz_use = 0.6
+
+    # Use your intended “outside skirt” shoulders by default
+    baseline_inner = float(baseline_inner_hz) if (baseline_inner_hz is not None and np.isfinite(baseline_inner_hz) and baseline_inner_hz > 0) else 1.5
+    baseline_outer = float(baseline_outer_hz) if (baseline_outer_hz is not None and np.isfinite(baseline_outer_hz) and baseline_outer_hz > baseline_inner) else 2.5
+
+    max_hz_clock_use = float(max_hz_clock) if (max_hz_clock is not None and np.isfinite(max_hz_clock) and max_hz_clock > 0) else None
+    if max_hz_clock_use is None:
+        max_hz_clock_use = min(64.0, 0.95 * (0.5 * float(fs)))
+
+    # Window length: ~8 s, power-of-two, but clamp for performance
+    if window_size is None or (not isinstance(window_size, int)) or window_size <= 0:
+        target = int(round(8.0 * float(fs)))
+        target = max(512, target)
+        p2 = 1
+        while p2 < target:
+            p2 *= 2
+        nper = int(min(max(512, p2), n))
+        nper = int(min(nper, 16384))
+    else:
+        nper = int(min(max(256, window_size), n))
+
+    # Default: 50% overlap (min params, stable COLA)
+    hop = nper // 2
+    if noverlap is not None and isinstance(noverlap, int) and 0 <= noverlap < nper:
+        hop = max(1, nper - int(noverlap))
+
+    dt0 = 1.0 / float(fs)
+    nyq = 0.5 * float(fs)
+
+    info.update(
+        {
+            "tone_bw_hz": float(tone_bw_hz_use),
+            "baseline_inner_hz": float(baseline_inner),
+            "baseline_outer_hz": float(baseline_outer),
+            "guard_db": float(guard_db),
+            "guard_offset_hz": float(guard_offset_hz),
+            "nper": int(nper),
+            "hop": int(hop),
+            "max_hz_clock": float(max_hz_clock_use),
+        }
     )
 
-    # --------------------
-    # Optional plotting
-    # --------------------
-    plot_info = None
-    if bool(plot):
-        # PSD (trace + components) on finite-only data
-        Bf = B2.copy()
-        Cf = B_clean.copy()
-        ok = np.all(np.isfinite(Bf), axis=1) & np.all(np.isfinite(Cf), axis=1)
-        Bf = Bf[ok]
-        Cf = Cf[ok]
+    # -------------------------
+    # Gap-safe segmentation
+    # -------------------------
+    def _segments_from_time_and_finite(xarr, t_in):
+        bad = ~np.isfinite(xarr).all(axis=1)
+        if t_in is None:
+            segs = []
+            i = 0
+            while i < xarr.shape[0]:
+                while i < xarr.shape[0] and bad[i]:
+                    i += 1
+                if i >= xarr.shape[0]:
+                    break
+                j = i
+                while j < xarr.shape[0] and (not bad[j]):
+                    j += 1
+                segs.append((i, j))
+                i = j
+            return segs
 
-        def _welch(y):
-            y = np.asarray(y, float)
-            nn = y.size
-            if nn < 16:
-                return np.array([0.0, 1.0]), np.array([np.nan, np.nan])
-            nper = int(min(max(256, int(psd_nperseg)), nn))
-            nov = int(min(max(0, int(nper * float(psd_overlap))), nper - 1))
-            fw, Pw = signal.welch(y, fs=float(fs), window="hann", nperseg=nper, noverlap=nov, detrend="constant")
-            return fw, Pw
+        try:
+            tt = np.asarray(t_in)
+            if tt.shape[0] != xarr.shape[0]:
+                return _segments_from_time_and_finite(xarr, None)
 
-        # Trace PSD = sum over component PSDs
-        f0 = None
-        P0_tr = None
-        P1_tr = None
-        P0_comp = []
-        P1_comp = []
-        m = B2.shape[1]
+            if np.issubdtype(tt.dtype, np.datetime64):
+                tsec = tt.astype("datetime64[ns]").astype("int64") * 1e-9
+            else:
+                tsec = tt.astype(float)
+
+            dt = np.diff(tsec)
+            med = np.nanmedian(dt[np.isfinite(dt)]) if dt.size else dt0
+            if (not np.isfinite(med)) or med <= 0:
+                med = dt0
+            jump = np.concatenate([[False], dt > (3.0 * med)])
+            cut = bad | jump
+
+            segs = []
+            i = 0
+            while i < xarr.shape[0]:
+                while i < xarr.shape[0] and cut[i]:
+                    i += 1
+                if i >= xarr.shape[0]:
+                    break
+                j = i
+                while j < xarr.shape[0] and (not cut[j]):
+                    j += 1
+                segs.append((i, j))
+                i = j
+            return segs
+        except Exception:
+            return _segments_from_time_and_finite(xarr, None)
+
+    segments = _segments_from_time_and_finite(X, t)
+    if not segments:
+        out = X.copy()
+        if in_shape == "1d":
+            out = out[:, 0]
+        if np.issubdtype(orig_dtype, np.floating):
+            out = np.asarray(out).astype(orig_dtype, copy=False)
+        info["note"] = "No finite segments found; returned input unchanged."
+        return (out, info) if return_debug else out
+
+    # -------------------------
+    # Harmonics & masks
+    # -------------------------
+    if base_hz_clock <= 0 or (not np.isfinite(base_hz_clock)):
+        base_hz_clock = 8.0
+
+    kmax = int(np.floor(max_hz_clock_use / float(base_hz_clock)))
+    f0_list = []
+    for k in range(1, kmax + 1):
+        f0 = float(base_hz_clock) * float(k)
+        if 0.0 < f0 < (0.98 * nyq):
+            f0_list.append(f0)
+
+    info["clock_f0_hz"] = [float(x) for x in f0_list]
+    if not f0_list:
+        out = X.copy()
+        if in_shape == "1d":
+            out = out[:, 0]
+        if np.issubdtype(orig_dtype, np.floating):
+            out = np.asarray(out).astype(orig_dtype, copy=False)
+        info["note"] = "No harmonics within bounds; returned input unchanged."
+        return (out, info) if return_debug else out
+
+    f = np.fft.rfftfreq(nper, d=dt0)
+    half_bw = 0.5 * float(tone_bw_hz_use)
+
+    # Build all tone-band masks once; also build an exclusion mask for baseline estimation
+    tone_masks = []
+    harm_masks = []
+    for f0 in f0_list:
+        tm = (np.abs(f - f0) <= half_bw)
+        tone_masks.append(tm)
+
+    tone_exclude = np.zeros_like(f, dtype=bool)
+    for tm in tone_masks:
+        tone_exclude |= tm
+
+    for f0 in f0_list:
+        tone_mask = (np.abs(f - f0) <= half_bw)
+
+        l0 = f0 - baseline_outer
+        l1 = f0 - baseline_inner
+        r0 = f0 + baseline_inner
+        r1 = f0 + baseline_outer
+
+        left_mask = (f >= l0) & (f <= l1) & (~tone_exclude)
+        right_mask = (f >= r0) & (f <= r1) & (~tone_exclude)
+
+        harm_masks.append((f0, tone_mask, left_mask, right_mask))
+
+    # -------------------------
+    # Windows: sqrt-Hann analysis/synthesis
+    # -------------------------
+    win_hann = np.hanning(nper).astype(float)
+    win = np.sqrt(np.maximum(win_hann, 0.0))
+    win_prod = win * win  # = Hann
+    eps = 1e-30
+
+    def _cap_rfft_inplace(Xf, cap_mult_use):
+        """
+        Cap *power* in the tone band to cap_mult * continuum power.
+        """
+        P = (np.abs(Xf) ** 2) + eps  # (nf, m)
+        frame_score = 0.0
+
+        for (f0, tone_mask, left_mask, right_mask) in harm_masks:
+            if (not np.any(tone_mask)) or ((not np.any(left_mask)) and (not np.any(right_mask))):
+                continue
+
+            PL = np.median(P[left_mask, :], axis=0) if np.any(left_mask) else np.full(m, np.nan)
+            PR = np.median(P[right_mask, :], axis=0) if np.any(right_mask) else np.full(m, np.nan)
+
+            okL = np.isfinite(PL) & (PL > 0)
+            okR = np.isfinite(PR) & (PR > 0)
+
+            if np.any(okL) and np.any(okR):
+                # log–log interpolate continuum power at f0 between shoulder midpoints
+                fL = max(f0 - 0.5 * (baseline_inner + baseline_outer), eps)
+                fR = max(f0 + 0.5 * (baseline_inner + baseline_outer), eps)
+                lf0 = np.log(max(f0, eps))
+                lL = np.log(fL)
+                lR = np.log(fR)
+                denom = max(lR - lL, 1e-12)
+
+                log_PL = np.log(np.maximum(PL, eps))
+                log_PR = np.log(np.maximum(PR, eps))
+                log_P0 = log_PL + (log_PR - log_PL) * (lf0 - lL) / denom
+                P0 = np.exp(log_P0)
+
+                mn = np.minimum(PL, PR)
+                mx = np.maximum(PL, PR)
+                P0 = np.minimum(np.maximum(P0, mn), mx)
+            elif np.any(okL):
+                P0 = np.where(okL, PL, np.nan)
+            else:
+                P0 = np.where(okR, PR, np.nan)
+
+            P0 = np.where(np.isfinite(P0) & (P0 > 0), P0, np.nan)
+            Pcap = (float(cap_mult_use) ** 2) * P0  # (m,)
+
+            Pt = P[tone_mask, :]                    # (nb, m)
+            Pcapv = Pcap[None, :]                   # (1, m)
+            valid = np.isfinite(Pcapv) & (Pcapv > 0)
+
+            # scale amplitude by sqrt(Pcap / P)
+            scale = np.where(valid, np.minimum(1.0, np.sqrt(Pcapv / (Pt + eps))), 1.0)
+            Xf[tone_mask, :] *= scale
+
+            # diagnostic: residual excess (power) in band vs continuum (dB)
+            mt = np.max(Pt, axis=0)
+            ok = np.isfinite(mt) & np.isfinite(P0) & (mt > 0) & (P0 > 0)
+            if np.any(ok):
+                excess_db = np.maximum(0.0, 10.0 * (np.log10(mt[ok]) - np.log10(P0[ok])))
+                if excess_db.size:
+                    frame_score = max(frame_score, float(np.max(excess_db)))
+
+        return frame_score
+
+    def _frame_starts(Lp):
+        last = Lp - nper
+        if last < 0:
+            return [0]
+        starts = list(range(0, last + 1, hop))
+        if starts[-1] != last:
+            starts.append(last)  # CRITICAL: cover tail
+        return starts
+
+    def _ola_process_segment(xseg, cap_mult_use, apply_cap):
+        """
+        OLA with perfect coverage and edge padding; returns yseg (same length as xseg).
+        """
+        L = xseg.shape[0]
+        if L < 8:
+            return xseg.copy(), {"frame_excess_db_p50": float("nan")}
+
+        pad = max(1, nper // 2)
+        pad = min(pad, L)
+        xpad = np.pad(xseg, ((pad, pad), (0, 0)), mode="edge")
+        Lp = xpad.shape[0]
+
+        y = np.zeros((Lp, m), float)
+        wacc = np.zeros(Lp, float)
+        frame_scores = []
+
+        for i0 in _frame_starts(Lp):
+            frame = xpad[i0:i0 + nper, :] * win[:, None]
+            Xf = np.fft.rfft(frame, axis=0)
+            if apply_cap:
+                sc = _cap_rfft_inplace(Xf, cap_mult_use=float(cap_mult_use))
+                frame_scores.append(sc)
+            fr = np.fft.irfft(Xf, n=nper, axis=0)
+            fr *= win[:, None]
+            y[i0:i0 + nper, :] += fr
+            wacc[i0:i0 + nper] += win_prod
+
+        good = wacc > 0
+        y[good, :] /= wacc[good, None]
+
+        ytrim = y[pad:pad + L, :]
+        met = {
+            "frame_excess_db_p50": float(np.nanmedian(frame_scores)) if frame_scores else float("nan"),
+        }
+        return ytrim, met
+
+    def _welch_trace(xarr):
+        N = xarr.shape[0]
+        if N < 64:
+            return np.array([0.0, 1.0]), np.array([np.nan, np.nan])
+        nper_w = int(min(max(8192, 4 * nper), N))
+        nov_w = int(min(max(0, int(nper_w * float(psd_overlap))), nper_w - 1))
+        Psum = None
         for j in range(m):
-            fj, Pbj = _welch(Bf[:, j])
-            fk, Pcj = _welch(Cf[:, j])
-            if f0 is None:
-                f0 = fj
-                P0_tr = np.zeros_like(Pbj)
-                P1_tr = np.zeros_like(Pcj)
-            # (Welch grids match for same args)
-            P0_tr = P0_tr + Pbj
-            P1_tr = P1_tr + Pcj
-            P0_comp.append(Pbj)
-            P1_comp.append(Pcj)
-
-        # Band list for shading (best-effort reconstruction)
-        if bands is None:
-            bands_used = make_default_bands(float(fs), max_hz_clock=max_hz_clock, max_hz_srf=max_hz_srf)
-        else:
-            bands_used = list(bands)
-
-        # Add detected bands if present (non-overlapping merge; same as clean_solo_merged_mag_tones)
-        extra = []
-        for d in info.get("detected_bands", []) or []:
-            try:
-                extra.append(ToneBand(f0_hz=float(d["f0_hz"]), bw_hz=float(d["bw_hz"]), family=str(d.get("family", "extra"))))
-            except Exception:
-                pass
-        if extra:
-            merged = list(bands_used)
-            for eb in extra:
-                keep = True
-                for b in merged:
-                    if abs(eb.f0_hz - b.f0_hz) <= max(0.5 * max(eb.bw_hz, b.bw_hz), 0.08):
-                        keep = False
-                        break
-                if keep:
-                    merged.append(eb)
-            bands_used = merged
-
-        # Match cleaning policy: SRF bands are edited only if srf_apply_to is provided.
-        if srf_apply_to is None:
-            bands_used = [b for b in bands_used if getattr(b, "family", None) != "srf"]
-
-        plot_backend_l = str(plot_backend).lower().strip()
-
-        if plot_backend_l == "plotly":
-            import plotly.graph_objects as go
-            from plotly.subplots import make_subplots
-
-            fig = make_subplots(
-                rows=2, cols=1, shared_xaxes=False,
-                vertical_spacing=0.12,
-                row_heights=[0.62, 0.38],
-                subplot_titles=("PSD (trace + components): before vs after", f"Channel-0 preview (first {float(plot_time_s):g} s)" if plot_time_s and plot_time_s > 0 else "Channel-0 preview (disabled)"),
+            fw, Pj = _signal.welch(
+                xarr[:, j],
+                fs=float(fs),
+                window="hann",
+                nperseg=nper_w,
+                noverlap=nov_w,
+                detrend="constant",
             )
+            if Psum is None:
+                Psum = np.zeros_like(Pj)
+            Psum += Pj
+        return fw, Psum
 
-            # PSD
-            m = B2.shape[1]
-            # Trace
-            fig.add_trace(go.Scatter(x=f0, y=P0_tr, mode="lines", name="trace (before)"), row=1, col=1)
-            fig.add_trace(go.Scatter(x=f0, y=P1_tr, mode="lines", name="trace (after)"), row=1, col=1)
-
-            # Components (thin)
-            for j in range(m):
-                fig.add_trace(go.Scatter(x=f0, y=P0_comp[j], mode="lines", name=f"c{j} (before)", opacity=0.35), row=1, col=1)
-                fig.add_trace(go.Scatter(x=f0, y=P1_comp[j], mode="lines", name=f"c{j} (after)", opacity=0.35), row=1, col=1)
-
-            # Shaded tone bands
-            for b in bands_used:
-                fL = float(b.f0_hz) - 0.5 * float(b.bw_hz)
-                fR = float(b.f0_hz) + 0.5 * float(b.bw_hz)
-                if fR <= 0 or fL >= float(plot_max_hz):
+    def _guard_ok(fw, P0, P1):
+        if fw.size < 2 or (not np.all(np.isfinite(P0))) or (not np.all(np.isfinite(P1))):
+            return True
+        for (f0, _tm, _lm, _rm) in harm_masks:
+            for sgn in (-1.0, +1.0):
+                ft = f0 + sgn * float(guard_offset_hz)
+                if ft <= 0 or ft >= (0.98 * nyq):
                     continue
-                fig.add_vrect(x0=max(0.0, fL), x1=min(float(plot_max_hz), fR), line_width=0, opacity=0.12, row=1, col=1)
-
-            fig.update_xaxes(type="log", title_text="f [Hz]", range=[np.log10(max(1e-3, 0.2)), np.log10(float(plot_max_hz))], row=1, col=1)
-            fig.update_yaxes(type="log", title_text="PSD", row=1, col=1)
-
-            # Time series preview
-            if plot_time_s and float(plot_time_s) > 0:
-                nshow = int(min(n, max(1, round(float(plot_time_s) * float(fs)))))
-                t = np.arange(nshow) / float(fs)
-                fig.add_trace(go.Scatter(x=t, y=B2[:nshow, 0], mode="lines", name="c0 (before)"), row=2, col=1)
-                fig.add_trace(go.Scatter(x=t, y=B_clean[:nshow, 0], mode="lines", name="c0 (after)"), row=2, col=1)
-                fig.update_xaxes(title_text="t [s]", row=2, col=1)
-                fig.update_yaxes(title_text="B", row=2, col=1)
-
-            fig.update_layout(height=780, legend=dict(orientation="h"))
-
-            # Save / show
-            if plot_outfile:
-                if str(plot_outfile).lower().endswith(".html"):
-                    fig.write_html(str(plot_outfile), include_plotlyjs="cdn")
-                else:
-                    # requires kaleido for static images; keep as best-effort
-                    fig.write_image(str(plot_outfile))
-            else:
-                fig.show()
-
-            plot_info = {"backend": "plotly", "outfile": plot_outfile, "max_hz": float(plot_max_hz)}
-
-        elif plot_backend_l == "matplotlib":
-            import matplotlib.pyplot as plt
-
-            fig = plt.figure(figsize=(10, 7))
-            ax1 = fig.add_subplot(2, 1, 1)
-            ax1.loglog(f0, P0_tr, label="trace (before)")
-            ax1.loglog(f0, P1_tr, label="trace (after)")
-            for j in range(B2.shape[1]):
-                ax1.loglog(f0, P0_comp[j], alpha=0.35, label=f"c{j} (before)")
-                ax1.loglog(f0, P1_comp[j], alpha=0.35, label=f"c{j} (after)")
-            for b in bands_used:
-                fL = float(b.f0_hz) - 0.5 * float(b.bw_hz)
-                fR = float(b.f0_hz) + 0.5 * float(b.bw_hz)
-                if fR <= 0 or fL >= float(plot_max_hz):
+                k = int(np.argmin(np.abs(fw - ft)))
+                if (not np.isfinite(P0[k])) or (not np.isfinite(P1[k])) or P0[k] <= 0 or P1[k] <= 0:
                     continue
-                ax1.axvspan(max(0.0, fL), min(float(plot_max_hz), fR), alpha=0.12)
-            ax1.set_xlim(0.2, float(plot_max_hz))
-            ax1.set_xlabel("f [Hz]")
-            ax1.set_ylabel("PSD")
-            ax1.legend(ncol=2, fontsize=8)
+                dB = 10.0 * (np.log10(P1[k]) - np.log10(P0[k]))
+                if abs(float(dB)) > float(guard_db):
+                    return False
+        return True
 
-            ax2 = fig.add_subplot(2, 1, 2)
-            if plot_time_s and float(plot_time_s) > 0:
-                nshow = int(min(n, max(1, round(float(plot_time_s) * float(fs)))))
-                t = np.arange(nshow) / float(fs)
-                ax2.plot(t, B2[:nshow, 0], label="c0 (before)")
-                ax2.plot(t, B_clean[:nshow, 0], label="c0 (after)")
-                ax2.set_xlabel("t [s]")
-                ax2.set_ylabel("B")
-                ax2.legend(fontsize=8)
-            else:
-                ax2.text(0.5, 0.5, "time preview disabled", ha="center", va="center")
-                ax2.set_axis_off()
+    # -------------------------
+    # Identity safety check (no-op STFT must reconstruct)
+    # -------------------------
+    # Check on the longest segment only (cheap + decisive)
+    seg_lens = [j - i for (i, j) in segments]
+    rep_idx = int(np.argmax(seg_lens))
+    rep_i0, rep_i1 = segments[rep_idx]
+    rep = X[rep_i0:rep_i1, :]
 
-            fig.tight_layout()
+    rep_rec, _ = _ola_process_segment(rep, cap_mult_use=1.0, apply_cap=False)
+    denom = np.nanmedian(np.abs(rep)) + 1e-12
+    rel_err = float(np.nanmax(np.abs(rep_rec - rep)) / denom)
+    info["stft_identity_relerr"] = rel_err
+    if not np.isfinite(rel_err) or rel_err > 1e-6:
+        # If this trips, the only safe action is to return raw data unchanged.
+        out = X.copy()
+        if in_shape == "1d":
+            out = out[:, 0]
+        if np.issubdtype(orig_dtype, np.floating):
+            out = np.asarray(out).astype(orig_dtype, copy=False)
+        info["note"] = "STFT/iSTFT not identity (safety trip); returned input unchanged."
+        return (out, info) if return_debug else out
 
-            if plot_outfile:
-                fig.savefig(str(plot_outfile), dpi=150, bbox_inches="tight")
-            else:
-                plt.show()
-
-            plot_info = {"backend": "matplotlib", "outfile": plot_outfile, "max_hz": float(plot_max_hz)}
-        else:
-            raise ValueError("plot_backend must be 'plotly' or 'matplotlib'.")
-
-        if plot_info is not None:
-            info = dict(info)  # shallow copy for safety
-            info["plot"] = plot_info
-
-    # Restore original shape
-    if B_in_shape == "1d":
-        B_clean_out = B_clean[:, 0]
+    # -------------------------
+    # Auto-tune (bounded)
+    # -------------------------
+    if tune_grid is None:
+        tune_grid_use = (0.6, 0.8, 1.0, 1.25, 1.6, 2.0)
     else:
-        B_clean_out = B_clean
+        tune_grid_use = tuple(float(x) for x in tune_grid if np.isfinite(x) and float(x) > 0)
 
-    return (B_clean_out, info) if return_debug else B_clean_out
+    if cap_mult is not None and np.isfinite(cap_mult) and float(cap_mult) > 0:
+        cap_mult_use_global = float(cap_mult)
+        do_tune = False
+    else:
+        cap_mult_use_global = 1.0
+        do_tune = bool(tune)
+
+    if do_tune:
+        fw0, Praw = _welch_trace(rep)
+        best = None
+        best_score = None
+
+        for cand in tune_grid_use:
+            rep_clean, met = _ola_process_segment(rep, cap_mult_use=float(cand), apply_cap=True)
+            fw1, Pcl = _welch_trace(rep_clean)
+            if fw0.shape != fw1.shape or (not np.allclose(fw0, fw1)):
+                continue
+            if not _guard_ok(fw0, Praw, Pcl):
+                continue
+            # objective: minimize residual tone excess proxy
+            score = float(met.get("frame_excess_db_p50", np.inf))
+            if best is None or score < best_score:
+                best = float(cand)
+                best_score = score
+
+        if best is None:
+            cap_mult_use_global = 1.0
+            info["tune_note"] = "No candidate passed guard; using cap_mult=1.0"
+        else:
+            cap_mult_use_global = float(best)
+            info["tune_selected_score_db_p50"] = float(best_score)
+
+    info["tune_selected_cap_mult"] = float(cap_mult_use_global)
+
+    # -------------------------
+    # Apply to all segments
+    # -------------------------
+    out = X.copy()
+    seg_meta = []
+    for (i0, i1) in segments:
+        xseg = X[i0:i1, :]
+        if xseg.shape[0] < 8:
+            out[i0:i1, :] = xseg
+            seg_meta.append({"i0": int(i0), "i1": int(i1), "note": "segment too short"})
+            continue
+        yseg, met = _ola_process_segment(xseg, cap_mult_use=float(cap_mult_use_global), apply_cap=True)
+        out[i0:i1, :] = yseg
+        sm = {"i0": int(i0), "i1": int(i1)}
+        sm.update({k: float(v) for k, v in met.items()})
+        seg_meta.append(sm)
+
+    info["segments"] = seg_meta
+
+    # restore shape + dtype
+    if in_shape == "1d":
+        out_final = out[:, 0]
+    else:
+        out_final = out
+
+    if np.issubdtype(orig_dtype, np.floating):
+        out_final = np.asarray(out_final).astype(orig_dtype, copy=False)
+
+    return (out_final, info) if return_debug else out_final

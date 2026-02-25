@@ -7,7 +7,7 @@ corrupt source-surface longitudes.
 
 Key contracts
 -------------
-- Output is in **heliographic Carrington** lon/lat with an **explicit observer**.
+- Output is in **heliographic Carrington** lon/lat.
 - Longitudes are wrapped to [0, 360).
 - Time interpolation of longitudes is done on an *unwrapped* angle to avoid
   0/360 discontinuity artifacts.
@@ -181,11 +181,16 @@ def get_ephemeris_hgc(
 
     Notes
     -----
-    Carrington coordinates depend on an explicit observer. We implement
-    observer='earth' as the reproducible default.
+    Carrington longitude is a Sun-fixed rotating longitude (not an
+    observer-centric longitude like Stonyhurst). However, some frame
+    transformations in ``sunpy`` require an explicit observer when converting
+    *through* observer-dependent frames.
 
-    If you need a different observer, implement it explicitly and document it;
-    do not silently swap observer frames.
+    In this minimal implementation we only support ``observer='earth'`` and we
+    prefer a direct transformation from the Horizons coordinate to
+    ``HeliographicCarrington``. A conservative fallback through
+    ``HeliographicStonyhurst`` is kept for compatibility with older ``sunpy``
+    versions.
     """
 
     _require_sunpy()
@@ -229,10 +234,16 @@ def get_ephemeris_hgc(
 
     coord0 = get_horizons_coord(spkid, time_query)
 
-    # Normalize through HGS then into Carrington with explicit observer.
-    hgs = coord0.transform_to(HeliographicStonyhurst(obstime=coord0.obstime))
-    earth_obs = get_body_heliographic_stonyhurst("earth", hgs.obstime)
-    hgc = hgs.transform_to(HeliographicCarrington(obstime=hgs.obstime, observer=earth_obs))
+    # Prefer a direct transformation into Carrington.
+    # This avoids accidental entanglement with observer-centric frames.
+    try:
+        hgc = coord0.transform_to(HeliographicCarrington(obstime=coord0.obstime))
+    except Exception:
+        # Fallback: normalize through HGS and then into Carrington.
+        # Keep the observer explicit for the HGS<->HGC conversion.
+        hgs = coord0.transform_to(HeliographicStonyhurst(obstime=coord0.obstime))
+        earth_obs = get_body_heliographic_stonyhurst("earth", hgs.obstime)
+        hgc = hgs.transform_to(HeliographicCarrington(obstime=hgs.obstime, observer=earth_obs))
 
     # Distance accessor compatible across frames
     def _dist_au(c):
