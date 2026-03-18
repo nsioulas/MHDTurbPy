@@ -187,18 +187,18 @@ def resolve_mag_noise_settings(settings: Dict[str, Any]) -> Tuple[bool, Dict[str
     """
     Single source of truth for whether wheel-noise / tone removal is enabled and its params.
 
-    Supports BOTH:
-      - Preferred unified key:
-          settings["Mag_SCM"] = {"noise_flag": bool, "noise_removal": {...}}
-      - Legacy keys:
-          settings["Mag_SCAM_PSP"]  (PSP SCAM pipeline)
-          settings["Mag_SCM_SOLO"]  (SOLO merged SCM pipeline)
+    Deconfliction rule:
+      - For PSP: only the PSP-specific noise block is considered authoritative.
+      - For SOLO: only the SOLO-specific noise block is considered authoritative.
+      - The generic "Mag_SCM" block is treated as a within-spacecraft fallback only.
 
-    Important behavior:
-      - If the unified key exists and is enabled (noise_flag=True), it wins.
-      - If the unified key exists but is disabled, we still honor a legacy key
-        if it is explicitly enabled. This avoids "silent no-op" when defaults
-        define Mag_SCM but the user toggles only the legacy block.
+    Supported keys:
+      - PSP key (authoritative for sc="PSP"):
+          settings["Mag_SCAM_PSP"] = {"noise_flag": bool, "noise_removal": {...}}
+      - SOLO key (authoritative for sc="SOLO"):
+          settings["Mag_SCM_SOLO"] = {"noise_flag": bool, "noise_removal": {...}}
+      - Backward-compatible generic key (fallback only):
+          settings["Mag_SCM"] = {"noise_flag": bool, "noise_removal": {...}}
 
     Returns:
       (noise_flag, noise_cfg)
@@ -206,42 +206,62 @@ def resolve_mag_noise_settings(settings: Dict[str, Any]) -> Tuple[bool, Dict[str
     if not isinstance(settings, dict):
         return False, default_wheel_noise_cfg()
 
-    unified = settings.get("Mag_SCM", None)
-    if isinstance(unified, dict):
-        flag_u = bool(unified.get("noise_flag", False))
-        cfg_u = unified.get("noise_removal", None)
-        if not isinstance(cfg_u, dict):
-            cfg_u = default_wheel_noise_cfg()
+    def _pick(block_key: str) -> Tuple[bool, Dict[str, Any]]:
+        block = settings.get(block_key, None)
+        if not isinstance(block, dict):
+            return False, default_wheel_noise_cfg()
+        flag = bool(block.get("noise_flag", False))
+        cfg = block.get("noise_removal", None)
+        if not isinstance(cfg, dict):
+            cfg = default_wheel_noise_cfg()
+        cfg = dict(cfg)
+        cfg["__cfg_source"] = block_key
+        return flag, cfg
 
+    sc = settings.get("sc", None)
+    if isinstance(sc, str):
+        sc = sc.strip().upper()
+    else:
+        sc = None
+
+    if sc == "PSP":
+        # PSP: prefer PSP-specific key; fallback to generic Mag_SCM (within PSP only).
+        flag_p, cfg_p = _pick("Mag_SCAM_PSP")
+        if flag_p:
+            return True, cfg_p
+
+        flag_u, cfg_u = _pick("Mag_SCM")
         if flag_u:
-            cfg_u = dict(cfg_u)
             cfg_u["__cfg_source"] = "Mag_SCM"
             return True, cfg_u
 
-        # Unified exists but disabled -> allow explicit legacy enable.
-        for legacy_key in ("Mag_SCAM_PSP", "Mag_SCM_SOLO"):
-            legacy = settings.get(legacy_key, None)
-            if isinstance(legacy, dict) and bool(legacy.get("noise_flag", False)):
-                cfg_l = legacy.get("noise_removal", None)
-                if not isinstance(cfg_l, dict):
-                    cfg_l = default_wheel_noise_cfg()
-                cfg_l = dict(cfg_l)
-                cfg_l["__cfg_source"] = legacy_key
-                return True, cfg_l
+        if "Mag_SCAM_PSP" in settings and isinstance(settings.get("Mag_SCAM_PSP"), dict):
+            return False, cfg_p
+        if "Mag_SCM" in settings and isinstance(settings.get("Mag_SCM"), dict):
+            return False, cfg_u
+        return False, default_wheel_noise_cfg()
 
-        return False, dict(cfg_u)
+    if sc == "SOLO":
+        # SOLO: prefer SOLO-specific key; fallback to generic Mag_SCM (within SOLO only).
+        flag_s, cfg_s = _pick("Mag_SCM_SOLO")
+        if flag_s:
+            return True, cfg_s
 
-    # No unified key -> legacy fallbacks.
-    for legacy_key in ("Mag_SCAM_PSP", "Mag_SCM_SOLO"):
-        legacy = settings.get(legacy_key, None)
-        if isinstance(legacy, dict):
-            flag = bool(legacy.get("noise_flag", False))
-            cfg = legacy.get("noise_removal", None)
-            if not isinstance(cfg, dict):
-                cfg = default_wheel_noise_cfg()
-            cfg = dict(cfg)
-            cfg["__cfg_source"] = legacy_key
-            return flag, cfg
+        flag_u, cfg_u = _pick("Mag_SCM")
+        if flag_u:
+            cfg_u["__cfg_source"] = "Mag_SCM"
+            return True, cfg_u
+
+        if "Mag_SCM_SOLO" in settings and isinstance(settings.get("Mag_SCM_SOLO"), dict):
+            return False, cfg_s
+        if "Mag_SCM" in settings and isinstance(settings.get("Mag_SCM"), dict):
+            return False, cfg_u
+        return False, default_wheel_noise_cfg()
+
+    # Unknown sc: preserve legacy behavior, but keep deterministic order.
+    for k in ("Mag_SCAM_PSP", "Mag_SCM_SOLO", "Mag_SCM"):
+        if isinstance(settings.get(k, None), dict):
+            return _pick(k)
 
     return False, default_wheel_noise_cfg()
 

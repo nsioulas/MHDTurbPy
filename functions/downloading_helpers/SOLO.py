@@ -500,6 +500,8 @@ def _clean_soar_merged_scm_before_resample(
         pass
 
     return out
+
+
 def download_MAG_SOLO(
     t0: str,
     t1: str,
@@ -620,7 +622,7 @@ def download_MAG_SOLO(
                 # Do NOT run a generic "interpolate-all-NaNs then STFT" cleaner here, because long gaps
                 # broaden coherent lines and leave residual harmonics.
                 noise_flag, noise_cfg = resolve_mag_noise_settings(settings)
-                if noise_flag and (not settings.get("SOLO_disable_auto_clean", False)):
+                if noise_flag:
                     try:
                         merged_df = _clean_soar_merged_scm_before_resample(
                             merged_df=merged_df,

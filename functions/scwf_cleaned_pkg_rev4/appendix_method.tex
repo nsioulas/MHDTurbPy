@@ -1,0 +1,319 @@
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts,bm}
+\usepackage{booktabs,longtable,array}
+\usepackage[hidelinks]{hyperref}
+\usepackage{enumitem}
+\usepackage{microtype}
+\usepackage{mathtools}
+\setlength{\parskip}{0.5em}
+\setlength{\parindent}{0pt}
+
+\title{Appendix: Method and Normalization of the Revised SCWF Anisotropy Pipeline}
+\author{}
+\date{March 11, 2026}
+
+\begin{document}
+\maketitle
+
+\section{Scope}
+
+This appendix documents the \emph{implemented} method in the revised pipeline contained in \path{three_D_funcs.py}. It is not a generic discussion of wavelet anisotropy. The goal is narrower: to state the exact equations implied by the code, the associated units, the statistical objects that are actually estimated, and the corresponding interpretation limits.
+
+The file implements a zero-phase, symmetric, Fourier-domain multiscale filterbank. The output is a set of local backgrounds, wavelet coefficient fields, local geometric projections, conditional moments, and derived diagnostics such as coefficient-based Elsasser quantities, sigma-like ratios, leader amplitudes, and conditional second-order spectral surrogates.
+
+A central point must be stated explicitly. The core fluctuating quantities in this pipeline are \emph{wavelet coefficients}, not finite-difference increments. Whenever the code exports arrays named \texttt{dB}, \texttt{dV}, \texttt{dZp}, or \texttt{dZm}, the mathematically correct interpretation is a scale-local coefficient family. The revised file keeps several of those names for backward compatibility, but the physics interpretation in this appendix follows the exact implemented equations rather than the legacy labels.
+
+\section{Scale grid and filterbank definition}
+
+Let $\Delta t$ denote the cadence. For a selected wavelet order $M$ and voices-per-octave $\nu$, the code defines the scale family
+\begin{equation}
+ s_j = s_0 \, 2^{(j-1)/\nu},
+\end{equation}
+with
+\begin{equation}
+ s_0 = \max\!\left(1, \frac{\sqrt{M}}{2\pi}\right)
+\end{equation}
+in sample units, and therefore
+\begin{equation}
+ s_j^{(\mathrm{sec})} = s_j \, \Delta t.
+\end{equation}
+
+The low-pass background response at scale $s_j$ is the Gaussian
+\begin{equation}
+ \widehat{L}_j(\omega) = \exp\!\left[-\frac{1}{2} (s_j^{(\mathrm{sec})}\omega)^2\right].
+\end{equation}
+
+The fluctuating channel is an even derivative-of-Gaussian response,
+\begin{equation}
+ \widehat{H}_j(\omega) = \frac{\sqrt{s_j^{(\mathrm{sec})}}\,(s_j^{(\mathrm{sec})}\omega)^M \, \exp\!\left[-\frac{1}{2}(s_j^{(\mathrm{sec})}\omega)^2\right]}{\|\psi_M\|_+},
+\end{equation}
+where the one-sided mother norm is
+\begin{equation}
+ \|\psi_M\|_+^2 = \int_0^{\infty} \eta^{2M} e^{-\eta^2} \, d\eta.
+\end{equation}
+
+The code works with real FFTs, so the normalization is intentionally one-sided. The low-pass and high-pass channels are \emph{not} constructed as a complementary partition of unity. Therefore, in general,
+\begin{equation}
+ x(t) \neq x_{\mathrm{low},j}(t) + x_{\mathrm{high},j}(t).
+\end{equation}
+The background and coefficient fields are paired multiscale diagnostics, not an exact additive decomposition.
+
+\section{Implemented transforms and units}
+
+For an input scalar or vector field $X(t)$, the code evaluates
+\begin{equation}
+ X_{l,j}(t) = \mathcal{F}^{-1}\!\left[\widehat{L}_j(\omega) \, \widehat{X}(\omega)\right],
+\end{equation}
+and
+\begin{equation}
+ W_{X,j}(t) = \mathcal{F}^{-1}\!\left[\widehat{H}_j(\omega) \, \widehat{X}(\omega)\right].
+\end{equation}
+Because the responses are even in frequency and the padding is symmetric, the interior estimator is centered and zero-phase.
+
+If $X$ has physical units $[X]$, then
+\begin{equation}
+ [X_{l,j}] = [X], \qquad [W_{X,j}] = [X] \, \mathrm{s}^{1/2}.
+\end{equation}
+This factor of $\mathrm{s}^{1/2}$ is the direct consequence of the $L^2$-type wavelet normalization. It is the reason raw coefficient moments cannot be interpreted as ordinary increment moments without an additional conversion.
+
+\section{Unified lag calibration}
+
+The revised file uses a single lag calibration throughout the geometry and the coefficient-moment conversion. The frequency of peak response is
+\begin{equation}
+ f_{\mathrm{peak},j} = \frac{\sqrt{M}}{2\pi s_j^{(\mathrm{sec})}},
+\end{equation}
+and the code defines the associated equivalent lag as
+\begin{equation}
+ \tau_j = \frac{1}{f_{\mathrm{peak},j}} = \frac{2\pi s_j^{(\mathrm{sec})}}{\sqrt{M}}.
+\end{equation}
+
+In the earlier revision, the geometry and the surrogate structure-function conversion used different lag conventions. That inconsistency has been removed. The present file uses the same $\tau_j$ in both places.
+
+This does \emph{not} imply that $\tau_j$ is an exact finite-difference lag for the DoG coefficient. It is a consistent calibration tied to the peak response of the implemented band-pass filter.
+
+\section{Gap handling, support masks, and cone of influence}
+
+The FFT-based estimator cannot tolerate NaNs directly. The file therefore interpolates finite gaps before filtering, computes the filterbank on the filled series, and then applies explicit support masks based on the original finite-sample mask. In the revised code, raw contextual diagnostics saved alongside the wavelet products are evaluated on the aligned raw series, not on the gap-filled transform inputs.
+
+For a nominal support half-width $b_j$ in samples, a coefficient at index $t$ is valid only if
+\begin{equation}
+ t \in [b_j, N-b_j)
+\end{equation}
+and the original data contain no invalid samples inside the support neighborhood used by the coefficient. In practice,
+\begin{equation}
+ b_j = \left\lceil \sigma_{\mathrm{sup}} s_j \right\rceil,
+\end{equation}
+where $\sigma_{\mathrm{sup}}$ is the configured support multiplier.
+
+The leader field uses a larger effective neighborhood than the coefficient itself. The revised code therefore applies a leader-specific validity mask rather than reusing the plain coefficient mask.
+
+\section{Local background field, density normalization, and ion-inertial scaling}
+
+For the magnetic field $\mathbf{B}$, velocity $\mathbf{V}$, and density $N_p$, the code computes scale-local backgrounds
+\begin{equation}
+ \mathbf{B}_{l,j}(t), \qquad \mathbf{V}_{l,j}(t), \qquad N_{l,j}(t),
+\end{equation}
+and vector coefficient fields
+\begin{equation}
+ \mathbf{W}_{B,j}(t), \qquad \mathbf{W}_{V,j}(t).
+\end{equation}
+
+If spacecraft velocity correction is requested, the revised code uses the same corrected flow field consistently both in the Taylor mapping and in the velocity coefficient family used for Elsasser construction.
+
+The magnetic coefficient is converted to Alfv\'enic velocity units through
+\begin{equation}
+ \mathbf{W}_{B_v,j}(t) = C_A\!\left(N_{l,j}(t)\right) \, \mathbf{W}_{B,j}(t),
+\end{equation}
+with
+\begin{equation}
+ C_A(N) = \frac{10^{-15}}{\sqrt{\mu_0 m_p N}}.
+\end{equation}
+This implementation assumes $N$ is supplied in cm$^{-3}$ and returns $C_A$ in km s$^{-1}$ per nT, so that $\mathbf{W}_{B_v,j}$ has units km s$^{-1}$ s$^{1/2}$.
+
+The local ion inertial length used for scale normalization is
+\begin{equation}
+ d_i(t) \simeq \frac{228}{\sqrt{N_p(t)}} \; \mathrm{km},
+\end{equation}
+again under the assumption that $N_p$ is in cm$^{-3}$.
+
+\section{Parallel and perpendicular decomposition}
+
+Relative to the local background field $\mathbf{B}_{l,j}(t)$, the coefficient field is decomposed as
+\begin{equation}
+ \mathbf{W}_{B,\parallel,j} = \frac{\mathbf{W}_{B,j} \cdot \mathbf{B}_{l,j}}{|\mathbf{B}_{l,j}|^2} \, \mathbf{B}_{l,j},
+\end{equation}
+\begin{equation}
+ \mathbf{W}_{B,\perp,j} = \mathbf{W}_{B,j} - \mathbf{W}_{B,\parallel,j}.
+\end{equation}
+The same construction is used for the velocity coefficient family. In the revised file, undefined directions are treated as invalid rather than silently collapsed to zero vectors.
+
+\section{Taylor-mapped separation and local anisotropy basis}
+
+The code assigns a local separation vector to each scale and time by Taylor mapping with the scale-local background flow,
+\begin{equation}
+ \bm{\ell}_j(t) = \mathbf{V}_{l,j}(t) \, \tau_j.
+\end{equation}
+
+The local basis is then built from the local field direction and the perpendicular magnetic coefficient direction. Define
+\begin{equation}
+ \hat{\mathbf{e}}_{\ell} = \frac{\mathbf{B}_{l,j}}{|\mathbf{B}_{l,j}|},
+\end{equation}
+\begin{equation}
+ \hat{\mathbf{e}}_{\xi} = \frac{\mathbf{W}_{B,\perp,j}}{|\mathbf{W}_{B,\perp,j}|},
+\end{equation}
+\begin{equation}
+ \hat{\mathbf{e}}_{\lambda} = \frac{\hat{\mathbf{e}}_{\ell} \times \hat{\mathbf{e}}_{\xi}}{|\hat{\mathbf{e}}_{\ell} \times \hat{\mathbf{e}}_{\xi}|}.
+\end{equation}
+
+The corresponding projected separation magnitudes are
+\begin{equation}
+ \ell_{\ell,j} = \frac{|\bm{\ell}_j \cdot \hat{\mathbf{e}}_{\ell}|}{d_i}, \qquad
+ \ell_{\xi,j} = \frac{|\bm{\ell}_j \cdot \hat{\mathbf{e}}_{\xi}|}{d_i}, \qquad
+ \ell_{\lambda,j} = \frac{|\bm{\ell}_j \cdot \hat{\mathbf{e}}_{\lambda}|}{d_i},
+\end{equation}
+and the total normalized separation is
+\begin{equation}
+ \ell_{\mathrm{mag},j} = \frac{|\bm{\ell}_j|}{d_i}.
+\end{equation}
+
+The code also forms the angles
+\begin{equation}
+ \theta_j = \angle(\bm{\ell}_j, \hat{\mathbf{e}}_{\ell}),
+\end{equation}
+and
+\begin{equation}
+ \phi_j = \angle(\bm{\ell}_{\perp,j}, \hat{\mathbf{e}}_{\xi}),
+\end{equation}
+where $\bm{\ell}_{\perp,j}$ is the component of $\bm{\ell}_j$ perpendicular to $\hat{\mathbf{e}}_{\ell}$.
+
+The basis is undefined when $|\mathbf{B}_{l,j}| = 0$ or $|\mathbf{W}_{B,\perp,j}| = 0$. The revised implementation propagates those cases as invalid geometry rather than fabricating a direction.
+
+\section{Polarity and Elsasser coefficient families}
+
+Let $s_B(t)$ denote either the global polarity or the scale-local polarity, depending on the chosen option. For RTN inputs this is the sign of $B_r$ or $B_{l,r}$; for GSE it is the sign of $B_x$ or $B_{l,x}$. If the frame does not identify a radial-like component, the revised code does not guess from the first coordinate. It falls back to $s_B=+1$ and records that choice in the metadata.
+
+The code defines coefficient-based Elsasser families as
+\begin{equation}
+ \mathbf{W}_{Z^{\pm},j}(t) = \mathbf{W}_{V,j}(t) \pm s_B(t) \, \mathbf{W}_{B_v,j}(t).
+\end{equation}
+These quantities have units km s$^{-1}$ s$^{1/2}$.
+
+Again, these are not two-point Elsasser increments in the literal finite-difference sense. They are wavelet coefficient surrogates in Elsasser variables.
+
+\section{Alignment diagnostics and sigma-like quantities}
+
+For two vector families $\mathbf{X}_j(t)$ and $\mathbf{Y}_j(t)$, the file computes
+\begin{equation}
+ \sin \vartheta_j(t) = \frac{|\mathbf{X}_j \times \mathbf{Y}_j|}{|\mathbf{X}_j| \, |\mathbf{Y}_j|},
+\end{equation}
+\begin{equation}
+ \cos \vartheta_j(t) = \frac{\mathbf{X}_j \cdot \mathbf{Y}_j}{|\mathbf{X}_j| \, |\mathbf{Y}_j|},
+\end{equation}
+and the scale-level alignment surrogates
+\begin{equation}
+ \vartheta_{\mathrm{reg},j} = \tan^{-1}\!\left( \frac{\langle |\mathbf{X}_j \times \mathbf{Y}_j| \rangle}{\langle |\mathbf{X}_j \cdot \mathbf{Y}_j| \rangle} \right),
+\end{equation}
+\begin{equation}
+ \vartheta_{\mathrm{polar},j} = \sin^{-1}\!\left( \langle \sin \vartheta_j \rangle \right).
+\end{equation}
+
+The file also computes two sigma-like objects. The pointwise local ratio is
+\begin{equation}
+ \sigma_{\mathrm{ts},j}(t) = \frac{|\mathbf{X}_j(t)|^2 - |\mathbf{Y}_j(t)|^2}{|\mathbf{X}_j(t)|^2 + |\mathbf{Y}_j(t)|^2},
+\end{equation}
+while the scale-level ratio is
+\begin{equation}
+ \sigma_{\mathrm{scale},j} = \frac{\langle |\mathbf{X}_j|^2 \rangle - \langle |\mathbf{Y}_j|^2 \rangle}{\langle |\mathbf{X}_j|^2 \rangle + \langle |\mathbf{Y}_j|^2 \rangle}.
+\end{equation}
+
+For $\mathbf{X}_j = \mathbf{W}_{Z^+,\perp,j}$ and $\mathbf{Y}_j = \mathbf{W}_{Z^-,\perp,j}$, this is the coefficient-based cross-helicity surrogate. For $\mathbf{X}_j = \mathbf{W}_{V,\perp,j}$ and $\mathbf{Y}_j = \mathbf{W}_{B_v,\perp,j}$, it is the coefficient-based residual-energy surrogate.
+
+The revised export layer distinguishes these objects explicitly. The physically preferred scale diagnostic is the scale-level ratio. The pointwise quantity remains useful as a local surrogate, but it should not be mislabeled as the canonical scale-level sigma.
+
+\section{Leader amplitudes}
+
+The magnetic leader amplitude is built from the vector coefficient magnitude. For each scale $j$, the code merges the amplitude at scales $j-1$, $j$, and $j+1$, then applies a local maximum filter over a window of half-width approximately $s_j$. Symbolically,
+\begin{equation}
+ \mathcal{L}_{B,j}(t) \approx \max_{\substack{j' \in \{j-1,j,j+1\} \\ |t'-t| \le s_j}} |\mathbf{W}_{B,j'}(t')|.
+\end{equation}
+The leader therefore inherits the units of the coefficient magnitude. It is a leader of the implemented wavelet coefficient family, not a leader of finite increments.
+
+\section{Conditional anisotropy bins}
+
+The code does not construct unique one-to-one maps from measured coefficients to exact $\ell$, $\xi$, and $\lambda$ isosurfaces. Instead it forms angle-conditioned subsets. With user-selected angular thresholds, the default bins are of the form
+\begin{align}
+ \texttt{ell\_par}:& \qquad \theta < \theta_{\parallel}, \\
+ \texttt{Ell\_perp}:& \qquad \theta > \theta_{\xi}, \quad \phi < \phi_{\xi}, \\
+ \texttt{ell\_perp}:& \qquad \theta > \theta_{\perp}, \quad \phi > \phi_{\perp}.
+\end{align}
+An additional unrestricted bucket \texttt{ell\_overall} is also saved.
+
+Accordingly, every reported anisotropy curve in this file is a conditional moment curve over a geometrically defined sample subset. The correct interpretation is therefore ``angle-conditioned coefficient statistics as a function of the corresponding projected separation'' rather than ``exact structure functions on unique local separations.''
+
+\section{Raw wavelet moments and increment-equivalent surrogates}
+
+For any selected bucket $\mathcal{C}_j$ at scale $j$, the code first computes the raw coefficient moments
+\begin{equation}
+ M_q^{(j,\mathcal{C})} = \left\langle |W_j|^q \right\rangle_{\mathcal{C}_j}.
+\end{equation}
+If $W_j$ has units $[X] \mathrm{s}^{1/2}$, then
+\begin{equation}
+ [M_q^{(j,\mathcal{C})}] = [X]^q \mathrm{s}^{q/2}.
+\end{equation}
+
+The revised file then forms an increment-equivalent surrogate
+\begin{equation}
+ \widetilde{S}_q^{(j,\mathcal{C})} = \frac{M_q^{(j,\mathcal{C})}}{\tau_j^{q/2}}.
+\end{equation}
+This removes the universal $\tau_j^{q/2}$ implied by the coefficient normalization and restores the field dimensions $[X]^q$.
+
+This conversion is dimensionally correct and internally consistent with the lag calibration used in the geometry. However, it should still be interpreted as a \emph{surrogate} rather than as a strict finite-difference structure function. The exact wavelet-shape constant and the distinction between coefficient and two-point increment are not removed by this step.
+
+\section{Second-order spectral surrogate}
+
+For the implemented one-sided response, the response-energy integral is
+\begin{equation}
+ \int_0^{\infty} |\widehat{H}_j(f)|^2 \, df = \frac{1}{2\pi}.
+\end{equation}
+Therefore the code converts the second-order raw coefficient moment into a PSD-like quantity through
+\begin{equation}
+ \widetilde{P}^{(j,\mathcal{C})} = \frac{M_2^{(j,\mathcal{C})}}{\int_0^{\infty} |\widehat{H}_j(f)|^2 \, df} = 2\pi \, M_2^{(j,\mathcal{C})}.
+\end{equation}
+The resulting object has units $[X]^2 \mathrm{s}$, as expected for a one-dimensional power spectral density.
+
+The correct interpretation is a conditional reduced wavelet-band spectral surrogate associated with the implemented response, not a literal FFT periodogram.
+
+\section{PVI-like diagnostics and fallback logic}
+
+The file supports PVI-like diagnostics through an external helper when available. If that helper is unavailable, the revised fallback uses a window that scales with the current equivalent lag rather than a fixed-width local RMS. This change preserves at least the intended scale dependence of the diagnostic. Even so, the fallback remains an approximate PVI-like amplitude normalization rather than a full replacement for a dedicated PVI estimator.
+
+\section{Export conventions and interpretation}
+
+The revised file exports both backward-compatible names and clearer aliases. The physically preferred interpretation is:
+\begin{itemize}[leftmargin=1.6em,itemsep=0.35em]
+\item \texttt{WaveletMoments}: units $[X]^q \mathrm{s}^{q/2}$. Raw coefficient moments.
+\item \texttt{IncrementEquivalentMoments}: units $[X]^q$. Coefficient-based increment-equivalent surrogates.
+\item \texttt{Spectra}: units $[X]^2 \mathrm{s}$. Conditional wavelet-band spectral surrogate.
+\item \texttt{W\_B}, \texttt{W\_V}, \texttt{W\_Zp}, and \texttt{W\_Zm}: field units $\times \mathrm{s}^{1/2}$. Wavelet coefficient families.
+\item \texttt{sig\_c\_scale} and \texttt{sig\_r\_scale}: dimensionless. Scale-level sigma-like ratios.
+\item \texttt{sig\_c\_ts} and \texttt{sig\_r\_ts}: dimensionless. Pointwise local sigma surrogates.
+\item \texttt{parallel\_energy\_fraction\_B} and \texttt{parallel\_energy\_fraction\_V}: dimensionless. Parallel-energy fractions, not generic compressibility.
+\item \texttt{l\_mag}, \texttt{l\_ell}, \texttt{l\_xi}, and \texttt{l\_lambda}: dimensionless. Projected separation magnitudes normalized by $d_i$.
+\end{itemize}
+
+The file also preserves several legacy names. Those names should be interpreted using the right-hand column above, not by their historical label.
+
+\section{What this pipeline does \emph{not} compute}
+
+The revised code is materially cleaner and more internally consistent than the earlier draft, but several over-interpretations remain invalid.
+
+It does \emph{not} compute exact finite-difference increments. It does \emph{not} compute literal structure functions in the strict two-point sense. It does \emph{not} construct an exact additive low-pass plus high-pass decomposition. It does \emph{not} provide a unique anisotropy map from every coefficient to a single exact local separation manifold. It does \emph{not} make the external raw-field diagnostics part of the same estimator family as the wavelet outputs merely by saving them in the same result object.
+
+\section{Bottom-line interpretation}
+
+The revised pipeline is physically appropriate when interpreted as a centered, coefficient-based, local anisotropy analysis built from a Gaussian background and an even-DoG band-pass family, with consistent lag calibration, explicit validity masks, and scale-local geometry. It is physically inappropriate only when the user overstates the outputs as exact finite-increment structure functions or exact Fourier spectra.
+
+The correct summary is therefore the following. The file is suitable for conditional multiscale \emph{wavelet-coefficient} analysis of local anisotropy, coefficient-based Elsasser diagnostics, and PSD-like second-order band-power estimates. It should be described in those terms in any manuscript appendix or methods section.
+
+\end{document}

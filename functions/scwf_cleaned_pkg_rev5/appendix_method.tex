@@ -1,0 +1,309 @@
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts,bm}
+\usepackage{booktabs,array,longtable}
+\usepackage[hidelinks]{hyperref}
+\usepackage{enumitem}
+\usepackage{microtype}
+\usepackage{mathtools}
+\setlength{\parskip}{0.45em}
+\setlength{\parindent}{0pt}
+
+\title{Appendix: Method, Units, and Interpretation of the Revised SCWF Pipeline}
+\author{}
+\date{March 11, 2026}
+
+\begin{document}
+\maketitle
+
+\section{Scope}
+
+This appendix documents the \emph{implemented} method in the revised pipeline
+contained in \path{three_D_funcs.py}. Its purpose is narrow. It states the actual
+filter equations used by the code, the associated units, the statistical objects
+that are estimated, and the limits of their interpretation.
+
+The central point is the following. The fluctuating quantities in this pipeline are
+\emph{wavelet coefficients}, not finite-difference increments. The code preserves
+legacy names such as \texttt{dB}, \texttt{dV}, \texttt{dZp}, and \texttt{dZm} for
+compatibility, but their mathematically correct interpretation is a scale-local
+coefficient family.
+
+\section{Wavelet-frame specification}
+
+Let $\Delta t$ denote the cadence. For derivative order $M$ and voices-per-octave
+$\nu$, the code defines the scale family
+\begin{equation}
+ s_j = s_0 \, 2^{(j-1)/\nu},
+\end{equation}
+with
+\begin{equation}
+ s_0 = \max\!\left(1, \frac{\sqrt{M}}{2\pi}\right)
+\end{equation}
+in sample units and therefore
+\begin{equation}
+ s_j^{(\mathrm{sec})} = s_j \, \Delta t.
+\end{equation}
+
+The parser for the wavelet token follows the code, not an external naming
+convention. In particular, \texttt{mw8} means \emph{8 voices per octave}. Unless an
+explicit order token is present, the derivative order defaults to $M=4$.
+
+\section{Implemented low-pass and band-pass responses}
+
+The low-pass background response is the Gaussian
+\begin{equation}
+ \widehat{L}_j(\omega) = \exp\!\left[-\frac{1}{2}(s_j^{(\mathrm{sec})}\omega)^2\right].
+\end{equation}
+
+The band-pass coefficient response is the even derivative-of-Gaussian
+\begin{equation}
+ \widehat{H}_j(\omega) = \frac{\sqrt{s_j^{(\mathrm{sec})}}\,(s_j^{(\mathrm{sec})}\omega)^M
+ \exp\!\left[-\frac{1}{2}(s_j^{(\mathrm{sec})}\omega)^2\right]}{\|\psi_M\|_+},
+\end{equation}
+with one-sided mother norm
+\begin{equation}
+ \|\psi_M\|_+^2 = \int_0^{\infty} \eta^{2M} e^{-\eta^2} \, d\eta.
+\end{equation}
+
+The code uses real FFTs and therefore works with the positive-frequency branch of
+the response. The low-pass and band-pass channels are \emph{not} a complementary
+partition of unity. In general,
+\begin{equation}
+ x(t) \neq x_{l,j}(t) + W_j(t).
+\end{equation}
+The background and coefficient fields are paired multiscale diagnostics rather than
+an exact additive decomposition.
+
+\section{Implemented transforms and coefficient units}
+
+For any scalar or vector field $X(t)$, the code evaluates
+\begin{equation}
+ X_{l,j}(t) = \mathcal{F}^{-1}\!\left[\widehat{L}_j(\omega)\,\widehat{X}(\omega)\right],
+\end{equation}
+and
+\begin{equation}
+ W_{X,j}(t) = \mathcal{F}^{-1}\!\left[\widehat{H}_j(\omega)\,\widehat{X}(\omega)\right].
+\end{equation}
+Because the responses are even in frequency and the padding is symmetric, the
+interior estimator is centered and zero-phase.
+
+If $X$ has physical units $[X]$, then
+\begin{equation}
+ [X_{l,j}] = [X], \qquad [W_{X,j}] = [X]\,\mathrm{s}^{1/2}.
+\end{equation}
+This $\mathrm{s}^{1/2}$ factor is the direct consequence of the implemented
+$L^2$-type wavelet normalization.
+
+\section{Lag calibration used by the code}
+
+The peak-response frequency of the implemented band-pass filter is
+\begin{equation}
+ f_{\mathrm{peak},j} = \frac{\sqrt{M}}{2\pi s_j^{(\mathrm{sec})}},
+\end{equation}
+and the code defines the corresponding equivalent lag as
+\begin{equation}
+ \tau_j = \frac{1}{f_{\mathrm{peak},j}} = \frac{2\pi s_j^{(\mathrm{sec})}}{\sqrt{M}}.
+\end{equation}
+
+This is a calibration of the filter center. It is not an exact finite-difference
+lag.
+
+\section{Gap handling and cone of influence}
+
+The FFT backend cannot tolerate NaNs. The code therefore interpolates gaps only for
+the purpose of evaluating the transform, then applies explicit validity masks based
+on the original finite-sample support.
+
+For a support half-width $b_j$ in samples, a coefficient at index $t$ is retained
+only if
+\begin{equation}
+ t \in [b_j, N-b_j)
+\end{equation}
+and the raw data contain no invalid sample inside that support neighborhood. In the
+implementation,
+\begin{equation}
+ b_j = \left\lceil \sigma_{\mathrm{sup}} s_j \right\rceil,
+\end{equation}
+with $\sigma_{\mathrm{sup}}$ the configured support multiplier.
+
+\section{Magnetic, velocity, and Elsasser coefficient families}
+
+For the magnetic field $\mathbf{B}$, velocity $\mathbf{V}$, and density $N_p$, the
+code computes scale-local backgrounds
+\begin{equation}
+ \mathbf{B}_{l,j}(t), \qquad \mathbf{V}_{l,j}(t), \qquad N_{l,j}(t),
+\end{equation}
+and coefficient fields
+\begin{equation}
+ \mathbf{W}_{B,j}(t), \qquad \mathbf{W}_{V,j}(t).
+\end{equation}
+
+The magnetic coefficient is converted to Alfv\'enic velocity units through
+\begin{equation}
+ \mathbf{W}_{B_v,j}(t) = C_A\!\left(N_{l,j}(t)\right) \, \mathbf{W}_{B,j}(t),
+\end{equation}
+with
+\begin{equation}
+ C_A(N) = \frac{10^{-15}}{\sqrt{\mu_0 m_p N}}.
+\end{equation}
+The code assumes $N$ is in cm$^{-3}$ and returns $C_A$ in km s$^{-1}$ per nT.
+Therefore $\mathbf{W}_{B_v,j}$ has units km s$^{-1}$ s$^{1/2}$.
+
+If spacecraft-velocity correction is requested, the same corrected velocity is used
+consistently both in the Taylor mapping and in the velocity coefficient family used
+for Elsasser construction.
+
+With either the global or local polarity sign $s_B(t)$, the coefficient-based
+Elsasser variables are
+\begin{equation}
+ \mathbf{W}_{Z^{\pm},j}(t) = \mathbf{W}_{V,j}(t) \pm s_B(t)\,\mathbf{W}_{B_v,j}(t).
+\end{equation}
+These are coefficient surrogates in Elsasser variables. They are not literal
+finite-difference Elsasser increments.
+
+\section{Local anisotropy basis and projected separations}
+
+The code assigns a Taylor-mapped local separation vector
+\begin{equation}
+ \bm{\ell}_j(t) = \mathbf{V}_{l,j}(t)\,\tau_j.
+\end{equation}
+
+The local basis is then built from the local background field and the perpendicular
+magnetic coefficient direction,
+\begin{equation}
+ \hat{\mathbf{e}}_{\ell} = \frac{\mathbf{B}_{l,j}}{|\mathbf{B}_{l,j}|},
+\end{equation}
+\begin{equation}
+ \mathbf{W}_{B,\perp,j} = \mathbf{W}_{B,j} - \frac{\mathbf{W}_{B,j}\cdot \mathbf{B}_{l,j}}{|\mathbf{B}_{l,j}|^2}\,\mathbf{B}_{l,j},
+\end{equation}
+\begin{equation}
+ \hat{\mathbf{e}}_{\xi} = \frac{\mathbf{W}_{B,\perp,j}}{|\mathbf{W}_{B,\perp,j}|},
+\end{equation}
+\begin{equation}
+ \hat{\mathbf{e}}_{\lambda} = \frac{\hat{\mathbf{e}}_{\ell}\times\hat{\mathbf{e}}_{\xi}}{|\hat{\mathbf{e}}_{\ell}\times\hat{\mathbf{e}}_{\xi}|}.
+\end{equation}
+
+The projected separation magnitudes are
+\begin{equation}
+ \ell_{\ell,j} = \frac{|\bm{\ell}_j\cdot\hat{\mathbf{e}}_{\ell}|}{d_i}, \qquad
+ \ell_{\xi,j} = \frac{|\bm{\ell}_j\cdot\hat{\mathbf{e}}_{\xi}|}{d_i}, \qquad
+ \ell_{\lambda,j} = \frac{|\bm{\ell}_j\cdot\hat{\mathbf{e}}_{\lambda}|}{d_i},
+\end{equation}
+and
+\begin{equation}
+ \ell_{\mathrm{mag},j} = \frac{|\bm{\ell}_j|}{d_i}.
+\end{equation}
+
+The basis is undefined when $|\mathbf{B}_{l,j}|=0$ or $|\mathbf{W}_{B,\perp,j}|=0$.
+The implementation masks those samples rather than assigning an artificial
+orientation.
+
+\section{What the angle buckets actually represent}
+
+The angle thresholds define conditioned subsets such as
+\begin{align}
+ \texttt{ell\_par}:& \qquad \theta < \theta_{\parallel}, \\
+ \texttt{Ell\_perp}:& \qquad \theta > \theta_{\xi}, \quad \phi < \phi_{\xi}, \\
+ \texttt{ell\_perp}:& \qquad \theta > \theta_{\perp}, \quad \phi > \phi_{\perp}.
+\end{align}
+An unrestricted bucket \texttt{ell\_overall} is also saved.
+
+The crucial point is that these buckets use the local basis only to define the
+sample subset. The code then computes moments of the \emph{full vector coefficient
+magnitude} inside that subset. It does not compute basis-component spectra such as
+$P_{\parallel}$, $P_{\xi}$, or $P_{\lambda}$.
+
+\section{Raw coefficient moments and scale-normalized surrogates}
+
+For any coefficient family $W_j$ and any selected bucket $\mathcal{C}_j$, the raw
+moment is
+\begin{equation}
+ M_q^{(j,\mathcal{C})} = \left\langle |W_j|^q \right\rangle_{\mathcal{C}_j}.
+\end{equation}
+If $W_j$ has units $[X]\,\mathrm{s}^{1/2}$, then
+\begin{equation}
+ [M_q^{(j,\mathcal{C})}] = [X]^q\,\mathrm{s}^{q/2}.
+\end{equation}
+
+The code then forms the saved scale-normalized surrogate
+\begin{equation}
+ \widetilde{M}_q^{(j,\mathcal{C})} = \frac{M_q^{(j,\mathcal{C})}}{\tau_j^{q/2}}.
+\end{equation}
+This restores the physical field dimensions $[X]^q$. It does \emph{not} turn the
+quantity into a strict finite-difference structure function.
+
+\section{Conditional band-averaged spectra}
+
+For the implemented discretized response, the code evaluates the positive-frequency
+response-energy integral on the exact FFT grid actually used in the transform,
+\begin{equation}
+ A_j^{(\mathrm{disc})} = \sum_{k\ge 0} |\widehat{H}_j(f_k)|^2\,\Delta f.
+\end{equation}
+In the continuum limit of the implemented normalization,
+\begin{equation}
+ A_j \to \int_0^{\infty}|\widehat{H}_j(f)|^2\,df = \frac{1}{2\pi},
+\end{equation}
+but the code uses the discrete form above to match the actual numerical estimator.
+
+The saved second-order spectral observable is
+\begin{equation}
+ \widehat{P}^{(j,\mathcal{C})} = \frac{\left\langle |W_j|^2 \right\rangle_{\mathcal{C}_j}}{A_j^{(\mathrm{disc})}}.
+\end{equation}
+Its units are $[X]^2\,\mathrm{s} = [X]^2/\mathrm{Hz}$.
+
+This is a conditional band-averaged PSD estimate associated with the implemented
+wavelet response. It is not a Fourier periodogram of a basis-projected component.
+
+\section{Sigma-like quantities and alignment diagnostics}
+
+For two coefficient families $\mathbf{X}_j(t)$ and $\mathbf{Y}_j(t)$, the code
+computes the pointwise ratio
+\begin{equation}
+ \sigma_{\mathrm{ts},j}(t) = \frac{|\mathbf{X}_j(t)|^2 - |\mathbf{Y}_j(t)|^2}{|\mathbf{X}_j(t)|^2 + |\mathbf{Y}_j(t)|^2},
+\end{equation}
+and the scale-level ratio
+\begin{equation}
+ \sigma_{\mathrm{scale},j} = \frac{\langle |\mathbf{X}_j|^2 \rangle - \langle |\mathbf{Y}_j|^2 \rangle}{\langle |\mathbf{X}_j|^2 \rangle + \langle |\mathbf{Y}_j|^2 \rangle}.
+\end{equation}
+
+For $\mathbf{X}_j=\mathbf{W}_{Z^+,\perp,j}$ and $\mathbf{Y}_j=\mathbf{W}_{Z^-,\perp,j}$,
+this is the coefficient-based cross-helicity surrogate. For
+$\mathbf{X}_j=\mathbf{W}_{V,\perp,j}$ and $\mathbf{Y}_j=\mathbf{W}_{B_v,\perp,j}$, it is
+the coefficient-based residual-energy surrogate.
+
+The physically preferred scale diagnostic is $\sigma_{\mathrm{scale},j}$. The
+pointwise quantity is a local surrogate.
+
+\section{Output families and valid interpretation}
+
+The output families should be interpreted as follows.
+\begin{itemize}[leftmargin=1.6em,itemsep=0.35em]
+\item \texttt{WaveletMoments}: raw coefficient moments with units $[X]^q\,\mathrm{s}^{q/2}$.
+\item \texttt{ScaleNormalizedWaveletMoments} (alias of \texttt{Sfuncs}): scale-normalized wavelet moments with units $[X]^q$.
+\item \texttt{Spectra} or \texttt{ConditionalBandAveragedPSD}: conditional band-averaged PSD estimates with units $[X]^2/\mathrm{Hz}$.
+\item \texttt{B\_nT} and \texttt{B\_vel}: explicit magnetic families in fixed unit systems.
+\item \texttt{B}: compatibility family whose unit system still follows \texttt{return\_B\_in\_vel\_units}.
+\item \texttt{l\_mag}, \texttt{l\_ell}, \texttt{l\_xi}, and \texttt{l\_lambda}: projected separation magnitudes normalized by $d_i$.
+\end{itemize}
+
+\section{What the pipeline does not compute}
+
+The pipeline does not compute exact finite-difference increments. It does not compute
+strict two-point structure functions. It does not estimate basis-component spectra by
+projecting the fluctuation power onto $\hat{\mathbf{e}}_{\ell}$, $\hat{\mathbf{e}}_{\xi}$,
+or $\hat{\mathbf{e}}_{\lambda}$. It does not reconstruct the full 3D spectral tensor
+from a single-spacecraft time series.
+
+\section{Bottom-line interpretation}
+
+The revised SCWF pipeline is appropriate when interpreted as a centered,
+coefficient-based local-anisotropy analysis built from a Gaussian background and an
+even derivative-of-Gaussian band-pass family, with explicit cone-of-influence
+masking, consistent lag calibration, conditional band-averaged spectra, and
+scale-normalized higher-order wavelet moments.
+
+It becomes physically misleading only when the outputs are overstated as exact
+finite-difference structure functions or as basis-component Fourier spectra.
+
+\end{document}

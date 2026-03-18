@@ -1,0 +1,291 @@
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts,bm,mathtools}
+\usepackage{booktabs,array,longtable}
+\usepackage[hidelinks]{hyperref}
+\usepackage{enumitem}
+\usepackage{microtype}
+\usepackage{verbatim}
+\setlength{\parskip}{0.45em}
+\setlength{\parindent}{0pt}
+
+\title{Appendix: SCWF Conditional Spectra, Scale-normalized Wavelet Moments, and Compact Coefficient Outputs}
+\author{}
+\date{March 12, 2026}
+
+\begin{document}
+\maketitle
+
+\section{Purpose and scope}
+
+This appendix documents the revised self-consistent wavelet-frame (SCWF) pipeline as it is implemented in \texttt{three\_D\_funcs.py}. The aim is narrow and explicit. The method is designed to produce
+\begin{enumerate}[leftmargin=1.5em]
+    \item conditional second-order band-averaged spectra,
+    \item conditional higher-order scale-normalized wavelet moments with the same physical dimensions as structure functions, and
+    \item coefficient exports in a compact format that can be merged exactly across intervals and reduced later without averaging the wrong object.
+\end{enumerate}
+
+The fluctuating quantities produced by this pipeline are \emph{wavelet coefficients}, not finite increments. The code preserves legacy names such as \texttt{dB}, \texttt{dV}, \texttt{dZp}, and \texttt{dZm} for compatibility, but their mathematically correct interpretation is a family of scale-local filtered coefficients.
+
+\section{Implemented filter family}
+
+Let $\Delta t$ denote the cadence and let the parsed frame specification have derivative order $M$ and voices-per-octave $\nu$. The implemented scales are
+\begin{equation}
+ s_j = s_0 2^{(j-1)/\nu},
+\end{equation}
+with
+\begin{equation}
+ s_0 = \max\!\left(1, \frac{\sqrt{M}}{2\pi}\right),
+\end{equation}
+in sample units, so that
+\begin{equation}
+ s_j^{(\mathrm{sec})} = s_j\,\Delta t.
+\end{equation}
+
+The low-pass response used to define the background field is
+\begin{equation}
+ \widehat{L}_j(\omega) = \exp\!\left[-\frac{1}{2}(s_j^{(\mathrm{sec})}\omega)^2\right].
+\end{equation}
+
+The band-pass response used to define the coefficient field is the even derivative-of-Gaussian (DoG) response
+\begin{equation}
+ \widehat{H}_j(\omega) = \frac{\sqrt{s_j^{(\mathrm{sec})}}\,(s_j^{(\mathrm{sec})}\omega)^M \exp\!\left[-\tfrac{1}{2}(s_j^{(\mathrm{sec})}\omega)^2\right]}{\|\psi_M\|_+},
+\end{equation}
+with the one-sided mother norm
+\begin{equation}
+ \|\psi_M\|_+^2 = \int_0^{\infty} \eta^{2M} e^{-\eta^2}\,d\eta.
+\end{equation}
+
+The code uses real FFTs and the positive-frequency branch of the response. The background and coefficient channels are paired multiscale diagnostics, not an exact additive decomposition. In general,
+\begin{equation}
+ x(t) \neq x_{l,j}(t) + W_{X,j}(t).
+\end{equation}
+
+\section{Coefficient fields and units}
+
+For any scalar or vector field $X(t)$, the implemented low-pass background and band-pass coefficient are
+\begin{equation}
+ X_{l,j}(t) = \mathcal{F}^{-1}\!\left[\widehat{L}_j(\omega)\,\widehat{X}(\omega)\right],
+\end{equation}
+\begin{equation}
+ W_{X,j}(t) = \mathcal{F}^{-1}\!\left[\widehat{H}_j(\omega)\,\widehat{X}(\omega)\right].
+\end{equation}
+
+Because the filter carries a $\sqrt{s}$ normalization,
+\begin{equation}
+ [W_{X,j}] = [X] \, \mathrm{s}^{1/2}.
+\end{equation}
+This factor is the key to the later scale normalization.
+
+For the magnetic field $\mathbf{B}$, velocity $\mathbf{V}$, and proton density $N_p$, the code constructs
+\begin{equation}
+ \mathbf{W}_{B,j},\qquad \mathbf{W}_{V,j},\qquad N_{l,j},
+\end{equation}
+and converts the magnetic coefficient to Alfv\'enic velocity units via the low-pass density background,
+\begin{equation}
+ \mathbf{W}_{B_v,j}(t) = C_A\!\left(N_{l,j}(t)\right)\mathbf{W}_{B,j}(t),
+\end{equation}
+with
+\begin{equation}
+ C_A(N) = \frac{10^{-15}}{\sqrt{\mu_0 m_p N}},
+\end{equation}
+assuming $N$ in cm$^{-3}$. The output families \texttt{B\_nT} and \texttt{B\_vel} are exported explicitly so the magnetic unit system is not hidden behind a single compatibility label.
+
+The coefficient-based Elsasser variables are
+\begin{equation}
+ \mathbf{W}_{Z^{\pm},j}(t) = \mathbf{W}_{V,j}(t) \pm s_B(t)\,\mathbf{W}_{B_v,j}(t),
+\end{equation}
+where $s_B(t)$ is either the local or global polarity sign selected by the user.
+
+\section{Scale calibration and local separation}
+
+The peak-response frequency of the implemented band-pass filter is
+\begin{equation}
+ f_{\mathrm{peak},j} = \frac{\sqrt{M}}{2\pi s_j^{(\mathrm{sec})}},
+\end{equation}
+and the code uses the corresponding equivalent lag
+\begin{equation}
+ \tau_j = \frac{1}{f_{\mathrm{peak},j}} = \frac{2\pi s_j^{(\mathrm{sec})}}{\sqrt{M}}.
+\end{equation}
+This is a calibration of the filter center, not a literal finite-difference lag.
+
+The Taylor-mapped local separation vector is then
+\begin{equation}
+ \bm{\ell}_j(t) = \mathbf{V}_{l,j}(t)\,\tau_j.
+\end{equation}
+The stored scale coordinates are the dimensionless projections
+\begin{equation}
+ \ell_{\ell,j} = \frac{|\bm{\ell}_j\cdot\hat{\mathbf e}_{\ell}|}{d_i},\qquad
+ \ell_{\xi,j} = \frac{|\bm{\ell}_j\cdot\hat{\mathbf e}_{\xi}|}{d_i},\qquad
+ \ell_{\lambda,j} = \frac{|\bm{\ell}_j\cdot\hat{\mathbf e}_{\lambda}|}{d_i},
+\end{equation}
+plus the total magnitude
+\begin{equation}
+ \ell_{\mathrm{mag},j} = \frac{|\bm{\ell}_j|}{d_i}.
+\end{equation}
+
+\section{Local basis and what it can and cannot diagnose}
+
+The basis is built from the scale-local background field and the perpendicular magnetic coefficient,
+\begin{equation}
+ \hat{\mathbf e}_{\ell} = \frac{\mathbf{B}_{l,j}}{|\mathbf{B}_{l,j}|},
+\end{equation}
+\begin{equation}
+ \mathbf{W}_{B,\perp,j} = \mathbf{W}_{B,j} - \frac{\mathbf{W}_{B,j}\cdot\mathbf{B}_{l,j}}{|\mathbf{B}_{l,j}|^2}\,\mathbf{B}_{l,j},
+\end{equation}
+\begin{equation}
+ \hat{\mathbf e}_{\xi} = \frac{\mathbf{W}_{B,\perp,j}}{|\mathbf{W}_{B,\perp,j}|},
+\end{equation}
+\begin{equation}
+ \hat{\mathbf e}_{\lambda} = \frac{\hat{\mathbf e}_{\ell}\times\hat{\mathbf e}_{\xi}}{|\hat{\mathbf e}_{\ell}\times\hat{\mathbf e}_{\xi}|}.
+\end{equation}
+
+This basis is undefined whenever $|\mathbf{B}_{l,j}|=0$ or $|\mathbf{W}_{B,\perp,j}|=0$. The implementation masks those samples instead of inventing a direction.
+
+A crucial degeneracy follows immediately from this choice. Since $\hat{\mathbf e}_{\xi}$ is built from $\mathbf{W}_{B,\perp,j}$ itself,
+\begin{equation}
+ |W_{B,\xi,j}| = |\mathbf{W}_{B,\perp,j}|,
+\end{equation}
+while
+\begin{equation}
+ W_{B,\lambda,j} = 0
+\end{equation}
+up to numerical roundoff. Therefore magnetic $\xi$ and $\lambda$ projections are not independent polarization diagnostics in this basis. They are exported for transparency, but they must not be interpreted as independent magnetic components.
+
+\section{Conditional buckets and the two distinct anisotropy problems}
+
+The implementation uses angle thresholds to define conditional subsets of samples at each scale. For example,
+\begin{align}
+ \texttt{ell\_par}: &\qquad \theta < \theta_{\parallel},\\
+ \texttt{Ell\_perp}: &\qquad \theta > \theta_{\xi},\; \phi < \phi_{\xi},\\
+ \texttt{ell\_perp}: &\qquad \theta > \theta_{\lambda},\; \phi > \phi_{\lambda}.
+\end{align}
+
+Two distinct diagnostics must then be kept separate.
+
+\textbf{Wave-vector anisotropy.} One must compare the \emph{same scalar second-order observable} across directional buckets. In this pipeline that observable is the trace coefficient energy of the full vector coefficient magnitude. The trace products \texttt{Spectra} are the correct outputs for this purpose.
+
+\textbf{Component scaling.} If one wants the scaling of $\parallel$, $\perp$, $\xi$, or $\lambda$ projected amplitudes, one must use the projected-component outputs \texttt{ProjectedSpectra} and \texttt{ProjectedScaleNormalizedWaveletMoments}. Those are component diagnostics, not wave-vector anisotropy diagnostics.
+
+\section{Conditional spectra}
+
+For any trace coefficient amplitude $A_j(t)=|\mathbf{W}_j(t)|$ or projected scalar coefficient $U_j(t)$, the code defines the conditional band-averaged PSD estimate by
+\begin{equation}
+ \widehat{P}_2^{(j,\mathcal C)} = \frac{\left\langle |A_j|^2 \right\rangle_{\mathcal C_j}}{\mathcal A_j},
+\end{equation}
+with
+\begin{equation}
+ \mathcal A_j = \int_0^{\infty} |\widehat{H}_j(2\pi f)|^2\,df.
+\end{equation}
+The implementation evaluates $\mathcal A_j$ on the exact discrete FFT frequency grid used by the code, not by a half-power bandwidth approximation.
+
+Since $|W|^2$ has units $[X]^2\,\mathrm{s}$ and $\mathcal A_j$ has units Hz, the saved spectrum has units
+\begin{equation}
+ [\widehat{P}_2^{(j,\mathcal C)}] = [X]^2 / \mathrm{Hz}.
+\end{equation}
+This is a conditional \emph{band-averaged} PSD, not a pointwise Fourier PSD.
+
+\section{Higher-order scale-normalized wavelet moments}
+
+For any scalar coefficient amplitude $U_j$ and conditional subset $\mathcal C_j$, the raw moment is
+\begin{equation}
+ M_q^{(j,\mathcal C)} = \left\langle |U_j|^q \right\rangle_{\mathcal C_j}.
+\end{equation}
+If $U_j$ has units $[X]\,\mathrm{s}^{1/2}$, then
+\begin{equation}
+ [M_q^{(j,\mathcal C)}] = [X]^q \, \mathrm{s}^{q/2}.
+\end{equation}
+The saved scale-normalized moment is
+\begin{equation}
+ \widetilde{M}_q^{(j,\mathcal C)} = \frac{M_q^{(j,\mathcal C)}}{\tau_j^{q/2}}.
+\end{equation}
+Therefore
+\begin{equation}
+ [\widetilde{M}_q^{(j,\mathcal C)}] = [X]^q.
+\end{equation}
+This is the quantity that can be compared across scales as a structure-function-like surrogate. It has the appropriate field dimensions, but it is still a wavelet-coefficient moment rather than a strict finite-difference structure function.
+
+The outputs use the following naming convention:
+\begin{itemize}[leftmargin=1.5em]
+    \item \texttt{WaveletMoments}: raw $M_q^{(j,\mathcal C)}$,
+    \item \texttt{ScaleNormalizedWaveletMoments} / \texttt{Sfuncs}: $\widetilde{M}_q^{(j,\mathcal C)}$,
+    \item \texttt{ProjectedScaleNormalizedWaveletMoments}: the same quantity for projected scalar coefficients,
+    \item \texttt{Spectra}: conditional trace PSD estimates,
+    \item \texttt{ProjectedSpectra}: conditional projected-component PSD estimates.
+\end{itemize}
+
+\section{Why the compact coefficient store was added}
+
+The earlier DataFrame export was convenient for inspection but heavy for repeated scientific reduction. The revised code therefore also returns
+\begin{equation}
+ \texttt{CompactCoefficients} \equiv \texttt{CoefficientStore},
+\end{equation}
+which stores the selected coefficient rows as dense NumPy matrices bucket by bucket.
+
+Each stored bucket contains a matrix with a common \texttt{column\_order}. The exported columns include the selected raw coefficients, the scale coordinates, the angles, and the minimal metadata needed for later reduction:
+\begin{equation}
+ \texttt{selected\_scale\_di},\; \texttt{tau\_equiv\_seconds},\; \texttt{frequency\_hz},\; \texttt{response\_energy\_integral},\; \texttt{level\_index},\ldots
+\end{equation}
+This design makes it possible to merge intervals by concatenation and only then estimate conditional moments.
+
+\section{How to use the saved outputs}
+
+\subsection{Fast path for many intervals}
+
+If the goal is a final conditional spectrum or final conditional higher-order moment across many intervals, the most robust path is to use the saved pointwise accumulator,
+\begin{equation}
+ \texttt{ScaleBinnedAccumulator},
+\end{equation}
+and merge those accumulators across intervals before finalizing. This guarantees that the average is taken over the pooled samples rather than over interval-level averages.
+
+\subsection{Flexible path from raw coefficient rows}
+
+If the goal is a new condition or a new scalar built from the exported coefficients, use the compact coefficient store. The revised helper
+\begin{equation}
+ \texttt{reduce\_compact\_coefficient\_store}
+\end{equation}
+reduces one merged store according to the exact equations above.
+
+For a chosen bucket $b$, coefficient column $U$, and additional condition set $\mathcal D$, the reduced scale-normalized moment is
+\begin{equation}
+ \widetilde{M}_q^{(b,\mathcal D)}(\ell) = \left\langle \frac{|U|^q}{\tau^{q/2}} \right\rangle_{b,\mathcal D,\ell},
+\end{equation}
+where the average is taken over all rows in the compact store that satisfy the bucket selection, the extra user constraints, and the chosen physical scale bin in $d_i$.
+
+Likewise, the reduced spectrum is
+\begin{equation}
+ \widehat{P}_2^{(b,\mathcal D)}(\ell) = \left\langle \frac{|U|^2}{\mathcal A_j} \right\rangle_{b,\mathcal D,\ell}.
+\end{equation}
+
+In practical terms, the recommended choices are:
+\begin{itemize}[leftmargin=1.5em]
+    \item wave-vector anisotropy: use \texttt{value\_key = 'W\_B\_mag'} or the corresponding trace magnitude and compare the resulting \texttt{Spectra} across \texttt{ell\_par}, \texttt{Ell\_perp}, and \texttt{ell\_perp};
+    \item magnetic component scaling: use \texttt{B\_par} and \texttt{B\_perp}, but do not interpret \texttt{B\_lambda} as independent physics;
+    \item velocity or Elsasser component scaling: use \texttt{V\_par}, \texttt{V\_xi}, \texttt{V\_lambda}, \texttt{Zp\_par}, \texttt{Zp\_xi}, and so forth;
+    \item higher-order intermittency/scaling: use \texttt{normalization='scale\_normalized'}.
+\end{itemize}
+
+\section{Returned objects in the revised package}
+
+The important saved entries are now:
+\begin{longtable}{p{0.28\linewidth} p{0.64\linewidth}}
+\toprule
+Entry & Meaning \\
+\midrule
+\texttt{WaveletMoments} & Raw conditional moments $\langle |U|^q\rangle$ at each level. \\
+\texttt{ScaleNormalizedWaveletMoments} / \texttt{Sfuncs} & Conditional scale-normalized moments $\langle |U|^q / \tau^{q/2}\rangle$. \\
+\texttt{Spectra} & Conditional trace PSD estimates for wave-vector anisotropy. \\
+\texttt{ProjectedSpectra} & Conditional projected-component PSD estimates for component studies. \\
+\texttt{ScaleBinnedAccumulator} & Exact samplewise accumulator on a common $d_i$ grid for later cross-interval merging. \\
+\texttt{ScaleBinnedProducts} & Finalized common-grid products derived from that accumulator. \\
+\texttt{CompactCoefficients} / \texttt{CoefficientStore} & Dense bucketed coefficient matrices plus schema, units, and scale metadata for fast later reduction. \\
+\texttt{BucketScaleStats} & Mean, median, and spread of the actually sampled local separations in each bucket and level. \\
+\texttt{ScaleAxis} & Frequency, period, equivalent lag, and response normalization metadata by wavelet level. \\
+\bottomrule
+\end{longtable}
+
+\section{Recommended practice}
+
+Use \texttt{Spectra} for wave-vector anisotropy, not component ratios. Use the projected-component products for component scaling. Use the scale-normalized higher-order moments when the goal is a structure-function-like intermittency diagnostic with the correct physical dimensions. If many intervals are to be combined, merge either the exact accumulators or the compact coefficient stores and only then finalize the statistics.
+
+\end{document}

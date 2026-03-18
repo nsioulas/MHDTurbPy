@@ -179,6 +179,7 @@ def plot_source_surface_2d(
     var_specs: Dict[str, Dict[str, Any]],
     size_col: str = "marker_size",
     percentiles: Tuple[float, float] = (2.0, 98.0),
+    clim: Optional[Tuple[float, float]] = None,
     ncols: int = 2,
     figsize: Optional[Tuple[float, float]] = None,
     title: Optional[str] = None,
@@ -314,6 +315,11 @@ def plot_source_surface_2d(
                 )
 
             cb = fig.colorbar(sc, ax=ax, pad=0.02)
+            cb.ax.set_facecolor("0.92")
+            try:
+                cb.outline.set_edgecolor("0.55")
+            except Exception:
+                pass
             cb.set_label(_label_with_unit(data, var, spec.get("label", var)))
 
         else:
@@ -447,6 +453,131 @@ def plot_source_surface_2d(
         plt.close(fig)
 
     return out_png, fig
+
+
+
+def plot_pfss_backmap_context_2d(
+    *,
+    data: pd.DataFrame,
+    out_png: Union[str, Path],
+    br2d: np.ndarray,
+    which_br: str = "source_surface",
+    neutral_lonlat: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+    color_by: Optional[str] = None,
+    percentiles: Tuple[float, float] = (2.0, 98.0),
+    title: Optional[str] = None,
+    show: bool = False,
+    figsize: Tuple[float, float] = (12.0, 6.0),
+) -> Path:
+    """2D PFSS Br context map with backmapped footpoint track overlay.
+
+    Geometry contract
+    -----------------
+    - br2d is assumed to be on a uniform Carrington lon/lat grid:
+        lon in [0, 360), lat in [-90, 90], with array shape (nlat, nlon).
+    - The backmapped coordinates are taken from:
+        data['phi_src'] (deg, Carrington longitude) and data['lat_src'] (deg).
+    - This function does not attempt to rotate between inertial/Carrington frames;
+      it is intentionally strict and expects Carrington-consistent inputs.
+    """
+    import matplotlib.pyplot as plt
+
+    out_png = Path(out_png)
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+
+    br = np.asarray(br2d, dtype=float)
+    if br.ndim != 2:
+        raise ValueError("br2d must be 2D (lat, lon)")
+    nlat, nlon = br.shape
+
+    lon_axis = np.linspace(0.0, 360.0, nlon, endpoint=False)
+    lat_axis = np.linspace(-90.0, 90.0, nlat)
+
+    # robust clim (or user-provided fixed clim)
+    if clim is not None:
+        vmin, vmax = float(clim[0]), float(clim[1])
+        # enforce symmetry for Br context unless the user explicitly breaks it
+        mm = float(max(abs(vmin), abs(vmax)))
+        if np.isfinite(mm) and mm > 0.0:
+            vmin, vmax = -mm, +mm
+        else:
+            vmin, vmax = -1.0, +1.0
+    else:
+        lo_p, hi_p = float(percentiles[0]), float(percentiles[1])
+        finite = np.isfinite(br)
+        if finite.any():
+            vmin = np.nanpercentile(br[finite], lo_p)
+            vmax = np.nanpercentile(br[finite], hi_p)
+            # symmetric about zero for Br context (helps polarity interpretation)
+            m = float(max(abs(vmin), abs(vmax)))
+            vmin, vmax = -m, +m
+        else:
+            vmin, vmax = -1.0, +1.0
+
+
+    lon_fp = np.mod(pd.to_numeric(data["phi_src"], errors="coerce").to_numpy(dtype=float), 360.0)
+    lat_fp = np.clip(pd.to_numeric(data["lat_src"], errors="coerce").to_numpy(dtype=float), -90.0, 90.0)
+
+    fig, ax = plt.subplots(1, 1, figsize=figsize, constrained_layout=True)
+    im = ax.imshow(
+        br,
+        origin="lower",
+        extent=(0.0, 360.0, -90.0, 90.0),
+        aspect="auto",
+        vmin=vmin,
+        vmax=vmax,
+        cmap="RdBu_r",
+    )
+
+    # neutral line overlay (optional)
+    if neutral_lonlat is not None:
+        try:
+            nl_lon, nl_lat = neutral_lonlat
+            nl_lon = np.mod(np.asarray(nl_lon, dtype=float), 360.0)
+            nl_lat = np.clip(np.asarray(nl_lat, dtype=float), -90.0, 90.0)
+            ax.plot(nl_lon, nl_lat, "-", linewidth=1.8, alpha=0.9)
+        except Exception:
+            pass
+
+    # backmapped track (optionally colored)
+    if (color_by is not None) and (str(color_by) in data.columns):
+        c = pd.to_numeric(data[str(color_by)], errors="coerce").to_numpy(dtype=float)
+        sc = ax.scatter(lon_fp, lat_fp, c=c, s=18.0, linewidths=0.0)
+        cb = fig.colorbar(sc, ax=ax, pad=0.02)
+        cb.ax.set_facecolor("0.92")
+        try:
+            cb.outline.set_edgecolor("0.55")
+        except Exception:
+            pass
+        cb.set_label(str(color_by))
+    else:
+        ax.plot(lon_fp, lat_fp, "-", linewidth=1.5, alpha=0.9)
+        ax.scatter(lon_fp[-1:], lat_fp[-1:], s=60.0)
+
+    ax.set_xlabel("Carrington longitude [deg]")
+    ax.set_ylabel("Heliographic latitude [deg]")
+    ax.set_xlim(0.0, 360.0)
+    ax.set_ylim(-90.0, 90.0)
+
+    w = str(which_br).strip().lower()
+    rlab = "photosphere" if w == "photosphere" else "source surface"
+    if title is None:
+        title = f"PFSS Br ({rlab}) + backmapped footpoints"
+    ax.set_title(title)
+
+    cb_pf = fig.colorbar(im, ax=ax, pad=0.02, fraction=0.046)
+    cb_pf.ax.set_facecolor("0.92")
+    try:
+        cb_pf.outline.set_edgecolor("0.55")
+    except Exception:
+        pass
+    cb_pf.set_label(r"$B_r$ (arb.)")
+
+    fig.savefig(out_png, dpi=200)
+    if show:
+        plt.show()
+    plt.close(fig)
+    return out_png
 
 
 def plot_velocity_profile(
@@ -593,6 +724,123 @@ def _target_frame(frame3d: str, obstime):
         return _HCI(obstime=obstime)
     return None  # GSE not supported here
 
+def _observer_coord(observer: str, obstime):
+    """Return an observer coordinate suitable for HGC transforms.
+
+    SunPy versions differ in whether `observer='earth'` (a string) is accepted.
+    When possible, we construct an explicit observer coordinate.
+    """
+    if (not _HAS_SUNPY) or obstime is None:
+        return observer
+
+    obs = str(observer).strip().lower()
+    try:
+        from sunpy.coordinates import get_body_heliographic_stonyhurst
+    except Exception:
+        return observer
+
+    if obs in {"earth", "sun"}:
+        try:
+            return get_body_heliographic_stonyhurst(obs, obstime)
+        except Exception:
+            return observer
+
+    # Best effort for other named bodies
+    try:
+        return get_body_heliographic_stonyhurst(obs, obstime)
+    except Exception:
+        return observer
+
+
+def _transform_lonlat_polyline_to_unit_xyz(
+    *,
+    lon_deg: np.ndarray,
+    lat_deg: np.ndarray,
+    radius_au: float,
+    frame3d: str,
+    obstime,
+    observer: str = "earth",
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Transform a NaN-separated Carrington lon/lat polyline to unit xyz in frame3d.
+
+    The input lon/lat are interpreted as Carrington (HGC). Disjoint segments should be
+    separated by NaNs; those separators are preserved in the output so Plotly can break
+    line segments correctly.
+    """
+    lon = np.asarray(lon_deg, dtype=float).reshape(-1)
+    lat = np.asarray(lat_deg, dtype=float).reshape(-1)
+
+    fin = np.isfinite(lon) & np.isfinite(lat)
+    if not np.any(fin):
+        return np.full_like(lon, np.nan), np.full_like(lat, np.nan), np.full_like(lat, np.nan)
+
+    f = str(frame3d).upper().strip()
+
+    # HGC (or no SunPy): simple spherical conversion in the plot coordinate system.
+    if (f not in {"HEE", "HCI"}) or (not _HAS_SUNPY) or (obstime is None):
+        lonr = np.deg2rad(lon)
+        latr = np.deg2rad(lat)
+        cl = np.cos(latr)
+        x = cl * np.cos(lonr)
+        y = cl * np.sin(lonr)
+        z = np.sin(latr)
+        return x, y, z
+
+    tf = _target_frame(f, obstime)
+    if tf is None:
+        lonr = np.deg2rad(lon)
+        latr = np.deg2rad(lat)
+        cl = np.cos(latr)
+        x = cl * np.cos(lonr)
+        y = cl * np.sin(lonr)
+        z = np.sin(latr)
+        return x, y, z
+
+    obs_coord = _observer_coord(observer, obstime)
+
+    X, Y, Z = [], [], []
+    n = lon.size
+    i = 0
+    while i < n:
+        if not fin[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and fin[j]:
+            j += 1
+
+        seg_lon = lon[i:j]
+        seg_lat = lat[i:j]
+        try:
+            cc = _SkyCoord(
+                lon=seg_lon * _u.deg,
+                lat=seg_lat * _u.deg,
+                radius=float(radius_au) * _u.AU,
+                frame=_HGC(obstime=obstime, observer=obs_coord),
+            ).transform_to(tf)
+            xau = cc.cartesian.x.to_value(_u.AU)
+            yau = cc.cartesian.y.to_value(_u.AU)
+            zau = cc.cartesian.z.to_value(_u.AU)
+            rr = np.sqrt(xau * xau + yau * yau + zau * zau)
+            rr = np.where(rr > 0.0, rr, np.nan)
+            X.extend((xau / rr).tolist())
+            Y.extend((yau / rr).tolist())
+            Z.extend((zau / rr).tolist())
+        except Exception:
+            lonr = np.deg2rad(seg_lon)
+            latr = np.deg2rad(seg_lat)
+            cl = np.cos(latr)
+            X.extend((cl * np.cos(lonr)).tolist())
+            Y.extend((cl * np.sin(lonr)).tolist())
+            Z.extend((np.sin(latr)).tolist())
+
+        # Segment separator
+        X.append(np.nan); Y.append(np.nan); Z.append(np.nan)
+        i = j
+
+    return np.asarray(X, float), np.asarray(Y, float), np.asarray(Z, float)
+
+
 
 def _grid_lines_carrington(
     *,
@@ -633,7 +881,7 @@ def _grid_lines_carrington(
             lon=lon * _u.deg,
             lat=np.full_like(lon, lat, dtype=float) * _u.deg,
             radius=float(radius_au) * _u.AU,
-            frame=_HGC(obstime=obstime, observer=observer),
+            frame=_HGC(obstime=obstime, observer=_observer_coord(observer, obstime)),
         ).transform_to(tf)
         X.extend(c.cartesian.x.to_value(_u.AU).tolist() + [np.nan])
         Y.extend(c.cartesian.y.to_value(_u.AU).tolist() + [np.nan])
@@ -646,7 +894,7 @@ def _grid_lines_carrington(
             lon=np.full_like(tt, lon, dtype=float) * _u.deg,
             lat=tt * _u.deg,
             radius=float(radius_au) * _u.AU,
-            frame=_HGC(obstime=obstime, observer=observer),
+            frame=_HGC(obstime=obstime, observer=_observer_coord(observer, obstime)),
         ).transform_to(tf)
         X.extend(c.cartesian.x.to_value(_u.AU).tolist() + [np.nan])
         Y.extend(c.cartesian.y.to_value(_u.AU).tolist() + [np.nan])
@@ -680,7 +928,7 @@ def _grid_labels_carrington(
             lon=float(lon) * _u.deg,
             lat=0.0 * _u.deg,
             radius=float(radius_au) * _u.AU,
-            frame=_HGC(obstime=obstime, observer=observer),
+            frame=_HGC(obstime=obstime, observer=_observer_coord(observer, obstime)),
         ).transform_to(tf)
         xs.append(c.cartesian.x.to_value(_u.AU))
         ys.append(c.cartesian.y.to_value(_u.AU))
@@ -693,7 +941,7 @@ def _grid_labels_carrington(
             lon=0.0 * _u.deg,
             lat=float(lat) * _u.deg,
             radius=float(radius_au) * _u.AU,
-            frame=_HGC(obstime=obstime, observer=observer),
+            frame=_HGC(obstime=obstime, observer=_observer_coord(observer, obstime)),
         ).transform_to(tf)
         xs.append(c.cartesian.x.to_value(_u.AU))
         ys.append(c.cartesian.y.to_value(_u.AU))
@@ -771,6 +1019,37 @@ def plot_source_surface_3d(
     camera: str = "iso",
     title: Optional[str] = None,
     show: bool = False,
+    # Export control (used by movie renderer): if False, returns the figure without writing HTML
+    write_html: bool = True,
+    # Optional per-frame camera override (Plotly camera dict: {'eye': {...}, 'up': {...}, 'center': {...}})
+    camera_dict: Optional[Dict[str, Any]] = None,
+    # Optional per-panel colorbar marker values (raw variable values; one per plot variable).
+    # Used by MP4 export to indicate the instantaneous value on each horizontal colorbar.
+    cb_marker_values: Optional[Dict[str, float]] = None,
+    # Optional highlight of the most recent sample (useful for movies).
+    highlight_last_point: bool = False,
+    highlight_size: int = 10,
+    highlight_fill_rgba: str = 'rgba(255,255,255,0.92)',
+    highlight_edge_rgba: str = 'rgba(0,0,0,0.95)',
+    highlight_edge_width: int = 4,
+    highlight_connector: bool = False,
+    highlight_connector_rgba: str = 'rgba(0,0,0,0.55)',
+    highlight_connector_width: int = 6,
+
+# PFSS background (optional): Br map on either photosphere or source surface, in Carrington lon/lat.
+# For physically meaningful overlays over long intervals, prefer pfss_date_mode='fixed' or 'interval_mid_day'
+# upstream so the background is time-consistent.
+pfss_br2d: Optional[np.ndarray] = None,
+pfss_which_br: str = "source_surface",  # 'source_surface' or 'photosphere'
+pfss_surface_stride: int = 2,
+pfss_opacity: float = 0.35,
+pfss_colorscale: Optional[Any] = None,  # Plotly colorscale; if None uses a diverging RdBu_r-like scale
+pfss_clim: Optional[Tuple[float, float]] = None,  # if None uses symmetric robust percentiles
+pfss_show_colorbar: bool = False,  # adds a single colorbar strip (first panel only)
+pfss_show_in_all_panels: bool = True,
+pfss_neutral_lonlat: Optional[Tuple[np.ndarray, np.ndarray]] = None,  # (lon_deg, lat_deg), typically Br=0 on source surface
+pfss_neutral_rgba: str = "rgba(0,0,0,0.75)",
+pfss_neutral_width: int = 3,
     # legacy args kept for compatibility (ignored)
     plane_span_au: float = 1.2,
     camera_left: Optional[str] = None,
@@ -824,8 +1103,10 @@ def plot_source_surface_3d(
             raise KeyError(f"Requested 3D variable {v!r} not in DataFrame.")
 
     frame3d = str(frame3d).upper().strip()
-    if frame3d not in {"HEE", "HCI"}:
-        raise ValueError("frame3d must be 'HEE' or 'HCI'")
+    if frame3d in {"CARRINGTON", "HGC"}:
+        frame3d = "HGC"
+    if frame3d not in {"HEE", "HCI", "HGC"}:
+        raise ValueError("frame3d must be one of {'HEE','HCI','HGC'} (aliases: 'CARRINGTON' -> 'HGC')")
 
     if int(decimate) < 1:
         decimate = 1
@@ -901,9 +1182,13 @@ def plot_source_surface_3d(
         rr_trk = np.sqrt(xtrk_phys * xtrk_phys + ytrk_phys * ytrk_phys + ztrk_phys * ztrk_phys)
         rr_list.append(rr_trk)
     if rr_list:
-        rr_all = np.concatenate([r[np.isfinite(r)] for r in rr_list if r is not None and np.isfinite(r).any()])
-        if rr_all.size:
-            r_sc_max_au = float(np.nanmax(rr_all))
+        # NOTE: rr_list may be non-empty but still contain no finite samples.
+        # Guard against np.concatenate([]) which raises ValueError.
+        rr_parts = [r[np.isfinite(r)] for r in rr_list if (r is not None) and np.isfinite(r).any()]
+        if rr_parts:
+            rr_all = np.concatenate(rr_parts)
+            if rr_all.size:
+                r_sc_max_au = float(np.nanmax(rr_all))
 
     if ecliptic_circle_max_au is None:
         r_ctx_max_au = float(max(1.0, 1.05 * (r_sc_max_au if np.isfinite(r_sc_max_au) else float(r_ss_au))))
@@ -948,6 +1233,17 @@ def plot_source_surface_3d(
 
     # Plot coordinates
     xs, ys, zs = _xyz_to_plot(xs_phys, ys_phys, zs_phys)
+
+    # Project the mapped source-surface points onto the plotted SS sphere.
+    # This removes any tiny radial drift introduced by numerical transforms and makes
+    # the 3D backmapping look visually "attached" to the source surface.
+    rr_ss = np.sqrt(xs * xs + ys * ys + zs * zs)
+    ok_ss = np.isfinite(rr_ss) & (rr_ss > 0.0) & np.isfinite(float(r_ss_plot))
+    if np.any(ok_ss):
+        xs[ok_ss] = (xs[ok_ss] / rr_ss[ok_ss]) * float(r_ss_plot)
+        ys[ok_ss] = (ys[ok_ss] / rr_ss[ok_ss]) * float(r_ss_plot)
+        zs[ok_ss] = (zs[ok_ss] / rr_ss[ok_ss]) * float(r_ss_plot)
+
     xsc = ysc = zsc = None
     if have_sc and (xsc_phys is not None):
         xsc, ysc, zsc = _xyz_to_plot(xsc_phys, ysc_phys, zsc_phys)
@@ -1214,7 +1510,7 @@ def plot_source_surface_3d(
     # Reserve a thin strip above each 3D panel for a custom *horizontal* colorbar.
     # We draw the colorbar in paper coordinates inside this strip, so it never intrudes
     # into the data when the user zooms/rotates the 3D scene.
-    _CB_STRIP_FRAC = 0.12  # fraction of each panel's domain height
+    _CB_STRIP_FRAC = 0.18 if (pfss_br2d is not None and bool(pfss_show_colorbar)) else 0.12  # fraction of each panel's domain height
     _panel_strip = {}
     for _i in range(1, total_cells + 1):
         _sname = "scene" if _i == 1 else f"scene{_i}"
@@ -1240,9 +1536,9 @@ def plot_source_surface_3d(
 
 
     if any(v == "polarity" for v in plot_vars):
-        fig.add_trace(go.Scatter3d(x=[np.nan], y=[np.nan], z=[np.nan], mode="markers", marker=dict(size=7, color="#1f77b4"), name="polarity = -1", showlegend=True))
-        fig.add_trace(go.Scatter3d(x=[np.nan], y=[np.nan], z=[np.nan], mode="markers", marker=dict(size=7, color="#7f7f7f"), name="polarity = 0", showlegend=True))
-        fig.add_trace(go.Scatter3d(x=[np.nan], y=[np.nan], z=[np.nan], mode="markers", marker=dict(size=7, color="#d62728"), name="polarity = +1", showlegend=True))
+        fig.add_trace(go.Scatter3d(x=[np.nan], y=[np.nan], z=[np.nan], mode="markers", marker=dict(size=6, symbol="square", color="#1f77b4"), name="polarity = -1", showlegend=True))
+        fig.add_trace(go.Scatter3d(x=[np.nan], y=[np.nan], z=[np.nan], mode="markers", marker=dict(size=6, symbol="square", color="#7f7f7f"), name="polarity = 0", showlegend=True))
+        fig.add_trace(go.Scatter3d(x=[np.nan], y=[np.nan], z=[np.nan], mode="markers", marker=dict(size=6, symbol="square", color="#d62728"), name="polarity = +1", showlegend=True))
 
     def _scene_axes(_ttl: str = ""):
         # Minimal 3D aesthetic: no ticks/background planes (presentation-first).
@@ -1264,12 +1560,12 @@ def plot_source_surface_3d(
     def _cam(which: str):
         w = str(which).lower().strip()
         if w == "top":
-            return dict(eye=dict(x=0.0, y=0.0, z=2.4))
+            return dict(eye=dict(x=0.0, y=0.0, z=1.95))
         if w == "side":
-            return dict(eye=dict(x=2.4, y=0.0, z=0.0))
+            return dict(eye=dict(x=1.95, y=0.0, z=0.0))
         if w in {"ecliptic", "xy"}:
-            return dict(eye=dict(x=2.0, y=1.6, z=0.25))
-        return dict(eye=dict(x=1.65, y=1.35, z=0.95))
+            return dict(eye=dict(x=1.55, y=1.20, z=0.22))
+        return dict(eye=dict(x=1.25, y=1.05, z=0.70))
 
     def _add_cube_wireframe(row: int, col: int, *, lw: float = 2.0, colr: str = "rgba(0,0,0,0.28)"):
         # 12 edges of the bounding cube [-lim, lim]^3
@@ -1313,6 +1609,8 @@ def plot_source_surface_3d(
             col=col,
         )
         fig.update_scenes(camera=_cam(camera), row=row, col=col)
+        if camera_dict is not None:
+            fig.update_scenes(camera=camera_dict, row=row, col=col)
         if show_cube_edges:
             _add_cube_wireframe(row, col)
 
@@ -1444,6 +1742,7 @@ def plot_source_surface_3d(
         )
 
     grid_sun = grid_ss = None
+    grid_labels = None
     if show_sphere_grid:
         obstime = _median_obstime(data)
         use_carr = (str(sphere_grid_frame).lower().strip() == "carrington") and _HAS_SUNPY and (obstime is not None) and (str(frame3d).upper().strip() in {"HEE","HCI"})
@@ -1563,13 +1862,20 @@ def plot_source_surface_3d(
         except Exception:
             return str(v)
 
-    def _add_horizontal_colorbar(*, row: int, col: int, vmin: float, vmax: float, colorscale: list, title: str, nticks: int = 3) -> None:
+    def _add_horizontal_colorbar(*, row: int, col: int, vmin: float, vmax: float, colorscale: list, title: str, nticks: int = 3, marker_value: Optional[float] = None, marker_label: str = '', slot: int = 0, nslots: int = 1) -> None:
         g = _panel_strip.get((int(row), int(col)), None)
         if g is None:
             return
 
         x0, x1 = float(g["x0"]), float(g["x1"])
         ys0, ys1 = float(g["y0_strip"]), float(g["y1_strip"])
+        # Support stacking multiple colorbars in the reserved strip area (e.g., PFSS + variable).
+        ns = int(max(1, int(nslots)))
+        sl = int(max(0, min(ns - 1, int(slot))))
+        hh_full = max(1e-9, ys1 - ys0)
+        ys0 = ys0 + (sl / ns) * hh_full
+        ys1 = ys0 + (1.0 / ns) * hh_full
+
         ww = max(1e-9, x1 - x0)
         hh = max(1e-9, ys1 - ys0)
 
@@ -1609,6 +1915,33 @@ def plot_source_surface_3d(
             layer="above",
         )
 
+        # Optional instantaneous-value marker (used by MP4 export).
+        if marker_value is not None and np.isfinite(float(marker_value)) and (float(vmax) != float(vmin)):
+            tt = (float(marker_value) - float(vmin)) / (float(vmax) - float(vmin))
+            tt = float(max(0.0, min(1.0, tt)))
+            xm = bx0 + tt * (bx1 - bx0)
+            fig.add_shape(
+                type='line',
+                xref='paper',
+                yref='paper',
+                x0=xm, x1=xm,
+                y0=by0, y1=by1,
+                line=dict(color='rgba(0,0,0,0.92)', width=2),
+                layer='above',
+            )
+            if str(marker_label).strip():
+                fig.add_annotation(
+                    x=xm,
+                    y=ys0 + 0.90 * hh,
+                    xref='paper',
+                    yref='paper',
+                    text=str(marker_label),
+                    showarrow=False,
+                    xanchor='center',
+                    yanchor='bottom',
+                    font=dict(size=11, color='rgba(0,0,0,0.85)'),
+                )
+
         fig.add_annotation(
             x=0.5 * (bx0 + bx1),
             y=ys0 + 0.78 * hh,
@@ -1637,7 +1970,136 @@ def plot_source_surface_3d(
                 yanchor="bottom",
                 font=dict(size=11, color="rgba(0,0,0,0.72)"),
             )
-# local lon/lat for hover: ALWAYS computed from physical AU coordinates (not plot-scaled)
+
+    # -----------------------
+    # Optional PFSS background on a sphere (same geometry as the backmapped points).
+    # This is purely a visualization overlay: the PFSS Br map is defined in Carrington lon/lat
+    # and is rotated into the requested plotting frame at a representative obstime (median).
+    # -----------------------
+    pfss_surface = None  # dict with keys X,Y,Z,BR,cmin,cmax,colorscale,opacity,on
+    pfss_neutral_xyz = None  # (x,y,z) arrays for a Br=0 neutral line polyline
+    if pfss_br2d is not None:
+        try:
+            pfss_on = str(pfss_which_br).strip().lower()
+            if pfss_on not in {"source_surface", "photosphere"}:
+                pfss_on = "source_surface"
+            stride_pf = int(max(1, int(pfss_surface_stride)))
+
+            br_pf0 = np.asarray(pfss_br2d, dtype=float)
+            br_pf = br_pf0[::stride_pf, ::stride_pf]
+            nlat_pf, nlon_pf = br_pf.shape
+
+            lon_pf = np.linspace(0.0, 360.0, int(nlon_pf), endpoint=False, dtype=float)
+            lat_pf = np.linspace(-90.0, 90.0, int(nlat_pf), endpoint=True, dtype=float)
+
+            lon_pf2 = np.concatenate([lon_pf, [360.0]])
+            br_pf2 = np.concatenate([br_pf, br_pf[:, :1]], axis=1)
+
+            lon_g, lat_g = np.meshgrid(lon_pf2, lat_pf)
+
+            radius_au_pf = float(r_ss_au) if (pfss_on == "source_surface") else float(r_sun_au)
+            radius_plot_pf = float(_r_au_to_plot(radius_au_pf))
+
+            if pfss_clim is None:
+                vv = br_pf2[np.isfinite(br_pf2)]
+                if vv.size > 0:
+                    lo, hi = np.nanpercentile(vv, [2.0, 98.0])
+                    mm = float(max(abs(float(lo)), abs(float(hi))))
+                    cmin_pf, cmax_pf = -mm, mm
+                else:
+                    cmin_pf, cmax_pf = -1.0, 1.0
+            else:
+                cmin_pf, cmax_pf = float(pfss_clim[0]), float(pfss_clim[1])
+
+            if pfss_colorscale is None:
+                # Ensure +Br -> red and -Br -> blue in Plotly (diverging convention).
+                try:
+                    from .pfss import _normalize_pfss_plotly_colorscale as _norm_pfss_scale  # noqa: WPS433
+                    pfss_colorscale_use = _norm_pfss_scale("RdBu")
+                except Exception:
+                    # Fallback to the reversed alias if Plotly understands it; otherwise Plotly will use its default diverging scale.
+                    pfss_colorscale_use = "RdBu_r"
+            else:
+                pfss_colorscale_use = pfss_colorscale
+
+            lonr = np.deg2rad(lon_g)
+            latr = np.deg2rad(lat_g)
+            ux = np.cos(latr) * np.cos(lonr)
+            uy = np.cos(latr) * np.sin(lonr)
+            uz = np.sin(latr)
+
+            obstime_pfss = _median_obstime(data)
+            if (str(frame3d).upper().strip() in {"HEE", "HCI"}) and _HAS_SUNPY and (obstime_pfss is not None):
+                tf = _target_frame(str(frame3d), obstime_pfss)
+                if tf is not None:
+                    try:
+                        cc = _SkyCoord(
+                            lon=lon_g.reshape(-1) * _u.deg,
+                            lat=lat_g.reshape(-1) * _u.deg,
+                            radius=(radius_au_pf * _u.AU),
+                            frame=_HGC(obstime=obstime_pfss, observer=_observer_coord(str(sphere_grid_observer), obstime_pfss)),
+                        ).transform_to(tf)
+                        xau = cc.cartesian.x.to_value(_u.AU).reshape(lon_g.shape)
+                        yau = cc.cartesian.y.to_value(_u.AU).reshape(lon_g.shape)
+                        zau = cc.cartesian.z.to_value(_u.AU).reshape(lon_g.shape)
+                        rr = np.sqrt(xau * xau + yau * yau + zau * zau)
+                        rr = np.where(rr > 0.0, rr, np.nan)
+                        ux = xau / rr
+                        uy = yau / rr
+                        uz = zau / rr
+                    except Exception:
+                        pass
+
+            Xpf = radius_plot_pf * ux
+            Ypf = radius_plot_pf * uy
+            Zpf = radius_plot_pf * uz
+
+            pfss_surface = dict(
+                X=Xpf,
+                Y=Ypf,
+                Z=Zpf,
+                BR=br_pf2,
+                cmin=float(cmin_pf),
+                cmax=float(cmax_pf),
+                colorscale=pfss_colorscale_use,
+                opacity=float(pfss_opacity),
+                on=pfss_on,
+            )
+
+            if (pfss_neutral_lonlat is not None):
+                nl_lon, nl_lat = pfss_neutral_lonlat
+                nl_lon = np.asarray(nl_lon, dtype=float).reshape(-1)
+                nl_lat = np.asarray(nl_lat, dtype=float).reshape(-1)
+
+                # Neutral lines are stored as NaN-separated polylines; preserve NaNs to keep
+                # contour segments disjoint in Plotly.
+                if nl_lon.size and nl_lat.size:
+                    nl_lon = np.mod(nl_lon, 360.0)
+                    nl_lat = np.clip(nl_lat, -90.0, 90.0)
+
+                    # Draw the neutral line at the *source surface* by default (HCS proxy),
+                    # even if the PFSS texture is on the photosphere.
+                    radius_au_nl = float(r_ss_au)
+                    radius_plot_nl = float(_r_au_to_plot(radius_au_nl))
+
+                    ux2, uy2, uz2 = _transform_lonlat_polyline_to_unit_xyz(
+                        lon_deg=nl_lon,
+                        lat_deg=nl_lat,
+                        radius_au=radius_au_nl,
+                        frame3d=str(frame3d),
+                        obstime=obstime_pfss,
+                        observer=str(sphere_grid_observer),
+                    )
+
+                    xnl = radius_plot_nl * ux2
+                    ynl = radius_plot_nl * uy2
+                    znl = radius_plot_nl * uz2
+                    pfss_neutral_xyz = (xnl, ynl, znl)
+        except Exception:
+            pfss_surface = None
+            pfss_neutral_xyz = None
+
+    # local lon/lat for hover: ALWAYS computed from physical AU coordinates (not plot-scaled)
     rloc_phys = np.sqrt(xs_phys * xs_phys + ys_phys * ys_phys + zs_phys * zs_phys)
     lon_loc = (np.degrees(np.arctan2(ys_phys, xs_phys)) + 360.0) % 360.0
     lat_loc = np.degrees(np.arcsin(np.where(rloc_phys > 0, zs_phys / rloc_phys, np.nan)))
@@ -1671,6 +2133,96 @@ def plot_source_surface_3d(
         "phi,lat (Carr)=%{customdata[3]:.1f}°, %{customdata[4]:.1f}°<br>"
         "r=%{customdata[5]:.2f} R⊙<br>"
     )
+
+    # ------------------------------------------------------------------
+    # Render backmapped points as *actual geometry on the sphere*.
+    #
+    # Plotly Scatter3d markers (especially "square") are billboarded (screen-aligned).
+    # Large billboard markers make a curved spherical track look visually flat.
+    #
+    # Fix: approximate each point by a tiny square patch (two triangles) oriented by
+    # the local tangent basis and re-normalized to sit exactly on the sphere.
+    #
+    # This helper is vectorized: no per-point Python loops.
+    # ------------------------------------------------------------------
+    def _sphere_patches_mesh_from_xyz(
+        x: np.ndarray,
+        y: np.ndarray,
+        z: np.ndarray,
+        *,
+        size_deg: float,
+    ):
+        """Build an aggregated Mesh3d patch set from xyz points on a sphere.
+
+        Returns (xv, yv, zv, i, j, k, ok_idx). Each input point contributes 4 vertices
+        and 2 triangles. ok_idx are indices into the input arrays for retained points.
+        """
+        x = np.asarray(x, dtype=float).reshape(-1)
+        y = np.asarray(y, dtype=float).reshape(-1)
+        z = np.asarray(z, dtype=float).reshape(-1)
+
+        ok = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+        if not np.any(ok):
+            return (np.asarray([np.nan] * 4), np.asarray([np.nan] * 4), np.asarray([np.nan] * 4),
+                    np.asarray([0, 0], int), np.asarray([1, 2], int), np.asarray([2, 3], int),
+                    np.asarray([], int))
+
+        ok_idx = np.where(ok)[0]
+        x0 = x[ok]
+        y0 = y[ok]
+        z0 = z[ok]
+        rr = np.sqrt(x0 * x0 + y0 * y0 + z0 * z0)
+        ok2 = np.isfinite(rr) & (rr > 0)
+        if not np.any(ok2):
+            return (np.asarray([np.nan] * 4), np.asarray([np.nan] * 4), np.asarray([np.nan] * 4),
+                    np.asarray([0, 0], int), np.asarray([1, 2], int), np.asarray([2, 3], int),
+                    np.asarray([], int))
+
+        ok_idx = ok_idx[ok2]
+        x0 = x0[ok2]
+        y0 = y0[ok2]
+        z0 = z0[ok2]
+        rr = rr[ok2]
+
+        u = np.column_stack([x0 / rr, y0 / rr, z0 / rr])
+
+        # Tangent basis: e1 = zhat x u (fallback to yhat x u near poles).
+        zhat = np.array([0.0, 0.0, 1.0], dtype=float)
+        yhat = np.array([0.0, 1.0, 0.0], dtype=float)
+        e1 = np.cross(zhat[None, :], u)
+        n1 = np.linalg.norm(e1, axis=1)
+        pole = n1 < 1e-10
+        if np.any(pole):
+            e1[pole] = np.cross(yhat[None, :], u[pole])
+            n1[pole] = np.linalg.norm(e1[pole], axis=1)
+        n1 = np.where(n1 > 0, n1, 1.0)
+        e1 = e1 / n1[:, None]
+        e2 = np.cross(u, e1)
+        n2 = np.linalg.norm(e2, axis=1)
+        n2 = np.where(n2 > 0, n2, 1.0)
+        e2 = e2 / n2[:, None]
+
+        # Square half-width in radians -> tangent-plane scale a = tan(hh).
+        hh = np.deg2rad(float(max(0.2, size_deg))) * 0.5
+        a = float(np.tan(hh))
+
+        sx = np.array([-1.0, +1.0, +1.0, -1.0], dtype=float)
+        sy = np.array([-1.0, -1.0, +1.0, +1.0], dtype=float)
+
+        v = u[:, None, :] + a * (sx[None, :, None] * e1[:, None, :] + sy[None, :, None] * e2[:, None, :])
+        vn = np.linalg.norm(v, axis=2)
+        vn = np.where(vn > 0, vn, 1.0)
+        v = v / vn[:, :, None]
+        v = v * rr[:, None, None]
+        v = v.reshape(-1, 3)
+
+        m = int(rr.size)
+        base = 4 * np.arange(m, dtype=int)
+        i = np.concatenate([base + 0, base + 0])
+        j = np.concatenate([base + 1, base + 2])
+        k = np.concatenate([base + 2, base + 3])
+
+        return (v[:, 0], v[:, 1], v[:, 2], i, j, k, ok_idx)
 
     for k, vname in enumerate(plot_vars):
         row = (k // ncols_vars) + 1
@@ -1756,34 +2308,130 @@ def plot_source_surface_3d(
                 col=col,
             )
 
-        # spheres
-        fig.add_trace(
-            go.Mesh3d(
-                x=sx, y=sy, z=sz, i=si, j=sj, k=sk,
-                opacity=0.16,
-                color="rgb(180,180,180)",
-                flatshading=True,
-                lighting=dict(ambient=0.65, diffuse=0.55, specular=0.04, roughness=0.95, fresnel=0.02),
-                showlegend=False,
-                hoverinfo="skip",
-            ),
-            row=row,
-            col=col,
-        )
-        fig.add_trace(
-            go.Mesh3d(
-                x=rx, y=ry, z=rz, i=ri, j=rj, k=rk,
-                opacity=0.07,
-                color="rgb(130,130,130)",
-                flatshading=True,
-                lighting=dict(ambient=0.65, diffuse=0.55, specular=0.04, roughness=0.95, fresnel=0.02),
-                showlegend=False,
-                hoverinfo="skip",
-            ),
-            row=row,
-            col=col,
-        )
+        # spheres (optionally replace one sphere with a PFSS Br texture surface)
+        # Sun sphere
+        if (pfss_surface is not None) and (bool(pfss_show_in_all_panels) or (k == 0)) and (str(pfss_surface.get("on", "")) == "photosphere"):
+            fig.add_trace(
+                go.Surface(
+                    x=pfss_surface["X"],
+                    y=pfss_surface["Y"],
+                    z=pfss_surface["Z"],
+                    surfacecolor=pfss_surface["BR"],
+                    cmin=float(pfss_surface["cmin"]),
+                    cmax=float(pfss_surface["cmax"]),
+                    colorscale=pfss_surface["colorscale"],
+                    opacity=float(pfss_surface["opacity"]),
+                    showscale=False,
+                    hoverinfo="skip",
+                ),
+                row=row,
+                col=col,
+            )
+            # PFSS colorbar: draw as a horizontal strip (avoid a large global colorbar on the right).
+            if bool(pfss_show_colorbar) and (k == 0):
+                _pf_cs = pfss_surface.get('colorscale', []) if (pfss_surface is not None) else []
+                if isinstance(_pf_cs, str):
+                    try:
+                        import plotly.colors as _pc  # noqa: WPS433
+                        _pf_cs = _pc.get_colorscale(_pf_cs)
+                    except Exception:
+                        _pf_cs = [[0.0, 'rgb(0,0,255)'], [1.0, 'rgb(255,0,0)']]
+                try:
+                    _add_horizontal_colorbar(
+                        row=row,
+                        col=col,
+                        vmin=float(pfss_surface['cmin']),
+                        vmax=float(pfss_surface['cmax']),
+                        colorscale=list(_pf_cs),
+                        title='PFSS Br',
+                        slot=0,
+                        nslots=2,
+                    )
+                except Exception:
+                    pass
+        else:
+            fig.add_trace(
+                go.Mesh3d(
+                    x=sx, y=sy, z=sz, i=si, j=sj, k=sk,
+                    opacity=0.16,
+                    color="rgb(180,180,180)",
+                    flatshading=True,
+                    lighting=dict(ambient=0.65, diffuse=0.55, specular=0.04, roughness=0.95, fresnel=0.02),
+                    showlegend=False,
+                    hoverinfo="skip",
+                ),
+                row=row,
+                col=col,
+            )
 
+        # Source-surface sphere
+        if (pfss_surface is not None) and (bool(pfss_show_in_all_panels) or (k == 0)) and (str(pfss_surface.get("on", "")) == "source_surface"):
+            fig.add_trace(
+                go.Surface(
+                    x=pfss_surface["X"],
+                    y=pfss_surface["Y"],
+                    z=pfss_surface["Z"],
+                    surfacecolor=pfss_surface["BR"],
+                    cmin=float(pfss_surface["cmin"]),
+                    cmax=float(pfss_surface["cmax"]),
+                    colorscale=pfss_surface["colorscale"],
+                    opacity=float(pfss_surface["opacity"]),
+                    showscale=False,
+                    hoverinfo="skip",
+                ),
+                row=row,
+                col=col,
+            )
+            # PFSS colorbar: draw as a horizontal strip (avoid a large global colorbar on the right).
+            if bool(pfss_show_colorbar) and (k == 0):
+                _pf_cs = pfss_surface.get('colorscale', []) if (pfss_surface is not None) else []
+                if isinstance(_pf_cs, str):
+                    try:
+                        import plotly.colors as _pc  # noqa: WPS433
+                        _pf_cs = _pc.get_colorscale(_pf_cs)
+                    except Exception:
+                        _pf_cs = [[0.0, 'rgb(0,0,255)'], [1.0, 'rgb(255,0,0)']]
+                try:
+                    _add_horizontal_colorbar(
+                        row=row,
+                        col=col,
+                        vmin=float(pfss_surface['cmin']),
+                        vmax=float(pfss_surface['cmax']),
+                        colorscale=list(_pf_cs),
+                        title='PFSS Br',
+                        slot=0,
+                        nslots=2,
+                    )
+                except Exception:
+                    pass
+            # Neutral line as an HCS proxy (source surface only)
+            if (pfss_neutral_xyz is not None) and (k == 0 or bool(pfss_show_in_all_panels)):
+                xnl, ynl, znl = pfss_neutral_xyz
+                fig.add_trace(
+                    go.Scatter3d(
+                        x=xnl, y=ynl, z=znl,
+                        mode="lines",
+                        line=dict(color=str(pfss_neutral_rgba), width=int(pfss_neutral_width)),
+                        showlegend=False,
+                        hoverinfo="skip",
+                    ),
+                    row=row,
+                    col=col,
+                )
+        else:
+            fig.add_trace(
+                go.Mesh3d(
+                    x=rx, y=ry, z=rz, i=ri, j=rj, k=rk,
+                    opacity=0.07,
+                    color="rgb(130,130,130)",
+                    flatshading=True,
+                    lighting=dict(ambient=0.65, diffuse=0.55, specular=0.04, roughness=0.95, fresnel=0.02),
+                    showlegend=False,
+                    hoverinfo="skip",
+                ),
+                row=row,
+                col=col,
+            )
         if show_sphere_grid and (grid_sun is not None) and (grid_ss is not None):
             gx, gy, gz = grid_sun
             fig.add_trace(
@@ -1883,6 +2531,35 @@ def plot_source_surface_3d(
             col=col,
         )
 
+        # ------------------------------------------------------------------
+        # Geometry cue: draw the *continuous* mapped track as a faint line.
+        # Plotly square markers are billboarded (camera-facing), which can make
+        # a curved path on a sphere look visually "flat". A low-opacity line
+        # anchored on the source-surface radius restores the curvature cue.
+        # Draw the line *before* markers so markers stay on top.
+        # ------------------------------------------------------------------
+        try:
+            fig.add_trace(
+                go.Scatter3d(
+                    x=xs,
+                    y=ys,
+                    z=zs,
+                    mode="lines",
+                    line=dict(width=3, color="rgba(0,0,0,0.22)"),
+                    opacity=0.55,
+                    showlegend=False,
+                    hoverinfo="skip",
+                ),
+                row=row,
+                col=col,
+            )
+        except Exception:
+            pass
+
+        # Marker size: adapt to point count for legibility.
+        npts = int(xs.size) if hasattr(xs, "size") else len(xs)
+        msize = 6 if npts <= 1500 else (5 if npts <= 4000 else 4)
+
         if vname == "polarity":
             if "polarity" in data.columns:
                 pol_ser = data["polarity"]
@@ -1894,18 +2571,56 @@ def plot_source_surface_3d(
             pol = pd.to_numeric(pol_ser, errors="coerce").to_numpy(dtype=float)[::decimate]
             colmap = np.where(pol > 0, "#d62728", np.where(pol < 0, "#1f77b4", "#7f7f7f"))
 
-            fig.add_trace(
-                go.Scatter3d(
-                    x=xs, y=ys, z=zs,
-                    customdata=np.column_stack([custom_base, pol]),
-                    mode="markers",
-                    marker=dict(size=4, color=colmap, opacity=0.92),
-                    showlegend=False,
-                    hovertemplate=base_hover + "polarity=%{customdata[6]:.0f}<extra></extra>",
-                ),
-                row=row,
-                col=col,
-            )
+            # Render as a sphere-attached patch mesh (fixes billboard "flat ring" artifact).
+            try:
+                size_deg = float(max(0.8, min(4.0, float(msize) * 0.28)))
+                xv, yv, zv, ii, jj, kk, ok_idx = _sphere_patches_mesh_from_xyz(xs, ys, zs, size_deg=size_deg)
+                if ok_idx.size > 0 and ok_idx.size <= 14000:
+                    vc = np.repeat(colmap[ok_idx], 4).tolist()
+                    cd = np.repeat(custom_base[ok_idx], 4, axis=0)
+                    pol_rep = np.repeat(pol[ok_idx], 4)
+                    cd = np.column_stack([cd, pol_rep])
+                    fig.add_trace(
+                        go.Mesh3d(
+                            x=xv, y=yv, z=zv,
+                            i=ii, j=jj, k=kk,
+                            vertexcolor=vc,
+                            opacity=0.94,
+                            flatshading=True,
+                            customdata=cd,
+                            hovertemplate=base_hover + "polarity=%{customdata[6]:.0f}<extra></extra>",
+                            showlegend=False,
+                        ),
+                        row=row,
+                        col=col,
+                    )
+                else:
+                    # Fallback: too many points for patches; keep markers but reduce billboard artifact.
+                    fig.add_trace(
+                        go.Scatter3d(
+                            x=xs, y=ys, z=zs,
+                            customdata=np.column_stack([custom_base, pol]),
+                            mode="markers",
+                            marker=dict(size=max(2, msize - 2), symbol="circle", color=colmap, opacity=0.75, line=dict(color="rgba(0,0,0,0.25)", width=0.8)),
+                            showlegend=False,
+                            hovertemplate=base_hover + "polarity=%{customdata[6]:.0f}<extra></extra>",
+                        ),
+                        row=row,
+                        col=col,
+                    )
+            except Exception:
+                fig.add_trace(
+                    go.Scatter3d(
+                        x=xs, y=ys, z=zs,
+                        customdata=np.column_stack([custom_base, pol]),
+                        mode="markers",
+                        marker=dict(size=msize, symbol="circle", color=colmap, opacity=0.75),
+                        showlegend=False,
+                        hovertemplate=base_hover + "polarity=%{customdata[6]:.0f}<extra></extra>",
+                    ),
+                    row=row,
+                    col=col,
+                )
 
         else:
             spec = var_specs[vname]
@@ -1925,15 +2640,31 @@ def plot_source_surface_3d(
             cb_title = _label_with_unit(data, vname, spec.get("label", vname))
 
             if scale == "log":
+                # For log-scaled panels, we keep vmin/vmax *physically meaningful* in the variable's
+                # native units (spec['vmin'/'vmax'] if provided), then map the colorscale into log10-space.
                 good = np.isfinite(vplot) & (vplot > 0)
                 vplot[~good] = np.nan
+
+                if (spec.get('vmin', None) is not None) and (spec.get('vmax', None) is not None):
+                    vmin_raw = float(spec['vmin'])
+                    vmax_raw = float(spec['vmax'])
+                    if (not np.isfinite(vmin_raw)) or (not np.isfinite(vmax_raw)) or (vmin_raw <= 0) or (vmax_raw <= 0) or (vmax_raw <= vmin_raw):
+                        # Fall back to data-driven limits if the user-provided limits are invalid for log scale.
+                        vmin_raw, vmax_raw = _compute_scalar_limits(vv, spec=spec, percentiles=percentiles)
+                    vmin = float(np.log10(vmin_raw))
+                    vmax = float(np.log10(vmax_raw))
+                else:
+                    vmin_raw, vmax_raw = _compute_scalar_limits(vv, spec=spec, percentiles=percentiles)
+                    vmin = float(np.log10(vmin_raw))
+                    vmax = float(np.log10(vmax_raw))
+
                 vplot = np.log10(vplot)
-                # Limits in log-space
-                vmin, vmax = _compute_scalar_limits(vplot, spec={"scale": "linear"}, percentiles=percentiles)
                 cb_title = _log10_label(cb_title)
 
             marker = dict(
-                size=4,
+                size=msize,
+                symbol="square",
+                line=dict(color="rgba(0,0,0,0.35)", width=0.9),
                 color=vplot,
                 colorscale=colorscale,
                 cmin=float(vmin),
@@ -1941,27 +2672,193 @@ def plot_source_surface_3d(
                 opacity=0.94,
                 showscale=False,
             )
+            # Optional instantaneous-value marker on the horizontal colorbar strip (MP4 export).
+            mv_raw = None
+            mv_plot = None
+            mv_lab = ''
+            if cb_marker_values is not None and (vname in cb_marker_values):
+                try:
+                    mv_raw = float(cb_marker_values.get(vname))
+                except Exception:
+                    mv_raw = None
+            if mv_raw is not None and np.isfinite(float(mv_raw)):
+                if scale == 'log':
+                    if float(mv_raw) > 0:
+                        mv_plot = float(np.log10(float(mv_raw)))
+                        mv_lab = f'{float(mv_raw):.4g}'
+                else:
+                    mv_plot = float(mv_raw)
+                    mv_lab = f'{float(mv_raw):.4g}'
 
             _add_horizontal_colorbar(
-                row=row, col=col,
-                vmin=float(vmin), vmax=float(vmax),
-                colorscale=colorscale,
-                title=cb_title,
-            )
-
-
-            fig.add_trace(
-                go.Scatter3d(
-                    x=xs, y=ys, z=zs,
-                    customdata=np.column_stack([custom_base, vv]),
-                    mode="markers",
-                    marker=marker,
-                    showlegend=False,
-                    hovertemplate=base_hover + f"{vname}=%{{customdata[6]:.4g}}<extra></extra>",
-                ),
                 row=row,
                 col=col,
+                vmin=float(vmin),
+                vmax=float(vmax),
+                colorscale=colorscale,
+                title=cb_title,
+                marker_value=mv_plot,
+                marker_label=mv_lab,
+                slot=(1 if (pfss_surface is not None and bool(pfss_show_colorbar) and (k == 0)) else 0),
+                nslots=(2 if (pfss_surface is not None and bool(pfss_show_colorbar) and (k == 0)) else 1),
             )
+
+            try:
+                size_deg = float(max(0.8, min(4.0, float(msize) * 0.28)))
+                xv, yv, zv, ii, jj, kk, ok_idx = _sphere_patches_mesh_from_xyz(xs, ys, zs, size_deg=size_deg)
+                if ok_idx.size > 0 and ok_idx.size <= 14000:
+                    vplot_ok = np.asarray(vplot, float)[ok_idx]
+                    intens = np.repeat(vplot_ok, 4)
+                    cd = np.repeat(custom_base[ok_idx], 4, axis=0)
+                    vv_rep = np.repeat(vv[ok_idx], 4)
+                    cd = np.column_stack([cd, vv_rep])
+                    fig.add_trace(
+                        go.Mesh3d(
+                            x=xv, y=yv, z=zv,
+                            i=ii, j=jj, k=kk,
+                            intensity=intens,
+                            colorscale=colorscale,
+                            cmin=float(vmin),
+                            cmax=float(vmax),
+                            opacity=0.94,
+                            flatshading=True,
+                            showscale=False,
+                            customdata=cd,
+                            hovertemplate=base_hover + f"{vname}=%{{customdata[6]:.4g}}<extra></extra>",
+                            showlegend=False,
+                        ),
+                        row=row,
+                        col=col,
+                    )
+                else:
+                    # Fallback: too many points for patches; reduce billboard artifact.
+                    marker2 = marker.copy()
+                    marker2["symbol"] = "circle"
+                    marker2["size"] = max(2, int(msize) - 2)
+                    marker2["opacity"] = 0.75
+                    fig.add_trace(
+                        go.Scatter3d(
+                            x=xs, y=ys, z=zs,
+                            customdata=np.column_stack([custom_base, vv]),
+                            mode="markers",
+                            marker=marker2,
+                            showlegend=False,
+                            hovertemplate=base_hover + f"{vname}=%{{customdata[6]:.4g}}<extra></extra>",
+                        ),
+                        row=row,
+                        col=col,
+                    )
+            except Exception:
+                marker2 = marker.copy()
+                marker2["symbol"] = "circle"
+                marker2["opacity"] = 0.75
+                fig.add_trace(
+                    go.Scatter3d(
+                        x=xs, y=ys, z=zs,
+                        customdata=np.column_stack([custom_base, vv]),
+                        mode="markers",
+                        marker=marker2,
+                        showlegend=False,
+                        hovertemplate=base_hover + f"{vname}=%{{customdata[6]:.4g}}<extra></extra>",
+                    ),
+                    row=row,
+                    col=col,
+                )
+
+        # Highlight the most recent cadence sample (movie-friendly).
+        if bool(highlight_last_point):
+            try:
+                # Use the *last row of the input DataFrame* (not the decimated subset) so the
+                # highlight always tracks the current time even when decimate>1.
+                last = data.iloc[-1]
+                xlp = float(pd.to_numeric(last.get('ss_x_au', np.nan), errors='coerce'))
+                ylp = float(pd.to_numeric(last.get('ss_y_au', np.nan), errors='coerce'))
+                zlp = float(pd.to_numeric(last.get('ss_z_au', np.nan), errors='coerce'))
+                xsc_lp = float(pd.to_numeric(last.get('sc_x_au', np.nan), errors='coerce')) if have_sc else float('nan')
+                ysc_lp = float(pd.to_numeric(last.get('sc_y_au', np.nan), errors='coerce')) if have_sc else float('nan')
+                zsc_lp = float(pd.to_numeric(last.get('sc_z_au', np.nan), errors='coerce')) if have_sc else float('nan')
+
+                xlp2, ylp2, zlp2 = _xyz_to_plot(np.array([xlp]), np.array([ylp]), np.array([zlp]))
+                # Project onto plotted SS sphere (matches main point cloud).
+                rr = float(np.sqrt(float(xlp2[0])**2 + float(ylp2[0])**2 + float(zlp2[0])**2))
+                if np.isfinite(rr) and rr > 0 and np.isfinite(float(r_ss_plot)):
+                    xlp2[0] = xlp2[0] / rr * float(r_ss_plot)
+                    ylp2[0] = ylp2[0] / rr * float(r_ss_plot)
+                    zlp2[0] = zlp2[0] / rr * float(r_ss_plot)
+
+                # Highlight as a sphere-attached patch (avoids billboard square artifact).
+                try:
+                    size_deg_hl = float(max(1.2, min(7.0, float(highlight_size) * 0.24)))
+                    xv, yv, zv, ii, jj, kk, ok_idx = _sphere_patches_mesh_from_xyz(xlp2, ylp2, zlp2, size_deg=size_deg_hl)
+                    if ok_idx.size:
+                        fig.add_trace(
+                            go.Mesh3d(
+                                x=xv, y=yv, z=zv,
+                                i=ii, j=jj, k=kk,
+                                vertexcolor=[str(highlight_fill_rgba)] * 4,
+                                opacity=1.0,
+                                flatshading=True,
+                                hoverinfo='skip',
+                                showlegend=False,
+                            ),
+                            row=row,
+                            col=col,
+                        )
+                        # Outline (closed loop through the 4 vertices)
+                        if int(highlight_edge_width) > 0:
+                            xw = [float(xv[0]), float(xv[1]), float(xv[2]), float(xv[3]), float(xv[0])]
+                            yw = [float(yv[0]), float(yv[1]), float(yv[2]), float(yv[3]), float(yv[0])]
+                            zw = [float(zv[0]), float(zv[1]), float(zv[2]), float(zv[3]), float(zv[0])]
+                            fig.add_trace(
+                                go.Scatter3d(
+                                    x=xw, y=yw, z=zw,
+                                    mode='lines',
+                                    line=dict(color=str(highlight_edge_rgba), width=int(highlight_edge_width)),
+                                    opacity=1.0,
+                                    showlegend=False,
+                                    hoverinfo='skip',
+                                ),
+                                row=row,
+                                col=col,
+                            )
+                    else:
+                        raise RuntimeError("highlight patch build failed")
+                except Exception:
+                    fig.add_trace(
+                        go.Scatter3d(
+                            x=xlp2, y=ylp2, z=zlp2,
+                            mode='markers',
+                            marker=dict(
+                                symbol='circle',
+                                size=int(max(3, int(highlight_size) - 2)),
+                                color=str(highlight_fill_rgba),
+                                opacity=0.95,
+                            ),
+                            showlegend=False,
+                            hoverinfo='skip',
+                        ),
+                        row=row,
+                        col=col,
+                    )
+
+                if bool(highlight_connector) and have_sc and np.isfinite(xsc_lp) and np.isfinite(ysc_lp) and np.isfinite(zsc_lp):
+                    xsc2, ysc2, zsc2 = _xyz_to_plot(np.array([xsc_lp]), np.array([ysc_lp]), np.array([zsc_lp]))
+                    fig.add_trace(
+                        go.Scatter3d(
+                            x=[float(xsc2[0]), float(xlp2[0])],
+                            y=[float(ysc2[0]), float(ylp2[0])],
+                            z=[float(zsc2[0]), float(zlp2[0])],
+                            mode='lines',
+                            line=dict(color=str(highlight_connector_rgba), width=int(highlight_connector_width)),
+                            opacity=0.85,
+                            showlegend=False,
+                            hoverinfo='skip',
+                        ),
+                        row=row,
+                        col=col,
+                    )
+            except Exception:
+                pass
 
         if segs is not None:
             fig.add_trace(
@@ -2013,19 +2910,21 @@ if(gd){{
   }});
 }}
 """
-
     # Standalone HTML should be self-contained (no CDN dependency) so that
     # it renders reliably when opened from disk.
-    pio.write_html(
-        fig,
-        str(out_html),
-        include_plotlyjs="inline",
-        include_mathjax="cdn",
-        full_html=True,
-        post_script=sync_script if sync_script else None,
-        config=dict(responsive=True, displaylogo=False),
-        auto_open=False,
-    )
+    if bool(write_html):
+        # Standalone HTML should be self-contained (no CDN dependency) so that
+        # it renders reliably when opened from disk.
+        pio.write_html(
+            fig,
+            str(out_html),
+            include_plotlyjs="inline",
+            include_mathjax="cdn",
+            full_html=True,
+            post_script=sync_script if sync_script else None,
+            config=dict(responsive=True, displaylogo=False),
+            auto_open=False,
+        )
 
     if show:
         try:

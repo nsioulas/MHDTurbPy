@@ -1,0 +1,19 @@
+========================================================================================
+MODWT backend validation
+========================================================================================
+constant-signal detail max |W_j| = 0.000e+00
+
+Reconstruction errors on ramp x = [0,1,2,3,4,5,6,7]
+  J=1: original-shortcut error = 1.77636e-15, corrected error = 1.77636e-15
+  J=2: original-shortcut error = 1.5, corrected error = 3.55271e-15
+  J=3: original-shortcut error = 2.5, corrected error = 5.32907e-15
+
+Vectorized 3-component test
+  corrected 3C runtime per call: 0.000809 s
+  corrected 3C reconstruction max error: 3.553e-15
+
+1D timing and reconstruction
+  original-shortcut runtime per call: 0.000390 s
+  corrected runtime per call:         0.000369 s
+  original-shortcut reconstruction error: 2.666e+00
+  corrected reconstruction error:         3.109e-15

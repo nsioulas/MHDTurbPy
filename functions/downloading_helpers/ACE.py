@@ -35,6 +35,121 @@ _VTH_COEFF = 0.12848657328083132
 # SWEPAM-L2 availability on CDAWeb ends here (as in your previous ACE file)
 _ACE_SWEPAM_L2_END = pd.Timestamp("2024-07-09 23:59:59")
 
+_AU_KM = 1.495978707e8
+
+
+def _ephem_units(settings: Dict[str, Any]) -> str:
+    u = str(settings.get("ephem_units", "km")).strip().lower()
+    if u in ("au", "astronomicalunit", "astronomical_unit", "astronomical-units"):
+        return "au"
+    return "km"
+
+
+def _format_horizons_step(seconds: float) -> str:
+    sec = float(seconds)
+    if not np.isfinite(sec) or sec <= 0:
+        return "10m"
+    sec = max(sec, 60.0)
+    if sec < 3600.0:
+        m = int(max(1, round(sec / 60.0)))
+        return f"{m}m"
+    h = int(max(1, round(sec / 3600.0)))
+    return f"{h}h"
+
+
+from functools import lru_cache
+
+
+@lru_cache(maxsize=128)
+def _horizons_base_df(target: str, start: str, stop: str, step: str) -> pd.DataFrame:
+    """Cached Horizons call via sc_pos.horizons_sun_lonlat.get_lonlat_xyz_timeseries."""
+    from sc_pos.horizons_sun_lonlat import get_lonlat_xyz_timeseries  # type: ignore
+
+    tr = get_lonlat_xyz_timeseries(target=str(target), start=str(start), stop=str(stop), step=str(step), carrington=False)
+    df = tr.df.copy()
+    df = df.loc[~df.index.isna()].sort_index()
+    df = df.loc[~df.index.duplicated(keep="first")]
+    df.index = pd.DatetimeIndex(pd.to_datetime(df.index).tz_localize(None), name=df.index.name or "time_utc")
+    return df
+
+
+def _ephem_on_index(target: str, index: pd.Index) -> pd.DataFrame:
+    """Interpolate Horizons ephemeris to the provided DatetimeIndex."""
+    idx = pd.DatetimeIndex(pd.to_datetime(index))
+    if idx.tz is not None:
+        idx = idx.tz_convert(None)
+    idx = idx.sort_values()
+
+    if len(idx) == 0:
+        return pd.DataFrame(
+            index=idx,
+            columns=[
+                "Dist_au",
+                "Dist_km",
+                "lon",
+                "lat",
+                "x_au",
+                "y_au",
+                "z_au",
+                "x_km",
+                "y_km",
+                "z_km",
+            ],
+        )
+
+    t_ns = idx.view("i8")
+    dt_s = float(np.nanmedian(np.diff(t_ns))) / 1e9 if len(t_ns) >= 2 else 600.0
+    step = _format_horizons_step(dt_s)
+
+    pad = pd.Timedelta("2h") if step.endswith("h") else pd.Timedelta("20m")
+    start = (idx[0] - pad).strftime("%Y-%m-%dT%H:%M:%S")
+    stop = (idx[-1] + pad).strftime("%Y-%m-%dT%H:%M:%S")
+
+    base = _horizons_base_df(target=str(target), start=start, stop=stop, step=step)
+
+    need = ("hgs_r_au", "hgs_lon_deg", "hgs_lat_deg", "hee_x_au", "hee_y_au", "hee_z_au")
+    missing = [k for k in need if k not in base.columns]
+    if missing:
+        raise RuntimeError(f"Horizons base dataframe is missing required columns: {missing}")
+
+    eph = pd.DataFrame(index=base.index)
+    eph["Dist_au"] = pd.to_numeric(base["hgs_r_au"], errors="coerce").astype(float)
+    eph["lon"] = pd.to_numeric(base["hgs_lon_deg"], errors="coerce").astype(float)
+    eph["lat"] = pd.to_numeric(base["hgs_lat_deg"], errors="coerce").astype(float)
+
+    eph["x_au"] = pd.to_numeric(base["hee_x_au"], errors="coerce").astype(float)
+    eph["y_au"] = pd.to_numeric(base["hee_y_au"], errors="coerce").astype(float)
+    eph["z_au"] = pd.to_numeric(base["hee_z_au"], errors="coerce").astype(float)
+
+    eph["Dist_km"] = eph["Dist_au"] * _AU_KM
+    eph["x_km"] = eph["x_au"] * _AU_KM
+    eph["y_km"] = eph["y_au"] * _AU_KM
+    eph["z_km"] = eph["z_au"] * _AU_KM
+
+    uidx = eph.index.union(idx)
+    tmp = eph.reindex(uidx).sort_index()
+    tmp = tmp.interpolate(method="time", limit_direction="both")
+    out = tmp.loc[idx]
+    out.index = idx
+    return out
+
+
+def _attach_ephem_to_par(dfpar: pd.DataFrame, target: str, settings: Dict[str, Any]):
+    """Attach ephemeris columns to dfpar and return (dfpar_out, dfdis)."""
+    dfdis = _ephem_on_index(target=str(target), index=dfpar.index)
+    units = _ephem_units(settings)
+    out = dfpar.copy()
+
+    if units == "au":
+        for c in ("Dist_au", "x_au", "y_au", "z_au"):
+            out[c] = dfdis[c].to_numpy(dtype=float, copy=False)
+    else:
+        for c in ("Dist_km", "x_km", "y_km", "z_km"):
+            out[c] = dfdis[c].to_numpy(dtype=float, copy=False)
+
+    return out, dfdis
+
+
 
 def LoadTimeSeriesACE(
     start_time,
@@ -465,5 +580,14 @@ def LoadTimeSeriesACE(
 
     out_mag = dfmag_r[["Bx", "By", "Bz"]] if all(c in dfmag_r.columns for c in ("Bx", "By", "Bz")) else dfmag_r.copy()
     out_par = dfpar_r.copy()
+
+    # Attach ephemeris aligned to particle cadence (automatic unless explicitly disabled)
+    if isinstance(out_par, pd.DataFrame) and len(out_par) > 0 and bool(settings.get("Down_ephem", True)):
+        try:
+            out_par, dfdis = _attach_ephem_to_par(out_par, target="ACE", settings=settings)
+        except Exception:
+            if verbose:
+                print("[ACE] Ephemeris fetch failed; returning dfdis=None and no ephem columns on dfpar.")
+            dfdis = None
 
     return out_mag, out_par, dfdis, big_gaps, misc

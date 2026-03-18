@@ -60,6 +60,7 @@ from .plotting import (
     marker_sizes_from_metric,
     plot_source_surface_2d,
     plot_source_surface_3d,
+    plot_pfss_backmap_context_2d,
     plot_velocity_profile,
     plot_carrington_diagnostics,
 )
@@ -1129,8 +1130,10 @@ def _compute_3d_cartesian(
         raise RuntimeError("3D outputs require sunpy+astropy.") from e
 
     frame3d = str(frame3d).upper().strip()
-    if frame3d not in {"HEE", "HCI"}:
-        raise ValueError("frame3d must be 'HEE' or 'HCI'")
+    if frame3d in {"CARRINGTON", "HGC"}:
+        frame3d = "HGC"
+    if frame3d not in {"HEE", "HCI", "HGC"}:
+        raise ValueError("frame3d must be one of {'HEE','HCI','HGC'} (aliases: 'CARRINGTON' -> 'HGC')")
 
     t_index = pd.DatetimeIndex(data.index)
     obstime = Time(t_index.to_pydatetime())
@@ -1141,7 +1144,19 @@ def _compute_3d_cartesian(
     earth_obs = get_body_heliographic_stonyhurst("earth", obstime)
     hgc = HeliographicCarrington(obstime=obstime, observer=earth_obs)
 
-    lon = (pd.to_numeric(data["phi_src"], errors="coerce").to_numpy(dtype=float) * uu.deg)
+    # Choose longitude definition by plotting frame.
+    #
+    # - HGC (Carrington / co-rotating): use the launch-time Carrington longitude `phi_src`,
+    #   which is the physically meaningful coordinate for overlays on Carrington PFSS maps.
+    # - Inertial-like frames (HEE/HCI): prefer `phi_src_at_t` when present. This corresponds
+    #   to the Carrington longitude of the *radial* connection at the measurement time (t),
+    #   and keeps the straight line from SC to the source-surface point visually consistent
+    #   in inertial snapshots.
+    if frame3d == "HGC":
+        lon_col = "phi_src"
+    else:
+        lon_col = "phi_src_at_t" if "phi_src_at_t" in data.columns else "phi_src"
+    lon = (pd.to_numeric(data[lon_col], errors="coerce").to_numpy(dtype=float) * uu.deg)
     lat = (pd.to_numeric(data["lat_src"], errors="coerce").to_numpy(dtype=float) * uu.deg)
 
     rss_au = r_ss.to_value(u.AU)
@@ -1150,8 +1165,10 @@ def _compute_3d_cartesian(
 
     if frame3d == "HEE":
         tf = HeliocentricEarthEcliptic(obstime=obstime)
-    else:
+    elif frame3d == "HCI":
         tf = HeliocentricInertial(obstime=obstime)
+    else:
+        tf = hgc
 
     ss = fp_ss.transform_to(tf)
     data["ss_x_au"] = ss.cartesian.x.to_value(uu.AU)
@@ -1166,7 +1183,7 @@ def _compute_3d_cartesian(
 
         if frame3d == "HEE":
             data["sc_x_au"], data["sc_y_au"], data["sc_z_au"] = xsc, ysc, zsc
-        else:
+        elif frame3d == "HCI":
             rep = SkyCoord(
                 x=xsc * uu.AU,
                 y=ysc * uu.AU,
@@ -1178,14 +1195,32 @@ def _compute_3d_cartesian(
             data["sc_x_au"] = rep2.cartesian.x.to_value(uu.AU)
             data["sc_y_au"] = rep2.cartesian.y.to_value(uu.AU)
             data["sc_z_au"] = rep2.cartesian.z.to_value(uu.AU)
+        else:
+            rep = SkyCoord(
+                x=xsc * uu.AU,
+                y=ysc * uu.AU,
+                z=zsc * uu.AU,
+                frame=HeliocentricEarthEcliptic(obstime=obstime),
+                representation_type="cartesian",
+            )
+            rep2 = rep.transform_to(hgc)
+            data["sc_x_au"] = rep2.cartesian.x.to_value(uu.AU)
+            data["sc_y_au"] = rep2.cartesian.y.to_value(uu.AU)
+            data["sc_z_au"] = rep2.cartesian.z.to_value(uu.AU)
     else:
         raise ValueError("3D plotting requires HEE spacecraft Cartesian columns hee_x_au/hee_y_au/hee_z_au (set include_hee=True in ephemeris).")
 
     # Optional: Cartesian endpoints for longitude-interval uncertainty (p16/p84) if present.
     # This keeps the uncertainty visualization frame-consistent.
     if {"phi_src_p16", "phi_src_p84", "lat_src"}.issubset(data.columns):
-        lon_lo = (pd.to_numeric(data["phi_src_p16"], errors="coerce").to_numpy(dtype=float) * uu.deg)
-        lon_hi = (pd.to_numeric(data["phi_src_p84"], errors="coerce").to_numpy(dtype=float) * uu.deg)
+        if frame3d == "HGC":
+            lo_col = "phi_src_p16"
+            hi_col = "phi_src_p84"
+        else:
+            lo_col = "phi_src_at_t_p16" if "phi_src_at_t_p16" in data.columns else "phi_src_p16"
+            hi_col = "phi_src_at_t_p84" if "phi_src_at_t_p84" in data.columns else "phi_src_p84"
+        lon_lo = (pd.to_numeric(data[lo_col], errors="coerce").to_numpy(dtype=float) * uu.deg)
+        lon_hi = (pd.to_numeric(data[hi_col], errors="coerce").to_numpy(dtype=float) * uu.deg)
         lat_u = (pd.to_numeric(data["lat_src"], errors="coerce").to_numpy(dtype=float) * uu.deg)
 
         fp_lo = SkyCoord(lon=lon_lo, lat=lat_u, radius=(rss_au * uu.AU), frame=hgc)
@@ -1215,7 +1250,7 @@ def _compute_sc_cartesian_from_hee(
     track
         DataFrame indexed by time with HEE Cartesian columns: hee_x_au, hee_y_au, hee_z_au.
     frame3d
-        "HEE" or "HCI".
+        "HEE", "HCI", or "HGC" (Carrington / co-rotating visualization frame).
 
     Returns
     -------
@@ -1223,8 +1258,10 @@ def _compute_sc_cartesian_from_hee(
     """
 
     frame3d = str(frame3d).upper().strip()
-    if frame3d not in {"HEE", "HCI"}:
-        raise ValueError("frame3d must be 'HEE' or 'HCI'")
+    if frame3d in {"CARRINGTON", "HGC"}:
+        frame3d = "HGC"
+    if frame3d not in {"HEE", "HCI", "HGC"}:
+        raise ValueError("frame3d must be one of {'HEE','HCI','HGC'} (aliases: 'CARRINGTON' -> 'HGC')")
 
     if not {"hee_x_au", "hee_y_au", "hee_z_au"}.issubset(track.columns):
         raise ValueError("track must contain hee_x_au, hee_y_au, hee_z_au")
@@ -1256,7 +1293,19 @@ def _compute_sc_cartesian_from_hee(
         frame=HeliocentricEarthEcliptic(obstime=obstime),
         representation_type="cartesian",
     )
-    rep2 = rep.transform_to(HeliocentricInertial(obstime=obstime))
+    if frame3d == "HCI":
+        rep2 = rep.transform_to(HeliocentricInertial(obstime=obstime))
+        out["sc_x_au"] = rep2.cartesian.x.to_value(uu.AU)
+        out["sc_y_au"] = rep2.cartesian.y.to_value(uu.AU)
+        out["sc_z_au"] = rep2.cartesian.z.to_value(uu.AU)
+        return out
+
+    # Carrington (co-rotating) visualization frame.
+    from sunpy.coordinates import get_body_heliographic_stonyhurst
+    from sunpy.coordinates.frames import HeliographicCarrington
+    earth_obs = get_body_heliographic_stonyhurst("earth", obstime)
+    hgc = HeliographicCarrington(obstime=obstime, observer=earth_obs)
+    rep2 = rep.transform_to(hgc)
     out["sc_x_au"] = rep2.cartesian.x.to_value(uu.AU)
     out["sc_y_au"] = rep2.cartesian.y.to_value(uu.AU)
     out["sc_z_au"] = rep2.cartesian.z.to_value(uu.AU)
@@ -1446,6 +1495,7 @@ def _write_report_md(outdir: Path, *, meta: Dict[str, Any], files: Dict[str, Any
         "timeseries",
         "maps_2d",
         "maps_3d",
+        "pfss_outdir",
         "velocity_profile",
         "segmentation_score",
         "segmentation_footpoints",
@@ -1459,7 +1509,7 @@ def _write_report_md(outdir: Path, *, meta: Dict[str, Any], files: Dict[str, Any
     lines.append("")
 
     lines.append("## Notes")
-    lines.append("- This tool stops at the source surface. Any magnetic mapping below $r_{SS}$ (PFSS/MHD) is deliberately out of scope here.")
+    lines.append("- By default, this tool stops at the source surface. If `pfss_config` was enabled, it additionally computes PFSS background maps (photosphere or source surface) and HCS-proxy metrics tied to the launch time $t_{src}=t-\tau$.")
     lines.append("- If you enable `source_fit` for `hybrid_parker`, the code selects $r_s$ per stable segment by minimizing the **circular dispersion** of $\phi_{SS}$ computed from $(\phi_{sc},\tau(r_s))$.")
     lines.append("  - The objective is evaluated on a decimated subset of points (parameter `rs_fit_decimate`) for speed, but the fitted $r_s$ is then applied to **all points** in that segment when recomputing $\tau$.")
 
@@ -1560,6 +1610,22 @@ def backmap_interval(
     rs_fit_n: int = 25,
     rs_fit_decimate: int = 3,
     rs_fit_allow_boundary: bool = False,
+
+    # ------------------------------------------------------------------
+    # Optional: PFSS context (photosphere / source surface) for HCS proximity
+    # ------------------------------------------------------------------
+    # Pass a dict compatible with sc_pos.backmap.pfss.PFSSConfig plus extra keys:
+    #   - enabled (bool, default True)
+    #   - which_br ('source_surface' or 'photosphere', default 'source_surface')
+    #   - date_mode ('t_src_day'|'t_obs_day'|'interval_mid_day'|'fixed', default 't_src_day')
+    #   - date_str (required only for date_mode='fixed')
+    #   - cache_maps (bool, default True)
+    #   - compute_hcs_distance (bool, default True)
+    #   - neutral_stride (int, default 2)
+    #   - make_products (bool, default False)
+    #   - plot_var (str, default 'sigma_c')
+    #   - points_decimate (int, default 4)
+    pfss_config: Optional[Dict[str, Any]] = None,
 
     verbose: bool = True,
     outdir: Optional[Union[str, Path]] = None,
@@ -2984,6 +3050,591 @@ def backmap_interval(
     if verbose:
         print("\n" + audit_block + "\n")
 
+    # ------------------------------------------------------------------
+    # Optional: PFSS context (photospheric / source-surface Br background)
+    # ------------------------------------------------------------------
+    pfss_meta: Optional[Dict[str, Any]] = None
+    pfss_products: Dict[str, Any] = {"enabled": False}
+    pfss_bg_3d: Optional[Dict[str, Any]] = None
+    pfss_clim_static: Optional[Tuple[float, float]] = None
+    pfss_surface_stride_3d: int = 2
+
+    # PFSS-related optional outputs (must be defined regardless of PFSS enablement)
+    out_pfss_ctx_2d: Optional[Path] = None
+    dynamic_3d_html_path: Optional[str] = None
+
+    # PFSS static-overlay policy controls whether a single PFSS snapshot is shown
+    # on the *static* 3D figure over long intervals.
+    pfss_static_overlay_requested: str = "auto"
+    pfss_static_overlay_used: bool = False
+    pfss_interval_days: float = float('nan')
+
+    # PFSS plot defaults (may be overridden by pfss_config)
+    pfss_plot_opacity: float = 0.35
+    pfss_plot_show_in_all_panels: bool = True
+    pfss_plot_show_colorbar: bool = True
+
+    if pfss_config is not None:
+        cfg_in = dict(pfss_config)
+        if bool(cfg_in.get("enabled", True)):
+            try:
+                from .pfss import (
+                    PFSSConfig,
+                    pfss_maps_cached,
+                    sample_br_nearest,
+                    neutral_line_vertices_lonlat,
+                    angular_distance_to_neutral_line_deg,
+                    write_br_sphere_html,
+                    SpherePlotConfig,
+                    Points3DConfig,
+                    robust_symmetric_clim,
+                )
+            except Exception as _e_pfss_import:
+                raise RuntimeError(
+                    "PFSS requested (pfss_config provided) but sc_pos.backmap.pfss (or its deps) failed to import. "
+                    "Ensure pfsspy/sunpy/astropy are installed."
+                ) from _e_pfss_import
+
+            which_br = str(cfg_in.get("which_br", "source_surface")).strip().lower()
+            if which_br not in {"photosphere", "source_surface"}:
+                raise ValueError("pfss_config['which_br'] must be 'photosphere' or 'source_surface'")
+
+            # Visualization choice for PFSS texture overlays (independent of sampling surface).
+            # Recommended: visual_br='photosphere' (feature-rich boundary map) + HCS from source surface.
+            visual_br = str(cfg_in.get("visual_br", "photosphere")).strip().lower()
+            if visual_br not in {"photosphere", "source_surface"}:
+                raise ValueError("pfss_config['visual_br'] must be 'photosphere' or 'source_surface'")
+
+            date_mode = str(cfg_in.get("date_mode", "t_src_day")).strip().lower()
+            cache_maps = bool(cfg_in.get("cache_maps", True))
+            compute_hcs = bool(cfg_in.get("compute_hcs_distance", True))
+            neutral_stride = int(max(1, int(cfg_in.get("neutral_stride", 2))))
+            make_products = bool(cfg_in.get("make_products", False))
+            plot_var_pfss = str(cfg_in.get("plot_var", "sigma_c"))
+            points_decimate = int(max(1, int(cfg_in.get("points_decimate", 4))))
+            # Color scaling policy for PFSS Br visuals (static + movies + dynamic HTML)
+            # - 'global'  : one robust symmetric scale across all PFSS days used in this run (recommended)
+            # - 'per_day' : robust symmetric scale per PFSS day (more contrast but can look like polarity flips)
+            # - 'fixed'   : user-specified symmetric scale from clim_fixed
+            clim_mode = str(cfg_in.get("clim_mode", "global")).strip().lower()
+            if clim_mode in {"per-day", "perday", "day"}:
+                clim_mode = "per_day"
+
+            clim_percentiles = cfg_in.get("clim_percentiles", (2.0, 98.0))
+            try:
+                clim_percentiles = (float(clim_percentiles[0]), float(clim_percentiles[1]))  # type: ignore[index]
+            except Exception:
+                clim_percentiles = (2.0, 98.0)
+
+            clim_fixed = cfg_in.get("clim_fixed", None)
+
+
+            # PFSS radius: default to the backmapping r_ss
+            rss_rsun = float(cfg_in.get("rss_rsun", float(u.Quantity(r_ss).to_value(u.R_sun))))
+            # PHYSICS GUARD: if you request Br on the source surface, the PFSS R_SS must match
+            # the backmapping source-surface radius. Otherwise, the overlay is not on the same sphere.
+            if which_br == "source_surface":
+                r_ss_rsun = float(u.Quantity(r_ss).to_value(u.R_sun))
+                if not np.isfinite(rss_rsun) or not np.isfinite(r_ss_rsun) or abs(rss_rsun - r_ss_rsun) > 1e-6:
+                    raise ValueError(
+                        f"PFSS source_surface requested but rss_rsun={rss_rsun} does not match backmapping r_ss={r_ss_rsun}. "
+                        "Set pfss_config['rss_rsun'] equal to r_ss, or use which_br='photosphere' and interpret it as a two-sphere context."
+                    )
+
+            Nmap = int(cfg_in.get("N", 180))
+            nr = cfg_in.get("nr", None)
+            prefer_hhmm = str(cfg_in.get("prefer_hhmm", "1204"))
+            overwrite_download = bool(cfg_in.get("overwrite_download", False))
+            search_days = int(cfg_in.get("search_days", 7))
+            nlon = cfg_in.get("nlon", None)
+            enforce_flux_balance = bool(cfg_in.get("enforce_flux_balance", True))
+            local_path_in = cfg_in.get("local_path", None)
+            local_path = (Path(str(local_path_in)).expanduser().resolve() if local_path_in not in (None, "", "None") else None)
+
+            # Where to store PFSS caches/products
+            pfss_out = Path(cfg_in.get("out_dir", out_base / "pfss"))
+            pfss_out.mkdir(parents=True, exist_ok=True)
+
+            # Time at source surface (launch time): t_src = t_obs - tau
+            t_obs = pd.to_datetime(pd.DatetimeIndex(data.index), utc=True)
+
+            # Interval duration (days) used for static PFSS overlay policy
+            try:
+                pfss_interval_days = float((t_obs[-1] - t_obs[0]).total_seconds() / 86400.0) if len(t_obs) > 1 else 0.0
+            except Exception:
+                pfss_interval_days = float('nan')
+            tau_s = pd.to_numeric(data.get("tau_s", np.full(len(data), np.nan)), errors="coerce").to_numpy(dtype=float)
+            t_src = t_obs - pd.to_timedelta(tau_s, unit="s")
+            # Store tz-naive UTC for easier downstream interop (Windows/Mac)
+            data["t_src"] = t_src.tz_convert(None)
+
+            if date_mode == "fixed":
+                date_str = str(cfg_in.get("date_str", "")).strip()
+                if not date_str:
+                    raise ValueError("pfss_config['date_str'] is required for date_mode='fixed'")
+                pfss_date = np.array([date_str] * len(data), dtype=object)
+            elif date_mode == "interval_mid_day":
+                # Choose a representative day using the *valid* t_src samples
+                _t = pd.to_datetime(t_src, utc=True, errors="coerce")
+                _t_valid = _t[~pd.isna(_t)]
+                if len(_t_valid) == 0:
+                    raise ValueError("PFSS date_mode='interval_mid_day' but all t_src are NaT (tau_s is missing/NaN).")
+                tmid = pd.DatetimeIndex(_t_valid).tz_convert(None)[int(len(_t_valid) // 2)]
+                date_str = pd.Timestamp(tmid).strftime("%Y-%m-%d")
+                pfss_date = np.array([date_str] * len(data), dtype=object)
+            elif date_mode == "t_obs_day":
+                _dt = pd.to_datetime(t_obs, utc=True, errors="coerce")
+                _s = pd.DatetimeIndex(_dt).tz_convert(None).strftime("%Y-%m-%d").astype(object)
+                _s = np.where(_s == "NaT", "", _s)
+                pfss_date = np.array(_s, dtype=object)
+            else:
+                # default: t_src_day (physically consistent with phi_src representing t_src)
+                _dt = pd.to_datetime(t_src, utc=True, errors="coerce")
+                _s = pd.DatetimeIndex(_dt).tz_convert(None).strftime("%Y-%m-%d").astype(object)
+                _s = np.where(_s == "NaT", "", _s)
+                pfss_date = np.array(_s, dtype=object)
+
+            data["pfss_date"] = pfss_date
+
+            # Prepare outputs
+            br_fp = np.full(len(data), np.nan, dtype=float)
+            hcs_dist = np.full(len(data), np.nan, dtype=float)
+
+            cache_files: Dict[str, str] = {}
+            overlay_pngs: Dict[str, str] = {}
+            sphere_htmls: Dict[str, str] = {}
+
+            br_by_day: Dict[str, np.ndarray] = {}
+            neutral_by_day: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+            br_photo_by_day: Dict[str, np.ndarray] = {}
+            br_ss_by_day: Dict[str, np.ndarray] = {}
+            dynamic_3d_html = bool(cfg_in.get("dynamic_3d_html", False))
+            dynamic_3d_stride = int(max(1, int(cfg_in.get("dynamic_3d_stride", cfg_in.get("points_decimate", 4)))))
+            dynamic_3d_tail = int(max(0, int(cfg_in.get("dynamic_3d_tail", 240))))
+            dynamic_3d_max_frames = int(max(10, int(cfg_in.get("dynamic_3d_max_frames", 1500))))
+
+            # Group by date and run PFSS only for unique days
+            dates_unique = sorted({str(d) for d in pfss_date if str(d).strip()})
+            for dstr in dates_unique:
+                m = (pfss_date == dstr)
+                if not np.any(m):
+                    continue
+
+                cfg = PFSSConfig(
+                    out_dir=pfss_out,
+                    date_str=str(dstr),
+                    prefer_hhmm=prefer_hhmm,
+                    overwrite_download=overwrite_download,
+                    N=int(Nmap),
+                    nlon=(int(nlon) if nlon is not None else None),
+                    rss_rsun=float(rss_rsun),
+                    nr=(int(nr) if nr is not None else None),
+                    enforce_flux_balance=enforce_flux_balance,
+                    local_path=local_path,
+                    search_days=search_days,
+                )
+
+                maps = pfss_maps_cached(cfg, which=('photosphere','source_surface'), cache=cache_maps, overwrite=overwrite_download)
+                br2d = np.asarray(maps.get(which_br), dtype=float)
+                br_photo = np.asarray(maps.get('photosphere'), dtype=float) if maps.get('photosphere') is not None else br2d
+                br_ss = np.asarray(maps.get('source_surface'), dtype=float) if maps.get('source_surface') is not None else br2d
+                br_vis = (br_photo if (visual_br == 'photosphere') else br_ss)
+                cache_files[dstr] = str(maps.get("cache_file", ""))
+
+                br_by_day[str(dstr)] = br2d
+                br_photo_by_day[str(dstr)] = br_photo
+                br_ss_by_day[str(dstr)] = br_ss
+
+                # Sample PFSS Br at the backmapped location (nearest neighbor)
+                lon_m = pd.to_numeric(data.loc[m, "phi_src"], errors="coerce").to_numpy(dtype=float)
+                lat_m = pd.to_numeric(data.loc[m, "lat_src"], errors="coerce").to_numpy(dtype=float)
+                br_fp[m] = sample_br_nearest(br2d, lon_deg=lon_m, lat_deg=lat_m)
+
+                # Neutral line (Br=0 at the source surface) used as an HCS proxy.
+                # We compute it once per PFSS day when needed:
+                #   - compute_hcs_distance: for per-sample distance-to-HCS diagnostics
+                #   - dynamic_3d_html / make_products: for visualization overlays
+                if (compute_hcs or dynamic_3d_html or make_products):
+                    try:
+                        # Prefer cached neutral line vertices when available; fall back to contouring.
+                        if ("neutral_lon_source_surface" in maps) and ("neutral_lat_source_surface" in maps):
+                            nl_lon = np.asarray(maps["neutral_lon_source_surface"], dtype=float)
+                            nl_lat = np.asarray(maps["neutral_lat_source_surface"], dtype=float)
+                            if int(neutral_stride) > 1:
+                                try:
+                                    from .pfss import decimate_nan_polyline
+                                    nl_lon, nl_lat = decimate_nan_polyline(nl_lon, nl_lat, stride=int(neutral_stride))
+                                except Exception:
+                                    nl_lon = nl_lon[:: int(neutral_stride)]
+                                    nl_lat = nl_lat[:: int(neutral_stride)]
+                        else:
+                            nl_lon, nl_lat = neutral_line_vertices_lonlat(br_ss, level=0.0, stride=neutral_stride)
+
+                        neutral_by_day[str(dstr)] = (np.asarray(nl_lon, float), np.asarray(nl_lat, float))
+                        if compute_hcs:
+                            hcs_dist[m] = angular_distance_to_neutral_line_deg(
+                                lon_deg=lon_m,
+                                lat_deg=lat_m,
+                                nl_lon_deg=nl_lon,
+                                nl_lat_deg=nl_lat,
+                                chunk=1024,
+                            )
+                    except Exception:
+                        # Keep NaNs; do not fail the run for PFSS proximity computation or overlays.
+                        pass
+
+                # Optional PFSS products (per day)
+                if make_products:
+                    try:
+                        import matplotlib.pyplot as plt
+
+                        out_png_pf = pfss_out / f"pfss_{visual_br}_{dstr}.png"
+                        nlat, nlon = br_vis.shape
+                        lon_ax = np.linspace(0.0, 360.0, nlon, endpoint=False)
+                        lat_ax = np.linspace(-90.0, 90.0, nlat, endpoint=True)
+
+                        fig = plt.figure(figsize=(11.4, 4.9))
+                        ax = fig.add_subplot(111)
+                        # Robust symmetric color limits + diverging colormap (+Br red, -Br blue)
+                        vv_br = br_vis[np.isfinite(br_vis)]
+                        if vv_br.size:
+                            lo_br, hi_br = np.nanpercentile(vv_br, [2.0, 98.0])
+                            mm_br = float(max(abs(float(lo_br)), abs(float(hi_br))))
+                            vmin_br, vmax_br = -mm_br, +mm_br
+                        else:
+                            vmin_br, vmax_br = -1.0, +1.0
+
+                        im = ax.imshow(br_vis, origin="lower", aspect="auto", extent=[0, 360, -90, 90], cmap="RdBu_r", vmin=vmin_br, vmax=vmax_br)
+
+                        # HCS proxy: Br=0 neutral line at the *source surface* (lon/lat polyline).
+                        if str(dstr) in neutral_by_day:
+                            try:
+                                nl_lon, nl_lat = neutral_by_day[str(dstr)]
+                                ax.plot(nl_lon, nl_lat, color="k", linewidth=0.8, alpha=0.75)
+                            except Exception:
+                                pass
+
+                        # Overlay points colored by a chosen diagnostic if available
+                        vv = None
+                        if plot_var_pfss in data.columns:
+                            vv = pd.to_numeric(data.loc[m, plot_var_pfss], errors="coerce").to_numpy(dtype=float)
+                        if vv is not None and np.isfinite(vv).any():
+                            sp = specs.get(plot_var_pfss, {})
+                            vmin = sp.get("vmin", None)
+                            vmax = sp.get("vmax", None)
+                            if (vmin is None) or (vmax is None):
+                                lo, hi = np.nanpercentile(vv[np.isfinite(vv)], [2.0, 98.0])
+                                vmin, vmax = float(lo), float(hi)
+                            sca = ax.scatter(lon_m, lat_m, c=vv, s=18, cmap=str(sp.get("cmap", "coolwarm")), vmin=float(vmin), vmax=float(vmax), linewidths=0.0, alpha=0.92)
+                            cb = fig.colorbar(sca, ax=ax, pad=0.02)
+                            cb.set_label(plot_var_pfss)
+                        else:
+                            ax.scatter(lon_m, lat_m, s=14, c="k", alpha=0.85, linewidths=0.0)
+
+                        cb2 = fig.colorbar(im, ax=ax, pad=0.02)
+                        cb2.set_label(f"PFSS Br ({visual_br})")
+
+                        ax.set(xlabel="Carrington lon [deg]", ylabel="Carrington lat [deg]")
+                        ax.set_title(f"PFSS {visual_br} + backmapped points + HCS (SS) | {dstr}")
+                        fig.savefig(out_png_pf, bbox_inches="tight", dpi=170)
+                        plt.close(fig)
+                        overlay_pngs[dstr] = str(out_png_pf)
+                    except Exception:
+                        pass
+
+                    # Optional interactive 3D sphere (can be heavy; decimate points)
+                    try:
+                        out_html_pf = pfss_out / f"pfss_{visual_br}_{dstr}_sphere.html"
+                        idxs = np.where(m)[0]
+                        idxs = idxs[:: points_decimate]
+                        lon_p = pd.to_numeric(data["phi_src"].iloc[idxs], errors="coerce").to_numpy(dtype=float)
+                        lat_p = pd.to_numeric(data["lat_src"].iloc[idxs], errors="coerce").to_numpy(dtype=float)
+                        val_p = None
+                        if plot_var_pfss in data.columns:
+                            val_p = pd.to_numeric(data[plot_var_pfss].iloc[idxs], errors="coerce").to_numpy(dtype=float)
+                        html = write_br_sphere_html(
+                            br2d=br_vis,
+                            out_html=out_html_pf,
+                            plot_cfg=SpherePlotConfig(title=f"PFSS {visual_br} ({dstr})"),
+                            points_lonlat=(lon_p, lat_p),
+                            points_value=val_p,
+                            points_cfg=Points3DConfig(size=3, symbol="square", name="backmap", showscale=False),
+                        )
+                        sphere_htmls[dstr] = str(html)
+                    except Exception:
+                        pass
+
+
+            # Compute a *single* robust symmetric PFSS Br scale across all loaded PFSS days.
+            # This is used for the representative static context overlays (2D + 3D) so that
+            # static figures match the scaling used by the movies / dynamic HTML.
+            pfss_clim_photo = None
+            pfss_clim_ss = None
+            pfss_clim_sel = None
+            try:
+                if str(clim_mode) == "fixed" and (clim_fixed is not None):
+                    c0, c1 = float(clim_fixed[0]), float(clim_fixed[1])
+                    mm = float(max(abs(c0), abs(c1)))
+                    pfss_clim_photo = (-mm, +mm)
+                    pfss_clim_ss = (-mm, +mm)
+                elif str(clim_mode) == "global":
+                    if br_photo_by_day:
+                        pfss_clim_photo = robust_symmetric_clim(
+                            list(br_photo_by_day.values()),
+                            percentiles=tuple(clim_percentiles),
+                            fallback=1.0,
+                        )
+                    if br_ss_by_day:
+                        pfss_clim_ss = robust_symmetric_clim(
+                            list(br_ss_by_day.values()),
+                            percentiles=tuple(clim_percentiles),
+                            fallback=1.0,
+                        )
+                # Selected clim matches the PFSS overlay sphere used in the static 3D figure.
+                if visual_br == "photosphere":
+                    pfss_clim_sel = pfss_clim_photo
+                else:
+                    pfss_clim_sel = pfss_clim_ss
+            except Exception:
+                pfss_clim_photo = None
+                pfss_clim_ss = None
+                pfss_clim_sel = None
+
+            pfss_clim_static = pfss_clim_sel
+
+            data["pfss_br"] = br_fp
+            data["pfss_hcs_dist_deg"] = hcs_dist
+            # No unit is enforced for PFSS Br: magnetogram units are dataset-dependent.
+            # Distance is explicitly degrees.
+            attach_units(data, {"pfss_hcs_dist_deg": u.deg})
+
+
+            # Optional: a single dynamic 3D HTML that animates PFSS background changes + footpoint motion.
+            # This is intentionally decimated to avoid enormous HTML files over long intervals.
+            if bool(dynamic_3d_html):
+                try:
+                    from .pfss import write_pfss_backmap_dynamic_sphere_html
+
+                    out_dyn = pfss_out / "pfss_photosphere_backmap_dynamic.html"
+                    lon_fp = pd.to_numeric(data["phi_src"], errors="coerce").to_numpy(dtype=float)
+                    lat_fp = pd.to_numeric(data["lat_src"], errors="coerce").to_numpy(dtype=float)
+
+                    # Spacecraft Carrington lon/lat (trajectory context)
+                    lon_sc = pd.to_numeric(data.get("phi_sc", np.full(len(data), np.nan)), errors="coerce").to_numpy(dtype=float)
+                    lat_sc = pd.to_numeric(data.get("lat_sc", np.full(len(data), np.nan)), errors="coerce").to_numpy(dtype=float)
+
+                    pv = None
+                    pv_label = ""
+                    if plot_var_pfss in data.columns:
+                        pv = pd.to_numeric(data[plot_var_pfss], errors="coerce").to_numpy(dtype=float)
+                        pv_label = str(plot_var_pfss)
+
+                    out_dyn = write_pfss_backmap_dynamic_sphere_html(
+                        out_html=out_dyn,
+                        # PFSS texture: always photosphere for context
+                        br_by_day=br_photo_by_day if br_photo_by_day else br_by_day,
+                        which_br="photosphere",
+                        # Footpoints: on source surface
+                        lon_fp_deg=lon_fp,
+                        lat_fp_deg=lat_fp,
+                        pfss_date=pfss_date,
+                        tail=int(dynamic_3d_tail),
+                        stride=int(dynamic_3d_stride),
+                        max_frames=int(dynamic_3d_max_frames),
+                        r_sphere=1.0,
+                        r_fp=float(rss_rsun),
+                        show_source_surface_shell=True,
+                        r_shell=float(rss_rsun),
+                        shell_opacity=float(cfg_in.get("dynamic_3d_shell_opacity", 0.10)),
+                        # Footpoint markers: publication-friendly visibility
+                        point_size=int(cfg_in.get("dynamic_3d_point_size", 6)),
+                        point_symbol=str(cfg_in.get("dynamic_3d_point_symbol", "square")),
+                        point_edge_width=float(cfg_in.get("dynamic_3d_point_edge_width", 1.1)),
+                        fp_patch_opacity=float(cfg_in.get("dynamic_3d_fp_patch_opacity", 0.0)),
+                        fp_patch_outline_width=int(cfg_in.get("dynamic_3d_fp_patch_outline_width", 0)),
+                        play_fps=int(max(1, int(cfg_in.get("dynamic_3d_play_fps", 3)))),
+                        point_value=pv,
+                        point_value_label=pv_label,
+                        point_colorscale="Viridis",
+                        show_colorbar=bool(cfg_in.get("point_show_colorbar", False)) if (pv is not None) else False,
+                        # PFSS styling
+                        pfss_colorscale="RdBu",  # normalized internally to +Br red
+                        pfss_clim=(pfss_clim_photo if (pfss_clim_photo is not None) else None),
+                        pfss_show_colorbar=bool(cfg_in.get("pfss_show_colorbar", True)),
+                        pfss_colorbar_title="PFSS Br (photosphere)",
+                        # HCS proxy on the source surface (computed from source-surface Br)
+                        neutral_by_day=(neutral_by_day if neutral_by_day else None),
+                        # Spacecraft trajectory context
+                        sc_lon_deg=lon_sc,
+                        sc_lat_deg=lat_sc,
+                        sc_shell_r=float(cfg_in.get("dynamic_3d_sc_shell_r", float(rss_rsun) * 1.25)),
+                        sc_tail=int(cfg_in.get("dynamic_3d_sc_tail", 720)),
+                        show_sc_connector=bool(cfg_in.get("dynamic_3d_show_connector", True)),
+                        # grids + camera
+                        show_sphere_grids=bool(cfg_in.get("dynamic_3d_show_grids", False)),
+                        camera_follow_sc=bool(cfg_in.get("dynamic_3d_camera_follow_sc", True)),
+                        camera_distance=float(cfg_in.get("dynamic_3d_camera_distance", 1.65)),
+                        camera_z_boost=float(cfg_in.get("dynamic_3d_camera_z_boost", 0.28)),
+                        title="PFSS (photosphere) + source-surface backmapping + spacecraft trajectory",
+                    )
+                    dynamic_3d_html_path = str(out_dyn)
+                except Exception:
+                    pass
+            pfss_meta = {
+                "enabled": True,
+                "which_br": which_br,
+                "visual_br": visual_br,
+                "date_mode": date_mode,
+                "rss_rsun": float(rss_rsun),
+                "N": int(Nmap),
+                "nr": (int(nr) if nr is not None else None),
+                "prefer_hhmm": prefer_hhmm,
+                "cache_maps": bool(cache_maps),
+                "overwrite_download": bool(overwrite_download),
+                "compute_hcs_distance": bool(compute_hcs),
+                "clim_mode": str(clim_mode),
+                "clim_percentiles": (float(clim_percentiles[0]), float(clim_percentiles[1])),
+                "clim_fixed": (list(clim_fixed) if clim_fixed is not None else None),
+                "clim_photosphere": (list(pfss_clim_photo) if pfss_clim_photo is not None else None),
+                "clim_source_surface": (list(pfss_clim_ss) if pfss_clim_ss is not None else None),
+                "neutral_stride": int(neutral_stride),
+                "out_dir": str(pfss_out),
+                "dates": dates_unique,
+                "cache_files": cache_files,
+                "overlay_pngs": overlay_pngs,
+                "sphere_htmls": sphere_htmls,
+                "dynamic_3d_html": (str(dynamic_3d_html_path) if dynamic_3d_html_path is not None else ""),
+            }
+
+            # Representative PFSS background for the main 3D HTML (maps_3d):
+            # - if only one unique day exists, use it.
+            # - otherwise, use the median (in-index) non-empty pfss_date as a snapshot proxy.
+            pfss_surface_stride_3d = int(max(1, int(cfg_in.get("surface_stride", 2))))
+            d_sel = None
+            if len(dates_unique) == 1:
+                d_sel = str(dates_unique[0])
+            else:
+                _vals = [str(v) for v in pfss_date if str(v).strip()]
+                if len(_vals) > 0:
+                    d_sel = str(_vals[len(_vals) // 2])
+                elif len(dates_unique) > 0:
+                    d_sel = str(dates_unique[0])
+
+            if d_sel is not None and str(d_sel).strip():
+                try:
+                    cfg_sel = PFSSConfig(
+                        out_dir=pfss_out,
+                        date_str=str(d_sel),
+                        prefer_hhmm=prefer_hhmm,
+                        overwrite_download=overwrite_download,
+                        N=int(Nmap),
+                        nlon=(int(nlon) if nlon is not None else None),
+                        rss_rsun=float(rss_rsun),
+                        nr=(int(nr) if nr is not None else None),
+                        enforce_flux_balance=enforce_flux_balance,
+                        local_path=local_path,
+                        search_days=search_days,
+                    )
+                    maps_sel = pfss_maps_cached(cfg_sel, which=('photosphere','source_surface'), cache=cache_maps, overwrite=False)
+                    br3d_vis = np.asarray(maps_sel.get(visual_br), dtype=float)
+                    br3d_ss = np.asarray(maps_sel.get('source_surface'), dtype=float)
+
+                    nl3d = None
+                    try:
+                        nl_lon3, nl_lat3 = neutral_line_vertices_lonlat(br3d_ss, level=0.0, stride=neutral_stride)
+                        nl3d = (nl_lon3, nl_lat3)
+                    except Exception:
+                        nl3d = None
+
+                    pfss_bg_3d = {"date": str(d_sel), "which_br": visual_br, "br2d": br3d_vis, "neutral_lonlat": nl3d}
+                    pfss_meta["overlay_date_for_3d"] = str(d_sel)
+                    pfss_meta["cache_file_for_3d"] = str(maps_sel.get("cache_file", ""))
+                except Exception:
+                    pfss_bg_3d = None
+
+
+            # ------------------------------------------------------------
+            # Static PFSS overlay policy
+            # ------------------------------------------------------------
+            pfss_static_overlay_requested = str(cfg_in.get('static_overlay', 'auto')).strip().lower()
+            if pfss_static_overlay_requested in {'1', 'yes', 'true'}:
+                pfss_static_overlay_requested = 'always'
+            if pfss_static_overlay_requested in {'0', 'no', 'false'}:
+                pfss_static_overlay_requested = 'never'
+
+            static_max_days = float(cfg_in.get('static_overlay_max_days', 2.0))
+            try:
+                _idays = float(pfss_interval_days)
+            except Exception:
+                _idays = float('nan')
+
+            # Decide if a single PFSS snapshot is defensible on the static 3D figure:
+            # - If only one PFSS day exists -> OK
+            # - If date_mode is fixed/interval_mid_day -> OK (time-consistent background)
+            # - Else only allow for short intervals (<= static_max_days)
+            use_static_overlay = False
+            if pfss_static_overlay_requested == 'never':
+                use_static_overlay = False
+            elif pfss_static_overlay_requested == 'always':
+                use_static_overlay = True
+            else:
+                if len(dates_unique) <= 1:
+                    use_static_overlay = True
+                elif str(date_mode) in {'fixed', 'interval_mid_day'}:
+                    use_static_overlay = True
+                elif np.isfinite(_idays) and (_idays <= static_max_days):
+                    use_static_overlay = True
+
+            # PFSS plot defaults (can be overridden by pfss_config)
+            pfss_plot_opacity = float(cfg_in.get('pfss_opacity', pfss_plot_opacity))
+            pfss_plot_show_in_all_panels = bool(cfg_in.get('pfss_show_in_all_panels', pfss_plot_show_in_all_panels))
+            pfss_plot_show_colorbar = bool(cfg_in.get('pfss_show_colorbar', pfss_plot_show_colorbar))
+
+            # Representative PFSS context 2D figure (Carrington lon/lat only).
+            # Follows static overlay logic unless explicitly forced.
+            ctx2d_mode = str(cfg_in.get('context_2d', 'auto')).strip().lower()
+            if ctx2d_mode in {'1', 'yes', 'true'}:
+                ctx2d_mode = 'always'
+            if ctx2d_mode in {'0', 'no', 'false'}:
+                ctx2d_mode = 'never'
+            make_ctx2d = (ctx2d_mode == 'always') or ((ctx2d_mode == 'auto') and bool(use_static_overlay))
+
+            # Generate context_2d before potentially disabling pfss_bg_3d
+            if make_ctx2d and (pfss_bg_3d is not None) and (pfss_bg_3d.get('br2d', None) is not None):
+                try:
+                    out_pfss_ctx_2d = out_base / 'pfss_context_2d.png'
+                    plot_pfss_backmap_context_2d(
+                        data=data,
+                        out_png=out_pfss_ctx_2d,
+                        br2d=np.asarray(pfss_bg_3d.get('br2d'), dtype=float),
+                        which_br=str(pfss_bg_3d.get('which_br', which_br)),
+                        neutral_lonlat=(pfss_bg_3d.get('neutral_lonlat') if pfss_bg_3d is not None else None),
+                        color_by=(plot_var_pfss if (plot_var_pfss in data.columns) else None),
+                        clim=pfss_clim_static,
+                        title=f"PFSS {visual_br} context + HCS (SS) | {pfss_bg_3d.get('date','')}",
+                        show=False,
+                    )
+                except Exception:
+                    out_pfss_ctx_2d = None
+
+            # Apply static overlay decision
+            if not bool(use_static_overlay):
+                pfss_bg_3d = None
+            pfss_static_overlay_used = bool(use_static_overlay) and (pfss_bg_3d is not None)
+
+            # Record policy in meta (auditability)
+            try:
+                pfss_meta['interval_days'] = float(_idays)
+            except Exception:
+                pfss_meta['interval_days'] = float('nan')
+            pfss_meta['static_overlay_requested'] = str(pfss_static_overlay_requested)
+            pfss_meta['static_overlay_max_days'] = float(static_max_days)
+            pfss_meta['static_overlay_used'] = bool(pfss_static_overlay_used)
+            pfss_meta['context_2d_mode'] = str(ctx2d_mode)
+            pfss_meta['context_2d_path'] = (str(out_pfss_ctx_2d) if out_pfss_ctx_2d is not None else '')
+
+            pfss_products = dict(pfss_meta)
+
     summary_box = _summary_text(
         {
             "model": str(method_tag),
@@ -3065,6 +3716,16 @@ def backmap_interval(
             sync_cameras=True,
             camera=str(plot_3d_camera),
             title=title3d,
+
+            pfss_br2d=(pfss_bg_3d.get("br2d") if pfss_bg_3d is not None else None),
+            pfss_which_br=(pfss_bg_3d.get("which_br") if pfss_bg_3d is not None else "source_surface"),
+            pfss_surface_stride=int(pfss_surface_stride_3d),
+            pfss_opacity=float(pfss_plot_opacity),
+            pfss_show_colorbar=bool(pfss_plot_show_colorbar),
+            pfss_show_in_all_panels=bool(pfss_plot_show_in_all_panels),
+            pfss_clim=(pfss_clim_static if pfss_clim_static is not None else None),
+            pfss_neutral_lonlat=(pfss_bg_3d.get("neutral_lonlat") if pfss_bg_3d is not None else None),
+
             width=w3d,
             height=h3d,
             draw_panel_boxes=False,
@@ -3162,6 +3823,7 @@ def backmap_interval(
         "omega_deg_per_day": float(u.Quantity(omega).to_value(u.deg / u.day)),
         "phi_sign": int(phi_sign),
         "ephemeris": dict(eph.meta),
+        "pfss": (dict(pfss_meta) if isinstance(pfss_meta, dict) else None),
         "plot": {
             "plot_vars_requested": list(plot_vars_requested),
             "plot_vars_used": list(plot_vars_used),
@@ -3254,6 +3916,9 @@ def backmap_interval(
         "meta": str(out_meta),
         "outdir": str(out_base),
         "ephemeris_cache": str(cache_file),
+        "pfss_outdir": (str((pfss_meta or {}).get("out_dir")) if isinstance(pfss_meta, dict) else None),
+        "pfss_backmap_dynamic_3d": (str((pfss_meta or {}).get("dynamic_3d_html")) if isinstance(pfss_meta, dict) and str((pfss_meta or {}).get("dynamic_3d_html","")).strip() else None),
+        "pfss_context_2d": (str(out_pfss_ctx_2d) if out_pfss_ctx_2d is not None else None),
     }
     # User-facing report
     try:

@@ -1,35 +1,92 @@
 import numpy as np
 import pandas as pd
-from numba import jit,njit, prange
-import os
-import sys
+from numba import jit, prange
 from pathlib import Path
 
-try:
-    from .path_setup import ensure_project_paths
-except ImportError:
-    from path_setup import ensure_project_paths
 
-_FUNCTIONS_DIR = Path(__file__).resolve().parent
-_REPO_ROOT = _FUNCTIONS_DIR.parent
-
-ensure_project_paths(start=Path(__file__).resolve(), include_downloading_helpers=True)
-from joblib import Parallel, delayed
 import general_functions as func
 import TurbPy as turb
 import traceback
 import astropy.units as u
 from scipy import constants
-mu_0            = constants.mu_0  # Vacuum magnetic permeability [N A^-2]
-mu0             = constants.mu_0   #
+mu0             = constants.mu_0   # Vacuum magnetic permeability [N A^-2]
 m_p             = constants.m_p    # Proton mass [kg]
-kb              = constants.k      # Boltzman's constant     [j/K]
-au_to_km        = 1.496e8
-T_to_Gauss      = 1e4
-km2m            = 1e3
-nT2T            = 1e-9
-cm2m            = 1e-2    
 
+
+
+def _has_columns(df, *cols):
+    return all(col in df.columns for col in cols)
+
+
+
+def infer_frame_from_data(B, sc=None, frame=None):
+    """
+    Infer the magnetic-field frame from the spacecraft name and available columns.
+    """
+
+    if (sc == 'WIND') and _has_columns(B, 'Bx'):
+        return 'GSE'
+    if (sc in ('SOLO', 'PSP')) and _has_columns(B, 'Br'):
+        return 'RTN'
+    else:
+        return 'sc_frame'
+    
+    
+
+
+
+def _background_polarity(B, B_l, needed_index, sc=None, frame=None):
+    """
+    Estimate the large-scale polarity sign used to define Elsasser increments.
+    """
+    frame_used = infer_frame_from_data(B, sc=sc, frame=frame)
+
+    if frame_used == 'RTN' and _has_columns(B, 'Br'):
+        bg_series        = B['Br']
+        local_component  = B_l[:, 0]
+        sign_factor      = -1.0 if sc in ('SOLO', 'PSP') else 1.0
+
+    elif frame_used == 'GSE' and _has_columns(B, 'Bx'):
+        bg_series        = B['Bx']
+        local_component  = B_l[:, 0]
+        sign_factor      = 1.0
+
+    elif _has_columns(B, 'Bz'):
+        bg_series        = B['Bz']
+        local_component  = B_l[:, 2]
+        sign_factor      = 1.0
+
+
+        
+    polarity = sign_factor * np.sign(
+        func.newindex(
+            bg_series.rolling('30min', center=True).mean().interpolate(),
+            needed_index
+        ).values.ravel()
+    )
+    local_polarity = sign_factor * np.sign(local_component)
+
+    return polarity, local_polarity, frame_used
+
+
+
+def _mag_from_frame(B, frame):
+    """
+    Estimate |B| from the columns available in the selected frame.
+    """
+    if (frame == 'RTN') and _has_columns(B, 'Br', 'Bt', 'Bn'):
+        return pd.DataFrame(np.sqrt(B.Br**2 + B.Bt**2 + B.Bn**2), index=B.index)
+
+    if (frame == 'GSE') and _has_columns(B, 'Bx', 'By', 'Bz'):
+        return pd.DataFrame(np.sqrt(B.Bx**2 + B.By**2 + B.Bz**2), index=B.index)
+
+    if _has_columns(B, 'Bx', 'By', 'Bz'):
+        return pd.DataFrame(np.sqrt(B.Bx**2 + B.By**2 + B.Bz**2), index=B.index)
+
+    if _has_columns(B, 'Br', 'Bt', 'Bn'):
+        return pd.DataFrame(np.sqrt(B.Br**2 + B.Bt**2 + B.Bn**2), index=B.index)
+
+    return pd.DataFrame(np.sqrt(np.nansum(B.values**2, axis=1)), index=B.index)
 
 
 def est_alignment_angles(
@@ -60,7 +117,7 @@ def est_alignment_angles(
     yvec_mag = func.estimate_vec_magnitude(yvec)
 
 
-    # Estimate sigma (sigma_r for (δv, δb), sigma_c for (δzp, δz-) )
+    # Estimate sigma (sigma_r for (dv, db), sigma_c for (dzp, dz-) )
     sigma_ts             = (xvec_mag**2 - yvec_mag**2 )/( xvec_mag**2 + yvec_mag**2 )
     
     if est_sigma_c:
@@ -98,7 +155,9 @@ def est_alignment_angles(
 
 
 def fast_unit_vec(a):
-    return a.T / func.estimate_vec_magnitude(a)
+    mag = func.estimate_vec_magnitude(a)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        return (a.T / mag).T
 
 
 
@@ -148,11 +207,9 @@ def local_structure_function(
                              Np,
                              tau,
                              dt,
-                             return_unit_vecs         = False,
                              five_points_sfunc        = True,
                              estimate_alignment_angle = False,
-                             return_mag_align_correl  = False,
-                             fix_sign                 = True, 
+                             return_mag_align_correl  = False, 
                              return_B_in_vel_units    = False,
                              turb_amp_analysis        = False,
                              also_return_db_nT        = False,
@@ -168,7 +225,6 @@ def local_structure_function(
     V (pandas dataframe)              : The solar wind velocity data
     Np (pandas dataframe)             : The proton density data
     tau (int)                         : The time lag
-    return_unit_vecs (bool)           : Return unit vectors if True, default is False
     five_points_sfunc (bool)          : Use five point structure function if True, default is True
     estimate_alignment_angle (bool)   : Wether to estimate the alignment angle (Using several different methods)
     
@@ -182,6 +238,9 @@ def local_structure_function(
     V_l_hat (numpy array)             : Unit vector of the local velocity field
     '''
 
+    # Infer frame from spacecraft name and available columns unless it is provided explicitly
+    frame = infer_frame_from_data(B, sc=sc, frame=frame)
+
     # Constant to normalize mag field in vel units
     kinet_normal = (1e-15 / np.sqrt(use_np_factor * mu0 * Np.rolling('1min', center=True).mean() * m_p)).values
 
@@ -190,6 +249,11 @@ def local_structure_function(
 
     # Keep flag 
     normal_flag = 'B_in_vel_units' if return_B_in_vel_units else'B_in_nT_units'
+
+    # Keep defaults defined even when optional branches are skipped
+    keep_turb_amp   = {None}
+    align_angles_vb = {}
+    align_angles_zpm= {}
 
     if five_points_sfunc:
         
@@ -281,28 +345,17 @@ def local_structure_function(
     # Estimate magntidtues of the par and perp components of increments
     dB_perp_amp        = np.sqrt(dB_perp.T[0]**2 + dB_perp.T[1]**2 + dB_perp.T[2]**2)
     dB_parallel_amp    = np.sqrt(dB_parallel.T[0]**2 + dB_parallel.T[1]**2 + dB_parallel.T[2]**2)
+
+    # Estimate background polarity once so it is always defined, even when
+    # alignment angles are not requested.
+    polarity, local_polarity, frame = _background_polarity(B, B_l, needed_index, sc=sc, frame=frame)
     
-    # Create empty dictionaries
-    unit_vecs         = {}
-    align_angles_vb   = {}
-    align_angles_zpm  = {}                         
     
     if estimate_alignment_angle:
 
         # We need the perpendicular component of the fluctuations
         du_perp = func.perp_vector(du, B_l)
 
-        # Determine the sign of background Br
-        if (sc =='PSP') or (sc =='SOLO'):
-            if frame =='RTN':
-                 polarity        = - np.sign(func.newindex(B.Br.rolling('30min', center=True).mean().interpolate(), needed_index).values)
-                 local_polarity  = - np.sign(B_l.T[0]) 
-            else:
-                 polarity        =  np.sign(func.newindex(B.Bz.rolling('30min', center=True).mean().interpolate(), needed_index).values)
-                 local_polarity  =  np.sign(B_l.T[2])    
-        else:       
-           print('BAD')
-        
         # Estimate fluctuations in Elssaser variables
         if use_local_polarity:
 
@@ -316,11 +369,7 @@ def local_structure_function(
         if turb_amp_analysis:
             try:
 
-                if frame =='RTN':
-
-                    Bmag                 = pd.DataFrame(np.sqrt(B.Br**2 + B.Bt**2 + B.Bn**2))
-                else:
-                    Bmag                 = pd.DataFrame(np.sqrt(B.Bx**2 + B.By**2 + B.Bz**2))                    
+                Bmag                 = _mag_from_frame(B, frame)
                 if five_points_sfunc:
                     dB_mod           = turb.shifted_df_calcs(Bmag, lag_coefs_db, coefs_db)
                 else:
@@ -333,11 +382,14 @@ def local_structure_function(
                                  'dzm_perp'          : dzm_perp,
                                  'dB_nT'             : dB,
                                  'dB_mod_nT'         : dB_mod,
+                                
                                  'dB_perp_amp_nT'    : dB_perp_amp,
                                  'dB_parallel_amp_nT': dB_parallel_amp,
                                  'B_l'               : B_l,
 
                                 }
+
+                
 
             except:
                 traceback.print_exc()
@@ -390,24 +442,16 @@ def local_structure_function(
                                      'counts'            : countszp
         }
         
-    if return_unit_vecs:
-
-        # Estimate unit vectors
-        unit_vecs     = {
-                         'dB_perp_hat'   : fast_unit_vec(dB_perp), 
-                         'B_l_hat'       : fast_unit_vec(fast_unit_vec(B_l)),   
-                         'B_perp_2_hat'  : np.cross(B_l_hat, dB_perp_hat),
-        }
-
     if return_B_in_vel_units:
         dVa_perp_amp = np.sqrt(dVa_perp.T[0]**2 + dVa_perp.T[1]**2 + dVa_perp.T[2]**2)
         dVa_par_amp  = np.sqrt(dVa_parallel.T[0]**2 + dVa_parallel.T[1]**2 + dVa_parallel.T[2]**2)
         
-        return Vsw, B_l, V_l, keep_turb_amp, dVa, dVa_perp_amp, dVa_par_amp, du, dN, kinet_normal, polarity, normal_flag,  lmag, l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb,align_angles_zpm, needed_index, local_polarity
+        return Vsw, B_l, V_l, keep_turb_amp, dVa, dVa_perp_amp, dVa_par_amp, du, dN, kinet_normal, polarity, normal_flag,  lmag, l_ell, l_xi, l_lambda, VBangle, Phiangle, align_angles_vb, align_angles_zpm, needed_index, local_polarity
         
         
     else:
-        return Vsw, B_l, V_l, keep_turb_amp, dB, dB_perp_amp, dB_parallel_amp, du, dN, kinet_normal, polarity, normal_flag, lmag, l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb, align_angles_zpm, needed_index, local_polarity
+        return Vsw, B_l, V_l, keep_turb_amp, dB, dB_perp_amp, dB_parallel_amp, du, dN, kinet_normal, polarity, normal_flag, lmag, l_ell, l_xi, l_lambda, VBangle, Phiangle, align_angles_vb, align_angles_zpm, needed_index, local_polarity
+
 
 
 
@@ -451,7 +495,10 @@ def structure_functions_3D(
     for i in prange(len(qorder)):   
         result[i] = np.nanmean((dbtot)**qorder[i])
 
-    sdk   = result[3] /result[1]**2
+    if (len(result) > 3) and (result[1] != 0.0):
+        sdk = result[3] / result[1]**2
+    else:
+        sdk = np.nan
     return list(result), sdk
 
 def estimate_pdfs_3D(
@@ -475,7 +522,7 @@ def estimate_pdfs_3D(
 
     xPDF_ar, yPDF_ar, _,_ = func.pdf(ar[indices], 45, False, True,scott_rule =False)
     xPDF_at, yPDF_at, _,_ = func.pdf(at[indices], 45, False, True,scott_rule =False)
-    xPDF_an, yPDF_an, _,_ = func.pdf(at[indices], 45, False, True,scott_rule =False)
+    xPDF_an, yPDF_an, _,_ = func.pdf(an[indices], 45, False, True,scott_rule =False)
 
     return {'ar': [xPDF_ar, yPDF_ar], 'at': [xPDF_at, yPDF_at], 'an': [xPDF_an, yPDF_an] }
 
@@ -487,402 +534,454 @@ def vars_2_estimate(ts_list=None):
     return default_vars if ts_list is None else ts_list+ default_vars
 
 
-
 def quants_2_estimate(
-                    l_mag,
-                    V_l,
-                    B_l,
-                    local_polarity,
-                    dB,
-                    dB_perp,
-                    dB_parallel,
-                    dV,
-                    dzp,
-                    dzm,
-                    dN,
-                    Np, 
-                    keep_turb_amp,
-                    kinet_normal,
-                    polarity,
-                    B,
-                    V,
-                    phis,
-                    thetas,
-                    align_angles_zpm,
-                    align_angles_vb,
-                    tau_value,
-                    needed_index,
-                    di,
-                    Vsw,
-                    five_points_sfunc = True,
-                    av_hours          = None,
-                    ts_list           = None):
+    l_ell,
+    l_lambda,
+    l_xi,
+    l_mag,
+    V_l,
+    B_l,
+    local_polarity,
+    dB,
+    dB_perp,
+    dB_parallel,
+    dV,
+    dzp,
+    dzm,
+    dN,
+    Np,
+    keep_turb_amp,
+    kinet_normal,
+    polarity,
+    B,
+    V,
+    phis,
+    thetas,
+    align_angles_zpm,
+    align_angles_vb,
+    tau_value,
+    needed_index,
+    di,
+    Vsw,
+    five_points_sfunc=True,
+    av_hours=None,
+    ts_list=None,
+):
+    from scipy import constants as _constants
 
-    if av_hours==None:
-        av_hours=1/60
+    if av_hours is None:
+        av_hours = 1 / 60
 
-    # What to estimate
-    quants = vars_2_estimate(ts_list=ts_list)
+    def _normalize_requested_quants(ts_list):
+        requested = vars_2_estimate(ts_list=ts_list)
 
-    #Initialize variables dict
+        if requested is None:
+            quants = set()
+        elif isinstance(requested, str):
+            quants = {requested}
+        else:
+            quants = set(requested)
+
+        if ts_list is None:
+            return quants
+
+        if isinstance(ts_list, str):
+            quants.add(ts_list)
+        else:
+            quants.update(ts_list)
+
+        return quants
+
+    def _get_component_keys(df, candidate_sets):
+        cols = set(df.columns)
+        for keys in candidate_sets:
+            if all(k in cols for k in keys):
+                return list(keys)
+        raise KeyError("Could not infer component keys from dataframe columns.")
+
+    def _to_component_frame(df, keys):
+        return df.loc[:, keys].copy()
+
+    def _to_series_norm(df, keys):
+        vals = df.loc[:, keys].to_numpy(dtype=float)
+        return pd.Series(np.sqrt(np.sum(vals**2, axis=1)), index=df.index)
+
+    def _ensure_dataframe(x, default_name):
+        if isinstance(x, pd.Series):
+            name = x.name if x.name is not None else default_name
+            return x.to_frame(name=name)
+        return x.copy()
+
+    def _store_component_family(
+        arr,
+        canonical_prefix,
+        family_aliases=(),
+        canonical_component_alias_prefixes=(),
+        legacy_component_output_prefixes=(),
+        bare_legacy_output=False,
+    ):
+        family_requested = any(alias in quants for alias in family_aliases)
+
+        for comp, idx in comp_map.items():
+            canonical_key = f"{canonical_prefix}{comp}"
+
+            canonical_component_requested = (
+                canonical_key in quants
+                or any(f"{prefix}{comp}" in quants for prefix in canonical_component_alias_prefixes)
+            )
+
+            if family_requested or canonical_component_requested:
+                variables[canonical_key] = arr[:, idx]
+
+            if bare_legacy_output and comp in quants:
+                variables[comp] = arr[:, idx]
+
+            for prefix in legacy_component_output_prefixes:
+                legacy_key = f"{prefix}{comp}"
+                if legacy_key in quants:
+                    variables[legacy_key] = arr[:, idx]
+
+    def _make_vec_df(arr, keys):
+        return pd.DataFrame(arr, index=needed_index, columns=keys)
+
+    def _estimate_vec_pvi(df, keys):
+        return func.newindex(
+            turb.estimate_PVI(
+                df.copy(),
+                [1],
+                [tau_value],
+                di,
+                Vsw,
+                hours=1,
+                keys=keys,
+                five_points_sfunc=five_points_sfunc,
+                PVI_vec_or_mod="vec",
+                use_taus=True,
+                return_only_PVI=True,
+                n_jobs=-1,
+                input_flucts=True,
+                dbs=df,
+            ),
+            needed_index,
+        ).values.T[0]
+
+    quants = _normalize_requested_quants(ts_list=ts_list)
     variables = {}
+    comp_map = {"R": 0, "T": 1, "N": 2}
 
-    if 'puq_pol_heat_rate' in quants:
+    b_keys = _get_component_keys(B, (("Br", "Bt", "Bn"), ("Bx", "By", "Bz")))
+    v_keys = _get_component_keys(V, (("Vr", "Vt", "Vn"), ("Vx", "Vy", "Vz")))
 
-        V_l_mag       = np.sqrt(np.nansum(V_l**2, axis=1))
-        dzp_longitud  = np.nansum(dzp*(V_l.T/V_l_mag).T, axis=1)* (1e3*u.m/u.s)
-        dzm_longitud  = np.nansum(dzm*(V_l.T/V_l_mag).T, axis=1)* (1e3*u.m/u.s)
+    B_comp = _to_component_frame(B, b_keys)
+    V_comp = _to_component_frame(V, v_keys)
+    Np_df = _ensure_dataframe(Np, "Np")
 
+    _store_component_family(
+        dB,
+        canonical_prefix="dB_",
+        family_aliases=("dB",),
+        bare_legacy_output=True,
+    )
+    _store_component_family(
+        dV,
+        canonical_prefix="dV_",
+        family_aliases=("dV",),
+        legacy_component_output_prefixes=("V_",),
+    )
+    _store_component_family(
+        dzp,
+        canonical_prefix="zp_",
+        family_aliases=("zp", "dzp"),
+        canonical_component_alias_prefixes=("dzp_",),
+    )
+    _store_component_family(
+        dzm,
+        canonical_prefix="zm_",
+        family_aliases=("zm", "dzm"),
+        canonical_component_alias_prefixes=("dzm_",),
+    )
+    _store_component_family(
+        B_l,
+        canonical_prefix="B_l_",
+        family_aliases=("B_l",),
+    )
 
-        
-        # Convert squared velocity magnitudes to SI ((m/s)²)
-        zp_sq = (np.sum(dzp**2, axis=1) * (1e3*u.m/u.s)**2)
-        zm_sq = (np.sum(dzm**2, axis=1) * (1e3*u.m/u.s)**2)
-        
-        # Convert length scale: (l_mag * di) in km to m
+    if "puq_pol_heat_rate" in quants:
+        V_l_mag = np.sqrt(np.nansum(V_l**2, axis=1))
+        dzp_longitud = np.nansum(dzp * (V_l.T / V_l_mag).T, axis=1) * (1e3 * u.m / u.s)
+        dzm_longitud = np.nansum(dzm * (V_l.T / V_l_mag).T, axis=1) * (1e3 * u.m / u.s)
+
+        zp_sq = np.sum(dzp**2, axis=1) * (1e3 * u.m / u.s) ** 2
+        zm_sq = np.sum(dzm**2, axis=1) * (1e3 * u.m / u.s) ** 2
         ell = l_mag * di * 1e3 * u.m
 
-        
-        # Convert number density (cm⁻³) to mass density (kg/m³) assuming proton-only plasma
-        rho = (func.newindex(Np, needed_index).values.ravel() * (u.cm**-3) * (constants.m_p * u.kg)).to(u.kg/u.m**3)
-        
-        # Compute heating rate: [velocity^3/length] yields m²/s³; multiplied by rho gives kg/(m·s³)=W/m³.
-        variables['e_plus']  = - ( ( (3/4) * (dzm_longitud * zp_sq ) / ell ) * rho).to(u.W/u.m**3).value
-        variables['e_minus'] = - ( ( (3/4) * ( dzp_longitud * zm_sq) / ell ) * rho).to(u.W/u.m**3).value
-    
-    if 'db_perp_amp' in quants:
-        variables['db_perp_amp'] = dB_perp
-        
-    if 'db_par_amp' in quants:
-        variables['db_par_amp']  = dB_parallel
-               
-    
-    if 'PVI_vec_zp' in quants:
-    
-        dzp        = pd.DataFrame({'DateTime': needed_index,
-                                  'Zpr'      : dzp.T[0],
-                                  'Zpt'      : dzp.T[1],
-                                  'Zpn'      : dzp.T[2]}).set_index('DateTime')
+        rho = (
+            func.newindex(Np_df, needed_index).values.ravel()
+            * (u.cm ** -3)
+            * (_constants.m_p * u.kg)
+        ).to(u.kg / u.m**3)
 
-        # Estimate PVI of \vec{Zp} 
-        variables['PVI_vec_zp'] = func.newindex(turb.estimate_PVI( 
-                                                                 dzp.copy(),
-                                                                 [1],
-                                                                 [tau_value],
-                                                                 di,
-                                                                 Vsw,
-                                                                 hours             = 1,
-                                                                 keys              = ['Zpr', 'Zpt', 'Zpn'],
-                                                                 five_points_sfunc = five_points_sfunc,
-                                                                 PVI_vec_or_mod    = 'vec',
-                                                                 use_taus          = True,
-                                                                 return_only_PVI   = True,
-                                                                 n_jobs            =-1,                 
-                                                                 input_flucts      = True,
-                                                                 dbs               = dzp), needed_index).values.T[0]
-    if 'PVI_vec_zm' in quants:
-    
-        dzm        = pd.DataFrame({'DateTime': needed_index,
-                                  'Zmr'      : dzm.T[0],
-                                  'Zmt'      : dzm.T[1],
-                                  'Zmn'      : dzm.T[2]}).set_index('DateTime')
+        variables["e_plus"] = (
+            -(((3 / 4) * dzm_longitud * zp_sq / ell) * rho).to(u.W / u.m**3).value
+        )
+        variables["e_minus"] = (
+            -(((3 / 4) * dzp_longitud * zm_sq / ell) * rho).to(u.W / u.m**3).value
+        )
 
-        # Estimate PVI of \vec{Zp} 
-        variables['PVI_vec_zm'] = func.newindex(turb.estimate_PVI( 
-                                                                 dzm.copy(),
-                                                                 [1],
-                                                                 [tau_value],
-                                                                 di,
-                                                                 Vsw,
-                                                                 hours             = 1,
-                                                                 keys              = ['Zmr', 'Zmt', 'Zmn'],
-                                                                 five_points_sfunc = five_points_sfunc,
-                                                                 PVI_vec_or_mod    = 'vec',
-                                                                 use_taus          = True,
-                                                                 return_only_PVI   = True,
-                                                                 n_jobs            =-1,                 
-                                                                 input_flucts      = True,
-                                                                 dbs               = dzm), needed_index).values.T[0]
-        
-    if 'PVI_vec' in quants:
-        
-            
-        dbb        = pd.DataFrame({'DateTime': needed_index,
-                                  'Br'      : dB.T[0],
-                                  'Bt'      : dB.T[1],
-                                  'Bn'      : dB.T[2]}).set_index('DateTime')
-        
-        
-        
-        variables['PVI_vec'] = func.newindex(turb.estimate_PVI( 
-                                                                 dbb.copy(),
-                                                                 [1],
-                                                                 [tau_value],
-                                                                 di,
-                                                                 Vsw,
-                                                                 hours             = 1,
-                                                                 keys              = ['Br', 'Bt', 'Bn'],
-                                                                 five_points_sfunc = five_points_sfunc,
-                                                                 PVI_vec_or_mod    = 'vec',
-                                                                 use_taus          = True,
-                                                                 return_only_PVI   = True,
-                                                                 n_jobs            =-1,                 
-                                                                 input_flucts      = True,
-                                                                 dbs               = dbb), needed_index).values.T[0]
+    if "db_perp_amp_nT" in quants:
+        variables["db_perp_amp"] = keep_turb_amp["dB_perp_amp_nT"]
 
-    if 'PVI_vec_V' in quants:
-          
-        dvv       = pd.DataFrame({'DateTime': needed_index,
-                                  'Vr'      : dV.T[0],
-                                  'Vt'      : dV.T[1],
-                                  'Vn'      : dV.T[2]}).set_index('DateTime')
-        
-        
-        
-        variables['PVI_vec_V'] = func.newindex(turb.estimate_PVI( 
-                                                                 dvv.copy(),
-                                                                 [1],
-                                                                 [tau_value],
-                                                                 di,
-                                                                 Vsw,
-                                                                 hours             = 1,
-                                                                 keys              = ['Vr', 'Vt', 'Vn'],
-                                                                 five_points_sfunc = five_points_sfunc,
-                                                                 PVI_vec_or_mod    = 'vec',
-                                                                 use_taus          = True,
-                                                                 return_only_PVI   = True,
-                                                                 n_jobs            =-1,                 
-                                                                 input_flucts      = True,
-                                                                 dbs               = dvv), needed_index).values.T[0]
+    if "db_par_amp_nT" in quants:
+        variables["db_par_amp"] = keep_turb_amp["dB_parallel_amp_nT"]
 
-    if 'PVI_Np' in quants:
-        
-        
-        # Estimate PVI of \vec{Zp} 
-        variables['PVI_Np'] = func.newindex(turb.estimate_PVI( 
-                                                                 Np.copy(),
-                                                                 [1],
-                                                                 [tau_value],
-                                                                 di,
-                                                                 Vsw,
-                                                                 hours             = 1,
-                                                                 keys              = list(Np.keys()),
-                                                                 five_points_sfunc = five_points_sfunc,
-                                                                 PVI_vec_or_mod    = 'mod',
-                                                                 use_taus          = True,
-                                                                 return_only_PVI   = True,
-                                                                 n_jobs            =-1), needed_index).values.T[0]
-    if 'R' in quants:
-        variables['R']             =  dB.T[0]  
-        
-    if 'T' in quants:
-        variables['T']             =  dB.T[1] 
-        
-    if 'N' in quants:
-        variables['N']             =  dB.T[2] 
-        
-        del dB
-        
-    if 'B_l_R' in quants:
-        variables['B_l_R']             =  B_l.T[0]  
-        
-    if 'B_l_T' in quants:
-        variables['B_l_T']             =  B_l.T[1] 
-        
-    if 'B_l_N' in quants:
-        variables['B_l_N']             =  B_l.T[2]
-        
-        del B_l
-        
-    if 'V_R' in quants:
-        variables['V_R']             =  dV.T[0]  
-        
-    if 'V_T' in quants:
-        variables['V_T']             =  dV.T[1] 
-        
-    if 'V_N' in quants:
-        variables['V_N']             =  dV.T[2] 
-        
-        del dV
-         
+    if "PVI_vec_zp" in quants:
+        dzp_df = _make_vec_df(dzp, ["Zpr", "Zpt", "Zpn"])
+        variables["PVI_vec_zp"] = _estimate_vec_pvi(dzp_df, ["Zpr", "Zpt", "Zpn"])
 
-    if 'polarity' in quants:
-        variables['polarity']         =  polarity 
-        
-        del polarity 
-        
-    if 'local_polarity' in quants:
-        variables['local_polarity']  =  local_polarity
-        
-        del local_polarity 
-        
-    if 'N_p' in quants:
-        
-        variables['N_p']             =  dN.T[0]
-        
-        
-    if 'db_index' in quants:
-        variables['db_index']       = needed_index
-        
-        
-    if 'kinet_normal' in quants:
-        
-        variables['kinet_normal']   =  kinet_normal
-        
-        del kinet_normal
-        
-    if 'phis' in quants:
-        variables['phis']          =  phis
-        del phis
-        
-    if 'thetas' in quants:
-        variables['thetas']        =  thetas   
-        del thetas
-        
-    if 'Vsw' in quants:
-        try:
-            variables['Vsw']           =  func.newindex(np.sqrt(V.Vr**2 + V.Vt**2 + V.Vn**2), needed_index).values
-        except:
-            variables['Vsw']           =  func.newindex(np.sqrt(V.Vx**2 + V.Vy**2 + V.Vz**2), needed_index).values
-            
+    if "PVI_vec_zm" in quants:
+        dzm_df = _make_vec_df(dzm, ["Zmr", "Zmt", "Zmn"])
+        variables["PVI_vec_zm"] = _estimate_vec_pvi(dzm_df, ["Zmr", "Zmt", "Zmn"])
 
-    if 'Bmod' in quants:
-        try:
-            variables['Bmod']          =  func.newindex(np.sqrt(B.Br**2 + B.Bt**2 + B.Bn**2), needed_index).values  
-        except:
-            variables['Bmod']          =  func.newindex(np.sqrt(B.x**2 + B.By**2 + B.Bz**2), needed_index).values              
-        
-    if 'VBangle_big' in quants:
-        variables['VBangle_big']   =  func.newindex(pd.DataFrame({'DateTime':B.index,
-                                                                  'values'  :func.angle_between_vectors(B.values,
-                                                                                                        V.values)}).set_index('DateTime'), needed_index).values.T[0]
-    if 'sig_c' in quants:
-        variables['sig_c']         = align_angles_zpm['sig_c_ts']
+    if "PVI_vec" in quants:
+        db_df = _make_vec_df(dB, b_keys)
+        variables["PVI_vec"] = _estimate_vec_pvi(db_df, b_keys)
 
-    if 'sig_r' in quants:
-        variables['sig_r']         = align_angles_vb['sig_r_ts'] 
+    if "PVI_vec_V" in quants:
+        dv_df = _make_vec_df(dV, v_keys)
+        variables["PVI_vec_V"] = _estimate_vec_pvi(dv_df, v_keys)
 
-    if 'sins_ub_num' in quants: 
-        variables['sins_ub_num']   = align_angles_vb['sins_ub_num'] 
-        
-    if 'cos_ub_num' in quants: 
-        variables['cos_ub_num']   = align_angles_vb['cos_ub_num'] 
-        
-    if 'sins_ub_den' in quants:
-        variables['sins_ub_den']   = align_angles_vb['sins_ub_den'] 
+    if "PVI_Np" in quants:
+        variables["PVI_Np"] = func.newindex(
+            turb.estimate_PVI(
+                Np_df.copy(),
+                [1],
+                [tau_value],
+                di,
+                Vsw,
+                hours=1,
+                keys=list(Np_df.columns),
+                five_points_sfunc=five_points_sfunc,
+                PVI_vec_or_mod="mod",
+                use_taus=True,
+                return_only_PVI=True,
+                n_jobs=-1,
+            ),
+            needed_index,
+        ).values.T[0]
 
-    if 'sins_zp_num' in quants:
-        variables['sins_zp_num']  = align_angles_zpm['sins_zp_num']
-        
-    if 'cos_zp_num' in quants: 
-        variables['cos_zp_num']   = align_angles_zpm['cos_zp_num'] 
-        
-    if 'sins_zp_den' in quants:
-        variables['sins_zp_den']   = align_angles_zpm['sins_zp_den']
+    if "l_ell" in quants:
+        variables["l_ell"] = l_ell
 
-        
-    if 'sins_zp' in quants:
-        variables['sins_zp']       = align_angles_zpm['sins_zp_num']/align_angles_zpm['sins_zp_den']
-        
-    if 'sins_ub' in quants:
-        variables['sins_ub']        = align_angles_vb['sins_ub_num']/ align_angles_vb['sins_ub_den']
+    if "l_lambda" in quants:
+        variables["l_lambda"] = l_lambda
 
-    if 'zp_mag' in quants:
-        variables['zp_mag']        = align_angles_zpm['zp_mag'] 
+    if "l_xi" in quants:
+        variables["l_xi"] = l_xi
 
-    if 'zm_mag' in quants:
-        variables['zm_mag']        = align_angles_zpm['zm_mag']  
+    if "polarity" in quants:
+        variables["polarity"] = polarity
 
-    if 'compress_squire' in quants:
-        variables['compress_squire'] = func.newindex(turb.compressibility_complex_squire( 
-                                                                                       tau_value,
-                                                                                       B.copy(),
-                                                                                       av_hours =av_hours),needed_index).values.T[0]
-    if 'compress_squire_V' in quants:
-        variables['compress_squire_V'] = func.newindex(turb.compressibility_complex_squire( 
-                                                                                       tau_value,
-                                                                                       V.copy(),
-                                                                                       keys     = ['Vr', 'Vt', 'Vn'],
-                                                                                       av_hours =av_hours),needed_index).values.T[0]
-    if 'compress_chen' in quants:
-        variables['compress_chen']   = func.newindex(turb.compressibility_complex_chen( 
-                                                                                       tau_value,
-                                                                                       B.copy(),
-                                                                                       av_hours =av_hours),needed_index).values.T[0]
-        
-    if 'compress_chen_V' in quants:
-        variables['compress_chen_V']   = func.newindex(turb.compressibility_complex_chen( 
-                                                                                       tau_value,
-                                                                                       V.copy(),
-                                                                                       keys     = ['Vr', 'Vt', 'Vn'],
-                                                                                       av_hours =av_hours),needed_index).values.T[0]
-    if 'compress_simple' in quants:
+    if "local_polarity" in quants:
+        variables["local_polarity"] = local_polarity
 
-        variables['compress_simple'] = func.newindex(turb. calculate_compressibility( 
-                                                                                    tau_value,
-                                                                                    B.copy(),
-                                                                                    keys     = list(B.keys()),
-                                                                                    five_points_sfunc=five_points_sfunc),needed_index).values.T[0]
+    if "N_p" in quants:
+        dN_arr = np.asarray(dN)
+        variables["N_p"] = dN_arr[:, 0] if dN_arr.ndim > 1 else dN_arr
 
-    if 'compress_simple_V' in quants:
+    if "db_index" in quants:
+        variables["db_index"] = needed_index
 
-        variables['compress_simple_V'] = func.newindex(turb. calculate_compressibility( 
-                                                                                   tau_value,
-                                                                                   V.copy(),
-                                                                                   keys     = list(V.keys()),
-                                                                                   five_points_sfunc=five_points_sfunc),needed_index).values.T[0]
-    if 'variance' in quants:
-        # Estimate expansion factor
-        variables['variance']     = func.newindex(turb.variance_anisotropy_verdini(
-                                                                                   tau_value,
-                                                                                   B.copy(),
-                                                                                   av_hours =av_hours), needed_index).values
-        
-    if 'norm_turb_amplitude' in quants:
-        # Estimate expansion factor
-        variables['norm_turb_amplitude']= func.newindex(turb.norm_fluct_amplitude(
-                                                                                   tau_value,
-                                                                                   B.copy(),
-                                                                                   av_hours =av_hours,
-                                                                                   denom_av_hours ='4H'), needed_index).values.T[0]  
+    if "kinet_normal" in quants:
+        variables["kinet_normal"] = kinet_normal
 
-    if 'PVI_mod' in quants:
-        # Estimate PVI of |B|
-        variables['PVI_mod'] = func.newindex(turb.estimate_PVI(
-                                                                 B.copy(),
-                                                                 [1],
-                                                                 [tau_value],
-                                                                 di,
-                                                                 Vsw,
-                                                                 hours             = 1,
-                                                                 five_points_sfunc = five_points_sfunc,
-                                                                 PVI_vec_or_mod    = 'mod',
-                                                                 use_taus          = True,
-                                                                 return_only_PVI   = True,
-                                                                 n_jobs=-1), needed_index).values.T[0]
-        
+    if "phis" in quants:
+        variables["phis"] = phis
 
+    if "thetas" in quants:
+        variables["thetas"] = thetas
 
-        
-    if 'PVI_mod_V' in quants:
-        # Estimate PVI of \vec{B} 
-        variables['PVI_mod_V'] = func.newindex(turb.estimate_PVI( 
-                                                                 V.copy(),
-                                                                 [1],
-                                                                 [tau_value],
-                                                                 di,
-                                                                 Vsw,
-                                                                 hours             = 1,
-                                                                 keys              = ['Vr', 'Vt', 'Vn'],
-                                                                 five_points_sfunc = five_points_sfunc,
-                                                                 PVI_vec_or_mod    = 'mod',
-                                                                 use_taus          = True,
-                                                                 return_only_PVI   = True,
-                                                                 n_jobs=-1), needed_index).values.T[0]        
+    if "Vsw" in quants:
+        variables["Vsw"] = func.newindex(_to_series_norm(V_comp, v_keys), needed_index).values
 
-        
+    if "Bmod" in quants:
+        variables["Bmod"] = func.newindex(_to_series_norm(B_comp, b_keys), needed_index).values
+
+    if "VBangle_big" in quants:
+        variables["VBangle_big"] = func.newindex(
+            pd.DataFrame(
+                {"values": func.angle_between_vectors(B_comp.values, V_comp.values)},
+                index=B_comp.index,
+            ),
+            needed_index,
+        ).values.T[0]
+
+    if "sig_c" in quants:
+        variables["sig_c"] = align_angles_zpm["sig_c_ts"]
+
+    if "sig_r" in quants:
+        variables["sig_r"] = align_angles_vb["sig_r_ts"]
+
+    if "sins_ub_num" in quants:
+        variables["sins_ub_num"] = align_angles_vb["sins_ub_num"]
+
+    if "cos_ub_num" in quants:
+        variables["cos_ub_num"] = align_angles_vb["cos_ub_num"]
+
+    if "sins_ub_den" in quants:
+        variables["sins_ub_den"] = align_angles_vb["sins_ub_den"]
+
+    if "sins_zp_num" in quants:
+        variables["sins_zp_num"] = align_angles_zpm["sins_zp_num"]
+
+    if "cos_zp_num" in quants:
+        variables["cos_zp_num"] = align_angles_zpm["cos_zp_num"]
+
+    if "sins_zp_den" in quants:
+        variables["sins_zp_den"] = align_angles_zpm["sins_zp_den"]
+
+    if "sins_zp" in quants:
+        variables["sins_zp"] = (
+            align_angles_zpm["sins_zp_num"] / align_angles_zpm["sins_zp_den"]
+        )
+
+    if "sins_ub" in quants:
+        variables["sins_ub"] = (
+            align_angles_vb["sins_ub_num"] / align_angles_vb["sins_ub_den"]
+        )
+
+    if "zp_mag" in quants:
+        variables["zp_mag"] = align_angles_zpm["zp_mag"]
+
+    if "zm_mag" in quants:
+        variables["zm_mag"] = align_angles_zpm["zm_mag"]
+
+    if "compress_squire" in quants:
+        variables["compress_squire"] = func.newindex(
+            turb.compressibility_complex_squire(
+                tau_value,
+                B_comp.copy(),
+                av_hours=av_hours,
+            ),
+            needed_index,
+        ).values.T[0]
+
+    if "compress_squire_V" in quants:
+        variables["compress_squire_V"] = func.newindex(
+            turb.compressibility_complex_squire(
+                tau_value,
+                V_comp.copy(),
+                keys=v_keys,
+                av_hours=av_hours,
+            ),
+            needed_index,
+        ).values.T[0]
+
+    if "compress_chen" in quants:
+        variables["compress_chen"] = func.newindex(
+            turb.compressibility_complex_chen(
+                tau_value,
+                B_comp.copy(),
+                av_hours=av_hours,
+            ),
+            needed_index,
+        ).values.T[0]
+
+    if "compress_chen_V" in quants:
+        variables["compress_chen_V"] = func.newindex(
+            turb.compressibility_complex_chen(
+                tau_value,
+                V_comp.copy(),
+                keys=v_keys,
+                av_hours=av_hours,
+            ),
+            needed_index,
+        ).values.T[0]
+
+    if "compress_simple" in quants:
+        variables["compress_simple"] = func.newindex(
+            turb.calculate_compressibility(
+                tau_value,
+                B_comp.copy(),
+                keys=b_keys,
+                five_points_sfunc=five_points_sfunc,
+            ),
+            needed_index,
+        ).values.T[0]
+
+    if "compress_simple_V" in quants:
+        variables["compress_simple_V"] = func.newindex(
+            turb.calculate_compressibility(
+                tau_value,
+                V_comp.copy(),
+                keys=v_keys,
+                five_points_sfunc=five_points_sfunc,
+            ),
+            needed_index,
+        ).values.T[0]
+
+    if "variance" in quants:
+        variables["variance"] = func.newindex(
+            turb.variance_anisotropy_verdini(
+                tau_value,
+                B_comp.copy(),
+                av_hours=av_hours,
+            ),
+            needed_index,
+        ).values
+
+    if "norm_turb_amplitude" in quants:
+        variables["norm_turb_amplitude"] = func.newindex(
+            turb.norm_fluct_amplitude(
+                tau_value,
+                B_comp.copy(),
+                av_hours=av_hours,
+                denom_av_hours="4H",
+            ),
+            needed_index,
+        ).values.T[0]
+
+    if "PVI_mod" in quants:
+        variables["PVI_mod"] = func.newindex(
+            turb.estimate_PVI(
+                B_comp.copy(),
+                [1],
+                [tau_value],
+                di,
+                Vsw,
+                hours=1,
+                keys=b_keys,
+                five_points_sfunc=five_points_sfunc,
+                PVI_vec_or_mod="mod",
+                use_taus=True,
+                return_only_PVI=True,
+                n_jobs=-1,
+            ),
+            needed_index,
+        ).values.T[0]
+
+    if "PVI_mod_V" in quants:
+        variables["PVI_mod_V"] = func.newindex(
+            turb.estimate_PVI(
+                V_comp.copy(),
+                [1],
+                [tau_value],
+                di,
+                Vsw,
+                hours=1,
+                keys=v_keys,
+                five_points_sfunc=five_points_sfunc,
+                PVI_vec_or_mod="mod",
+                use_taus=True,
+                return_only_PVI=True,
+                n_jobs=-1,
+            ),
+            needed_index,
+        ).values.T[0]
+
     return variables
 
+
+    
 
 def save_flucs(indices,
                final_variables,
@@ -1011,13 +1110,12 @@ def estimate_3D_sfuncs(
                        V_sc_vel_removed,
                        Np,
                        dt,
-                      # Vsw,
+
                        di, 
                        conditions,
                        qorder,
                        tau_values,
-                       estimate_PDFS            = False,
-                       return_unit_vecs         = False,
+
                        five_points_sfuncs       = True,
                        estimate_alignment_angle = False,
                        return_mag_align_correl  = False,
@@ -1029,14 +1127,14 @@ def estimate_3D_sfuncs(
                        ts_list                  = None,
                        thetas_phis_step         = 10,
                        return_B_in_vel_units    = False,
-                       turb_amp_analysis        = False,
+                       turb_amp_analysis        = True,
                        estimate_dzp_dzm         = False,
                        also_return_db_nT        = False,
-                       use_local_polarity       = True,
+                       use_local_polarity       = False,
                        use_np_factor            = True,
                        est_proj_ells            = True,
                        sc                       = None, 
-                       frame                    = 'RTN'):
+                       frame                    = None):
     """
     Estimate the 3D structure functions for the data given in `B` and `V`
 
@@ -1058,10 +1156,6 @@ def estimate_3D_sfuncs(
         order of the structure function
     tau_values: array
         time lags for the structure function
-    estimate_PDFS: bool, optional
-        whether to estimate the PDFs for each structure function, default False
-    return_unit_vecs: bool, optional
-        whether to return the unit vectors, default False
     five_points_sfuncs: bool, optional
         whether to use the 5 point stencil, default True
     return_coefs: bool, optional
@@ -1141,14 +1235,13 @@ def estimate_3D_sfuncs(
        
 
             # Call the function with keyword arguments directly
-            Vsw, B_l, V_l, keep_turb_amp,  dB, dB_perp, dB_parallel, dV, dN,  kinet_normal, polarity, normal_flag,  l_mag,  l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb, align_angles_zpm, needed_index, local_polarity = local_structure_function(
+            Vsw, B_l, V_l, keep_turb_amp,  dB, dB_perp, dB_parallel, dV, dN,  kinet_normal, polarity, normal_flag,  l_mag,  l_ell, l_xi, l_lambda, VBangle, Phiangle, align_angles_vb, align_angles_zpm, needed_index, local_polarity = local_structure_function(
                            B.copy(),
                            V.copy(),
                            V_sc_vel_removed.copy(),
                            Np.copy(),
                            int(tau_value),
                            dt,
-                           return_unit_vecs         = return_unit_vecs,
                            five_points_sfunc        = five_points_sfuncs,
                            estimate_alignment_angle = estimate_alignment_angle,
                            return_mag_align_correl  = return_mag_align_correl,
@@ -1208,12 +1301,14 @@ def estimate_3D_sfuncs(
                 d_Zm = dV - dB * combined[:, None]
 
                 del combined
-                
-                
+
 
             # Estimate extra quantities     
             if return_coefs:
                 final_variables = quants_2_estimate(
+                                                    l_ell, 
+                                                    l_lambda,
+                                                    l_xi,
                                                     l_mag,
                                                     V_l,
                                                     B_l,
@@ -1244,6 +1339,7 @@ def estimate_3D_sfuncs(
                                                     ts_list   = ts_list)
 
 
+
             if only_general ==1:
 
                 """ For General """
@@ -1258,10 +1354,7 @@ def estimate_3D_sfuncs(
                     sf_overall_Zm[jj, :]        = structure_functions_3D(indices, qorder, d_Zm)
                     counts_overall[jj]          = len(indices)
 
-                if estimate_PDFS:
-                    PDF_all                  = estimate_pdfs_3D(indices,  dB)
-                else:
-                    PDF_all = None   
+                PDF_all = None
             elif only_general ==0:
 
                 """ For Perpendicular """
@@ -1280,11 +1373,7 @@ def estimate_3D_sfuncs(
 
                     counts_ell_perp[jj]      = len(indices)
 
-
-                if estimate_PDFS:
-                    PDF_ell_perp             = estimate_pdfs_3D(indices,  dB)
-                else:
-                    PDF_ell_perp = None
+                PDF_ell_perp = None
 
                 """ For Displacement """
                 if return_coefs:
@@ -1300,12 +1389,7 @@ def estimate_3D_sfuncs(
                     l_Ell_perp[jj]                               = np.nanmean(l_xi[indices]) 
                     counts_Ell_perp[jj]                          = len(indices)
 
-                if estimate_PDFS:        
-                    PDF_Ell_perp             = estimate_pdfs_3D(indices,  dB)
-
-                else:
-                    PDF_Ell_perp = None
-
+                PDF_Ell_perp = None
 
                 """ For Parallel """
                 if return_coefs:
@@ -1323,10 +1407,7 @@ def estimate_3D_sfuncs(
 
                     counts_ell_par[jj]                             = len(indices)
 
-                if estimate_PDFS:
-                    PDF_ell_par              = estimate_pdfs_3D(indices,  dB)
-                else:
-                    PDF_ell_par = None
+                PDF_ell_par = None
 
                 """ For Parallel but restricted """
                 if return_coefs:
@@ -1342,11 +1423,7 @@ def estimate_3D_sfuncs(
                     l_ell_par_rest[jj]                                = np.nanmean(l_ell[indices]) 
                     counts_ell_par_rest[jj]                           = len(indices)
 
-                if estimate_PDFS:
-                    PDF_ell_par_rest         = estimate_pdfs_3D(indices,  dB)
-                else:
-                    PDF_ell_par_rest = None 
-
+                PDF_ell_par_rest = None
 
                 """ For General """
                 if return_coefs ==0:
@@ -1396,8 +1473,7 @@ def estimate_3D_sfuncs(
         if only_general:
             flucts = {
                        'ell_all'           :  pd.DataFrame(ell_all_dict).T.apply(lambda col: pd.Series([item for sublist in col for item in sublist])),   
-                       'turb_amp'          : keep_turb_amp,
-                
+                       'turb_amp'          : keep_turb_amp,            
                        'tau_lags'          :  tau_values,
                        'l_di'              :  l_di,
                        'Vsw'               :  Vsw_fin,
@@ -1474,20 +1550,8 @@ def estimate_3D_sfuncs(
                             'V'      : sf_data_V,
                             'B_flag' : normal_flag
                         }
-    
-    try:
-        PDFs            =  {
-                        'All'          : PDF_all,
-                        'ell_par'      : PDF_ell_par,
-                        'ell_par_rest' : PDF_ell_par_rest,
-                        'ell_perp'     : PDF_Ell_perp,
-                        'ell_perp'     : PDF_ell_perp
-       }
-    except:
-        
-        PDFs            = None   
-    
-    
+    PDFs = None
+
     if estimate_alignment_angle:
         overall_align_angles ={ 'l_di' :   l_di,
                                 'VB'   :  {'reg': ub_reg, 'polar':  ub_polar, 'weighted': ub_weighted, 'sig_r_mean': sig_r_mean, 'sig_r_median': sig_r_median, 'counts': counts_vb},

@@ -7,7 +7,7 @@ Clean, pythonic rewrite of the PSP download helper while preserving:
 - Return ordering unchanged
 - Output DataFrame contracts unchanged
 - "misc" dict key structure unchanged
-- QTN / ephemeris / MAG / SCAM logic unchanged in meaning
+- QTN / ephemeris / MAG / SCAM logic unchanged in meaningT_per
 - Gap + diagnostics behavior unchanged in meaning
 - Optional SCAM wheel-noise removal (now centralized & consistent)
 
@@ -138,6 +138,9 @@ def init_psp_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
             "SC_pot_big_gaps": 10,
         },
         "Mag_SCAM_PSP": {
+            # PSP-specific MAG/SCM control block.
+            # "use_SCM" is the authoritative toggle ("flag" kept as legacy alias).
+            "use_SCM": False,
             "flag": False,
             "noise_flag": False,
             "noise_removal": {
@@ -173,6 +176,9 @@ def init_psp_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
         out["Mag_SCAM_PSP"] = defaults["Mag_SCAM_PSP"]
     if not isinstance(out["Mag_SCAM_PSP"].get("noise_removal", None), dict):
         out["Mag_SCAM_PSP"]["noise_removal"] = defaults["Mag_SCAM_PSP"]["noise_removal"]
+    if "use_SCM" not in out["Mag_SCAM_PSP"]:
+        # Keep legacy alias behavior stable.
+        out["Mag_SCAM_PSP"]["use_SCM"] = bool(out["Mag_SCAM_PSP"].get("flag", False))
 
     if not isinstance(out.get("Mag_SCM", None), dict):
         out["Mag_SCM"] = defaults["Mag_SCM"]
@@ -494,7 +500,23 @@ def process_mag_field_data(t0, t1, settings, credentials, varnames_MAG, ind1, in
         req_start = pd.to_datetime(t0)
         req_end = pd.to_datetime(t1)
 
-        if settings["Mag_SCM"]["use_SCM"]:
+        # --- SCM selection (PSP-only): prefer Mag_SCAM_PSP, fallback to legacy Mag_SCM ---
+        use_scm = False
+        try:
+            psp_blk = settings.get("Mag_SCAM_PSP", None)
+            if isinstance(psp_blk, dict):
+                if "use_SCM" in psp_blk:
+                    use_scm = bool(psp_blk.get("use_SCM", False))
+                elif "flag" in psp_blk:
+                    use_scm = bool(psp_blk.get("flag", False))
+            if not use_scm:
+                uni_blk = settings.get("Mag_SCM", None)
+                if isinstance(uni_blk, dict):
+                    use_scm = bool(uni_blk.get("use_SCM", False))
+        except Exception:
+            use_scm = False
+
+        if use_scm:
             logger.info("PSP MAG: using SCAM")
             dfmag = LoadSCAMFromSPEDAS_PSP(t0, t1, credentials, settings)
         else:
@@ -679,6 +701,159 @@ def download_SPC_PSP(t0, t1, credentials, varnames, settings):
     except Exception:
         logger.exception("PSP SPC download failed.")
         return None
+
+
+def get_T_perp_SPAN(t0, t1, credentials, settings=None):
+    """
+    Retrieve SPAN data, project the temperature (or pressure) tensor onto
+    the local magnetic field, and return a DataFrame with parallel,
+    perpendicular, and anisotropy components.
+    
+    Parameters
+    ----------
+    t0, t1 : str
+        Start and end times (e.g., '2020-01-01', '2020-01-02T12:00').
+    credentials : dict
+        Dictionary with user credentials for PSP data download.
+        Example: credentials['psp']['sweap']['username'], ['password'].
+    settings : dict, optional
+        Additional settings or overrides for data retrieval.
+    
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame indexed by datetime containing:
+        - Bx, By, Bz    : Magnetic field components in SPAN coordinates
+        - T_xx, T_yy, ...
+        - T_parallel    : (B_i T_ij B_j) / |B|^2
+        - T_perpendicular : (trace(T) - T_parallel)/2
+        - Anisotropy    : T_perpendicular / T_parallel
+    """
+
+    def project_tensor_onto_B(df_span):
+        """
+        Projects a symmetric tensor onto the magnetic field and computes its
+        parallel and perpendicular components as well as the anisotropy.
+        
+        Parameters
+        ----------
+        df_span : pd.DataFrame
+            Must contain at least the columns:
+                'Bx', 'By', 'Bz',
+                'T_xx', 'T_yy', 'T_zz',
+                'T_xy', 'T_xz', 'T_yz'.
+        
+        Returns
+        -------
+        pd.DataFrame
+            A DataFrame with added columns:
+                'T_parallel', 'T_perpendicular', 'Anisotropy'.
+        """
+        # Compute |B|^2
+        Bsq = df_span['Bx']**2 + df_span['By']**2 + df_span['Bz']**2
+
+        # T_parallel = (B_i T_ij B_j) / |B|^2
+        df_span['T_par'] = (
+            (df_span['Bx']**2 * df_span['T_xx']) +
+            (2.0 * df_span['Bx'] * df_span['By'] * df_span['T_xy']) +
+            (2.0 * df_span['Bx'] * df_span['Bz'] * df_span['T_xz']) +
+            (df_span['By']**2 * df_span['T_yy']) +
+            (2.0 * df_span['By'] * df_span['Bz'] * df_span['T_yz']) +
+            (df_span['Bz']**2 * df_span['T_zz'])
+        ) / Bsq
+
+        # Trace of the tensor
+        trace_T = df_span['T_xx'] + df_span['T_yy'] + df_span['T_zz']
+
+        # T_perp = (trace_T - T_parallel) / 2
+        df_span['T_perp'] = (trace_T - df_span['T_par']) / 2.0
+
+  
+        return df_span
+
+    # Default settings
+    default_settings = {
+        'particle_mode' : '9th_perih_cut',
+        'apply_hampel'  : True,
+        'hampel_params' : {'w': 100, 'std': 3},
+        'part_resol'    : 900,
+        'MAG_resol'     : 1,
+        'Mag_SCAM_PSP'  : {'flag': False, 'noise_flag': False},
+        'Data_path'     : '.'  # Just in case it's not provided
+    }
+
+    # Merge user settings into defaults
+    settings = {**default_settings, **(settings or {})}
+
+    # Ensure a local psp_data directory exists
+    os.chdir(settings['Data_path'])
+    psp_dir = Path.cwd().joinpath("psp_data")
+    psp_dir.mkdir(exist_ok=True)
+
+    # Attempt to retrieve data
+    try:
+        spandata = pyspedas.psp.spi(
+            trange    = [t0, t1],
+            datatype  = 'spi_sf00',
+            level     = 'L3',
+            varnames  = ['T_TENSOR_INST', 'MAGF_INST'],
+            time_clip = True,
+            username  = credentials['psp']['sweap']['username'],
+            password  = credentials['psp']['sweap']['password']
+        )
+
+        T_Tens = get_data('psp_spi_T_TENSOR_INST')
+        B_spi  = get_data('psp_spi_MAGF_INST')
+
+        if not spandata or len(spandata) == 0:
+            raise ValueError("No data returned in first approach.")
+
+    except Exception as e:
+        print("First approach failed:", e)
+        # Fallback: retrieve data without credentials
+        try:
+            spandata = pyspedas.psp.spi(
+                trange    = [t0, t1],
+                datatype  = 'spi_sf00_l3_mom',
+                level     = 'l3',
+                varnames  = ['T_TENSOR_INST', 'MAGF_INST'],
+                time_clip = True
+            )
+            T_Tens = get_data('proton_T_TENSOR_INST')
+            B_spi  = get_data('proton_MAGF_INST')
+
+            if not spandata or len(spandata) == 0:
+                print("No data available in second approach.")
+                return None
+
+        except Exception as e2:
+            print("Second approach also failed:", e2)
+            return None
+
+    # Construct a DataFrame
+    df_span = pd.DataFrame({
+        'Datetime': T_Tens.times,
+        'Bx'      : B_spi.y[:, 0],
+        'By'      : B_spi.y[:, 1],
+        'Bz'      : B_spi.y[:, 2],
+        'T_xx'    : T_Tens.y[:, 0],
+        'T_yy'    : T_Tens.y[:, 1],
+        'T_zz'    : T_Tens.y[:, 2],
+        'T_xy'    : T_Tens.y[:, 3],
+        'T_xz'    : T_Tens.y[:, 4],
+        'T_yz'    : T_Tens.y[:, 5]
+    }).set_index('Datetime')
+
+    # Convert the index to timezone-naive datetimes
+    df_span.index = time_string.time_datetime(time=df_span.index)
+    df_span.index = df_span.index.tz_localize(None)
+    df_span.index.name = 'datetime'
+
+    # Project onto B and compute T_parallel, T_perp, anisotropy
+    df_span = project_tensor_onto_B(df_span)
+
+    # Interpolate and drop any remaining NaNs
+    return df_span[['T_perp', 'T_par']].interpolate().dropna()
 
 
 def process_spc_data(t0, t1, credentials, varnames_SPC, settings, ind1=None, ind2=None):

@@ -1,0 +1,74 @@
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage[hidelinks]{hyperref}
+\usepackage{enumitem}
+\usepackage{microtype}
+\setlength{\parskip}{0.45em}
+\setlength{\parindent}{0pt}
+
+\title{SCWF Revision Summary}
+\author{}
+\date{March 11, 2026}
+
+\begin{document}
+\maketitle
+
+\section*{What changed}
+
+This revision keeps the self-consistent wavelet-frame estimator but removes three
+major sources of ambiguity: spectral normalization, magnetic-unit ambiguity, and the
+misinterpretation of the anisotropy buckets.
+
+\begin{itemize}[leftmargin=1.6em,itemsep=0.35em]
+\item The second-order spectral estimate now uses the positive-frequency discrete
+response-energy integral of the exact FFT response used by the code.
+\item The magnetic families are exported explicitly as \texttt{B\_nT} and
+\texttt{B\_vel}. The compatibility family \texttt{B} still follows the user-selected
+output units.
+\item \texttt{Sfuncs} is retained only as a compatibility name. Its physically correct
+interpretation is a scale-normalized wavelet-moment surrogate.
+\item The local basis defines the angle bins, but the code averages the full vector
+coefficient magnitude in those bins. It does not estimate basis-component spectra.
+\end{itemize}
+
+\section*{Defensible observables}
+
+The revised package should be described in terms of the following observables.
+
+For any coefficient family $W_j$ and conditioned subset $\mathcal{C}_j$,
+\begin{equation}
+ M_q^{(j,\mathcal{C})} = \langle |W_j|^q \rangle_{\mathcal{C}_j}
+\end{equation}
+is the raw wavelet moment, while
+\begin{equation}
+ \widetilde{M}_q^{(j,\mathcal{C})} = M_q^{(j,\mathcal{C})} / \tau_j^{q/2}
+\end{equation}
+is the saved scale-normalized surrogate.
+
+For $q=2$, the conditional band-averaged PSD estimate is
+\begin{equation}
+ \widehat{P}^{(j,\mathcal{C})} = \frac{\langle |W_j|^2 \rangle_{\mathcal{C}_j}}{A_j^{(\mathrm{disc})}},
+\end{equation}
+where $A_j^{(\mathrm{disc})}$ is the positive-frequency discrete response-energy
+integral of the exact implemented response.
+
+\section*{What remains outside the scope of the method}
+
+The package does not compute exact finite increments, strict two-point structure
+functions, or basis-component Fourier spectra. The estimator should be presented as a
+conditional wavelet-band analysis in a local anisotropy frame.
+
+\section*{Practical reading guide}
+
+\begin{itemize}[leftmargin=1.6em,itemsep=0.35em]
+\item Use \texttt{WaveletMoments} when you want the raw coefficient moments.
+\item Use \texttt{ScaleNormalizedWaveletMoments} when you want the higher-order
+surrogate with the same field dimensions as an increment moment.
+\item Use \texttt{Spectra} or \texttt{ConditionalBandAveragedPSD} when you want the
+second-order conditional band-power estimate.
+\item Check the metadata before reading the compatibility family \texttt{B}; its units
+still depend on \texttt{return\_B\_in\_vel\_units}.
+\end{itemize}
+
+\end{document}

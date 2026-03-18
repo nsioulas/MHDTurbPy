@@ -1,0 +1,55 @@
+\documentclass[10pt]{article}
+\usepackage[a4paper,margin=0.85in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,array}
+\usepackage[hidelinks]{hyperref}
+\usepackage{microtype}
+\setlength{\parskip}{0.35em}
+\setlength{\parindent}{0pt}
+
+\title{SCWF Revision Summary and Usage Guide}
+\author{}
+\date{March 12, 2026}
+
+\begin{document}
+\maketitle
+
+\textbf{What changed.} The revised package separates three objects that were previously mixed together: conditional trace spectra, projected-component spectra, and higher-order scale-normalized wavelet moments. It also adds a compact coefficient store for fast post-processing across many intervals.
+
+\textbf{What to use for wave-vector anisotropy.} Use \texttt{Spectra}. These are conditional band-averaged PSD estimates of the same scalar second-order observable across the directional buckets \texttt{ell\_par}, \texttt{Ell\_perp}, and \texttt{ell\_perp}. This is the correct object for wave-vector anisotropy.
+
+\textbf{What to use for component scaling.} Use \texttt{ProjectedSpectra} or \texttt{ProjectedScaleNormalizedWaveletMoments}. These are built from coefficients projected onto the local basis. They answer a component-scaling question, not a wave-vector anisotropy question.
+
+\textbf{What to use for higher-order structure-function-like diagnostics.} Use \texttt{ScaleNormalizedWaveletMoments}. The exact saved quantity is
+\begin{equation}
+\widetilde{M}_q = \left\langle |U|^q / \tau^{q/2} \right\rangle,
+\end{equation}
+so it has the same physical dimensions as a $q$th-order structure function, but it remains a wavelet-coefficient moment rather than a strict increment structure function.
+
+\textbf{How to combine intervals.} There are now two exact routes.
+
+First, merge \texttt{ScaleBinnedAccumulator} entries and then finalize. This is the safest path if the saved products already match the science question.
+
+Second, merge \texttt{CompactCoefficients} / \texttt{CoefficientStore} entries and then reduce them with new constraints. This is the flexible path if you want to change the conditioning after the interval analysis has already been run.
+
+\textbf{New helper functions.}
+\begin{center}
+\begin{tabular}{p{0.34\linewidth} p{0.54\linewidth}}
+\toprule
+Helper & Purpose \\
+\midrule
+\texttt{merge\_scale\_binned\_accumulators} & Exact merging of samplewise common-grid accumulators. \\
+\texttt{finalize\_scale\_binned\_accumulator} & Finalize merged accumulators into means, counts, and scales. \\
+\texttt{merge\_compact\_coefficient\_stores} & Concatenate raw coefficient rows across many intervals on a common schema. \\
+\texttt{coefficient\_store\_to\_dataframe} & Convert one stored bucket to a pandas table for ad hoc inspection. \\
+\texttt{reduce\_compact\_coefficient\_store} & Reduce merged raw coefficient rows to moments or spectra on a chosen $d_i$ grid. \\
+\texttt{reduce\_saved\_interval\_coefficients} & One-step helper that loads, merges, and reduces saved coefficient stores. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Compact coefficient columns.} Each bucket now stores a dense matrix with a common \texttt{column\_order}. Besides the selected coefficients, the store always includes the scale metadata needed for later reduction: \texttt{selected\_scale\_di}, \texttt{tau\_equiv\_seconds}, \texttt{frequency\_hz}, \texttt{response\_energy\_integral}, \texttt{level\_index}, and the local angle columns. This design avoids repeated pandas concatenation and keeps later reductions exact.
+
+\textbf{Two warnings that remain.} First, the magnetic $\xi$ and $\lambda$ projections are not independent because $\hat{\mathbf e}_{\xi}$ is defined from the perpendicular magnetic coefficient itself. Second, the higher-order outputs are structure-function-like surrogates with the correct units, not literal finite increments.
+
+\end{document}

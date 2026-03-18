@@ -51,26 +51,58 @@ import three_D_funcs as threeD
 from PSP import  download_ephemeris_PSP
 
 
+def _pick_existing_columns(df, candidates):
+    for cols in candidates:
+        if all(col in df.columns for col in cols):
+            return list(cols)
+    return list(df.columns[: min(3, len(df.columns))])
 
 
+def _get_B_dataframe(res, use_low_resol_data=False):
+    mag = res['Mag']
+    if use_low_resol_data:
+        B_source = mag.get('B_resampled_part_res', mag['B_resampled'])
+    else:
+        B_source = mag['B_resampled']
+
+    b_cols = _pick_existing_columns(B_source, [('Br', 'Bt', 'Bn'), ('Bx', 'By', 'Bz')])
+    return B_source[b_cols]
 
 
+def _get_V_dataframe(res):
+    V_source = res['Par']['V_resampled']
+    v_cols = _pick_existing_columns(V_source, [('Vr', 'Vt', 'Vn'), ('Vx', 'Vy', 'Vz')])
+    return V_source[v_cols]
 
 
-def compute_sf_overall(tau_value, theta_arrs, phi_arrs, qorder, B, V, Np, dt, return_unit_vecs, five_points_sfuncs, estimate_alignment_angle, return_mag_align_correl):
+def _get_Np_dataframe(res):
+    V_source = res['Par']['V_resampled']
+    if 'np' in V_source.columns:
+        return V_source[['np']]
+    if 'Np' in V_source.columns:
+        return V_source[['Np']].rename(columns={'Np': 'np'})
+    raise KeyError("Could not find density column 'np' or 'Np' in V_resampled")
+
+
+def compute_sf_overall(tau_value, theta_arrs, phi_arrs, qorder, B, V, Np, dt, five_points_sfuncs, estimate_alignment_angle, return_mag_align_correl, V_sc_vel_removed=None, sc=None, frame=None):
     results = {}
 
-    dB, l_ell, l_xi, l_lambda, VBangle, Phiangle, unit_vecs, align_angles_vb, align_angles_zpm = threeD.local_structure_function(
-                                                                                                                                    B,
-                                                                                                                                    V,
-                                                                                                                                    Np,
-                                                                                                                                    int(tau_value),
-                                                                                                                                    dt,
-                                                                                                                                    return_unit_vecs=return_unit_vecs,
-                                                                                                                                    five_points_sfunc=five_points_sfuncs,
-                                                                                                                                    estimate_alignment_angle=estimate_alignment_angle,
-                                                                                                                                    return_mag_align_correl=return_mag_align_correl,
-                                                                                                                                )
+    if V_sc_vel_removed is None:
+        V_sc_vel_removed = V
+
+    _, _, _, _, dB, _, _, _, _, _, _, _, _, _, _, _, VBangle, Phiangle, _, _, _, _ = threeD.local_structure_function(
+        B,
+        V,
+        V_sc_vel_removed,
+        Np,
+        int(tau_value),
+        dt,
+        five_points_sfunc=five_points_sfuncs,
+        estimate_alignment_angle=estimate_alignment_angle,
+        return_mag_align_correl=return_mag_align_correl,
+        sc=sc,
+        frame=frame,
+    )
 
     qorder = np.array([2])
     for mm in range(1, len(theta_arrs)):
@@ -111,7 +143,7 @@ def five_pt_two_pt_wavelet_analysis(i,
                                     max_interval_dur         =  240,
                                     estimate_dzp_dzm          = False,
                                     use_low_resol_data        = False, 
-                                    use_local_polarity       = True,
+                                    use_local_polarity       = False,
                                     dt_step                  = 0.25 ):
     
     import warnings
@@ -195,15 +227,9 @@ def five_pt_two_pt_wavelet_analysis(i,
                     print('Working on new file: ', check_file)
 
                 # Choose V, B dataframes
-                if use_low_resol_data:
-                    try:
-                        B  = res['Mag']['B_resampled_part_res'][['Br', 'Bt', 'Bn']]
-                    except:
-                        B  = res['Mag']['B_resampled'][['Br', 'Bt', 'Bn']]
-                else: 
-                    B  = res['Mag']['B_resampled'][['Br', 'Bt', 'Bn']]
-                V  = res['Par']['V_resampled'][['Vr', 'Vt', 'Vn']]
-                Np = res['Par']['V_resampled'][['np']]
+                B  = _get_B_dataframe(res, use_low_resol_data=use_low_resol_data)
+                V  = _get_V_dataframe(res)
+                Np = _get_Np_dataframe(res)
 
 
                 Np = Np[~Np.index.duplicated()]
@@ -214,49 +240,25 @@ def five_pt_two_pt_wavelet_analysis(i,
                 
                 # Reindex V timeseries
                 try:
-                    V   = func.newindex(V, B.index)
+                    V        = func.newindex(V, B.index)
+                    V_sc     = func.newindex(ephem[['sc_vel_r', 'sc_vel_t', 'sc_vel_n']].interpolate(), B.index)
+
+                    V_sc_rem = V -V_sc.values
+                    
                 except:
-                    print(func.find_cadence(V))
+                    V_sc_rem  = V 
 
-                try:
-                    Np = func.newindex(Np, B.index)
-                except:
-                    print(Np.index[0])
-                    print(V)
-                    print(func.find_cadence(Np))
-
-                if (consider_Vsc) & (sc=='PSP'):
-                    # download ephemeris data
-                    ephem                 = download_ephemeris_PSP(str(gen['Start_Time']-pd.Timedelta('10min')), 
-                                                                   str(gen['End_Time']  +pd.Timedelta('10min')),
-                                                                   credentials,
-                                                                   ['position','velocity']
-                                                                  )
-
-                    # Only keep data needed
-                    ephem                 = ephem[['sc_vel_r', 'sc_vel_t', 'sc_vel_n']]
-
-                    # Reindex them to V df index
-                    ephem                 = func.newindex(ephem, V.index)
-
-                    # Subract
-
-                    V_sc                  = ephem[['sc_vel_r', 'sc_vel_t', 'sc_vel_n']].interpolate()#.values
-
-                    # Keep Vsw to normalize
-                    Vsw_norm              = np.nanmean(np.sqrt((V['Vr']-ephem.values.T[0])**2 + (V['Vt']-ephem.values.T[1])**2 + (V['Vn']-ephem.values.T[2])**2))
-                else:
-                    V_sc                  = 0*res['Par']['V_resampled'][['Vr', 'Vt', 'Vn']]#.values 
-                    Vsw_norm              = np.nanmean(np.sqrt(res['Par']['V_resampled']['Vr']**2 + res['Par']['V_resampled']['Vt']**2 + res['Par']['V_resampled']['Vn']**2))
-
-                if sc =='WIND':
-                    fix_sign =False
-                else:
-                    fix_sign =True           
+                # Also reindex Np
+                Np = func.newindex(Np, B.index)
+         
+     
+      
+               
 
                 # Vsw Mean, di mean
-                di  = res['Par']['di_mean']
-                Vsw = res['Par']['Vsw_mean']
+                di       = res['Par']['di_mean']
+                Vsw      = res['Par']['Vsw_mean']
+                Vsw_norm = np.nanmean(np.linalg.norm(V_sc_rem.to_numpy(), axis=1))
 
 
                 # Estimate lags
@@ -302,7 +304,7 @@ def five_pt_two_pt_wavelet_analysis(i,
                 # Create an empty list to store the final results
                 _,_, _, _, thetas, phis, flucts, ell_di, Sfunctions, PDFs, overall_align_angles = threeD.estimate_3D_sfuncs(B,
                                                                                                                      V,
-                                                                                                                     V_sc, 
+                                                                                                                     V_sc_rem, 
                                                                                                                      Np,
                                                                                                                      dt,
                                                                                                                     # Vsw_norm, 
@@ -310,8 +312,6 @@ def five_pt_two_pt_wavelet_analysis(i,
                                                                                                                      conditions,
                                                                                                                      qorder, 
                                                                                                                      phys_scales, 
-                                                                                                                     estimate_PDFS            = False,
-                                                                                                                     return_unit_vecs         = False,
                                                                                                                      five_points_sfuncs       = Estimate_5point,
                                                                                                                      estimate_alignment_angle = estimate_alignment_angle,
                                                                                                                      return_mag_align_correl  = return_mag_align_correl,
@@ -320,12 +320,12 @@ def five_pt_two_pt_wavelet_analysis(i,
                                                                                                                      theta_thresh_gen         = theta_thresh_gen,
                                                                                                                      phi_thresh_gen           = phi_thresh_gen,
                                                                                                                      extra_conditions         = extra_conditions,
-                                                                                                                     fix_sign                 = fix_sign,
                                                                                                                      ts_list                  = ts_list,
                                                                                                                      thetas_phis_step         = thetas_phis_step, 
                                                                                                                      return_B_in_vel_units    = return_B_in_vel_units,
                                                                                                                      estimate_dzp_dzm         = estimate_dzp_dzm,
-                                                                                                                     use_np_factor            = use_np_factor
+                                                                                                                     use_np_factor            = use_np_factor,
+                                                                                                                     sc                       = sc
 
                                                                                                                     )
 
@@ -498,9 +498,9 @@ def five_pt_two_pt_wavelet_analysis_E1_only(i,
                     print('Working on new file: ', check_file)
 
                 # Choose V, B dataframes
-                B  = scam["resampled_df"][['Br', 'Bt', 'Bn']]
-                V  = res['Par']['V_resampled']()[['Vr', 'Vt', 'Vn']]
-                Np = res['Par']['V_resampled']()[['np']]
+                B  = scam['resampled_df'][_pick_existing_columns(scam['resampled_df'], [('Br', 'Bt', 'Bn'), ('Bx', 'By', 'Bz')])]
+                V  = _get_V_dataframe(res)
+                Np = _get_Np_dataframe(res)
 
 
                 Np = Np[~Np.index.duplicated()]
@@ -529,17 +529,12 @@ def five_pt_two_pt_wavelet_analysis_E1_only(i,
                     ephem                 = func.newindex(ephem, V.index)
 
                     # Subract
-                    V[['Vr', 'Vt', 'Vn']] = res['Par']['V_resampled'][['Vr', 'Vt', 'Vn']]().values - ephem[['sc_vel_r', 'sc_vel_t', 'sc_vel_n']].interpolate().values
+                    V.iloc[:, :] = _get_V_dataframe(res).values - ephem[['sc_vel_r', 'sc_vel_t', 'sc_vel_n']].interpolate().values
 
                     # Keep Vsw to normalize
                     Vsw_norm              = np.nanmean(np.sqrt(V['Vr']**2 + V['Vt']**2 + V['Vn']**2))
                 else:
-                    Vsw_norm              = np.nanmean(np.sqrt(res['Par']['V_resampled']()['Vr']**2 + res['Par']['V_resampled']()['Vt']**2 + res['Par']['V_resampled']()['Vn']**2))
-
-                if sc =='WIND':
-                    fix_sign =False
-                else:
-                    fix_sign =True           
+                    Vsw_norm              = np.nanmean(np.sqrt(_get_V_dataframe(res).iloc[:, 0]**2 + _get_V_dataframe(res).iloc[:, 1]**2 + _get_V_dataframe(res).iloc[:, 2]**2))
 
                 # Vsw Mean, di mean
                 di  = res['Par']['di_mean']
@@ -586,15 +581,13 @@ def five_pt_two_pt_wavelet_analysis_E1_only(i,
                 # Create an empty list to store the final results
                 l_mag, l_lambda, l_xi, l_ell, thetas, phis, flucts, ell_di, Sfunctions, PDFs, overall_align_angles = threeD.estimate_3D_sfuncs(B,
                                                                                                                  V, 
+                                                                                                                 V,
                                                                                                                  Np,
                                                                                                                  dt,
-                                                                                                                 Vsw_norm, 
                                                                                                                  di, 
                                                                                                                  conditions,
                                                                                                                  qorder, 
                                                                                                                  phys_scales, 
-                                                                                                                 estimate_PDFS            = False,
-                                                                                                                 return_unit_vecs         = False,
                                                                                                                  five_points_sfuncs       = Estimate_5point,
                                                                                                                  estimate_alignment_angle = estimate_alignment_angle,
                                                                                                                  return_mag_align_correl  = return_mag_align_correl,
@@ -603,7 +596,6 @@ def five_pt_two_pt_wavelet_analysis_E1_only(i,
                                                                                                                  theta_thresh_gen         = theta_thresh_gen,
                                                                                                                  phi_thresh_gen           = phi_thresh_gen,
                                                                                                                  extra_conditions         = extra_conditions,
-                                                                                                                 fix_sign                 = fix_sign,
                                                                                                                  ts_list                  = ts_list,
                                                                                                                  thetas_phis_step         = thetas_phis_step, 
                                                                                                                  return_B_in_vel_units    = return_B_in_vel_units,
