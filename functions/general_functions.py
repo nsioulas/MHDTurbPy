@@ -4717,7 +4717,13 @@ def find_cadence(df, method="mode", round_ns=1000, max_gap_factor=10.0):
         return np.nan
 
     idx = pd.DatetimeIndex(df.index).sort_values()
-    dt_ns = np.diff(idx.asi8)  # nanoseconds between successive samples
+    # Normalise successive-sample spacing to *nanoseconds* regardless of the
+    # index resolution.  ``idx.asi8`` returns the raw int64 in the index's OWN
+    # unit (ns for datetime64[ns] but µs for datetime64[us], etc.), so the old
+    # ``np.diff(idx.asi8)`` under-reported the cadence by 1000x on a µs index —
+    # which made callers resample a 3 s series onto a 3 ms grid (192k -> 201M
+    # rows).  Casting the timedelta to [ns] rescales correctly for any unit.
+    dt_ns = np.diff(idx.values).astype("timedelta64[ns]").astype(np.int64)
     dt_ns = dt_ns[dt_ns > 0]
 
     if dt_ns.size == 0:
